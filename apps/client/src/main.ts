@@ -1,6 +1,6 @@
 import './style.css';
 import { ENEMIES, ENEMY_ORDER, GAME_SPEEDS, TOWERS, type GameEvent } from '@td/shared';
-import { net } from './net.js';
+import { net, wsPathJoin } from './net.js';
 import { pushFrame, saveName, startGameStore, store } from './store.js';
 import { addPing, addShake, initRenderer, resetRenderer, towerFired } from './renderer.js';
 import { initInput } from './input.js';
@@ -133,6 +133,13 @@ function wireNet(): void {
     store.isHost = msg.isHost;
     history.replaceState(null, '', `#${msg.code}`);
     $('overlay-reconnect').hidden = true;
+    // a partir de ahora, cualquier reconexión se une a esta sala por su código
+    net.setReconnect(wsPathJoin(msg.code), {
+      type: 'join_room',
+      name: store.name,
+      token: store.token,
+      code: msg.code,
+    });
     if (store.screen === 'home') switchScreen('lobby');
   });
 
@@ -221,33 +228,24 @@ function wireNet(): void {
   net.on('error', (msg) => {
     const wasReconnecting = !$('overlay-reconnect').hidden;
     $('overlay-reconnect').hidden = true;
-    if (store.screen === 'home') homeError(msg.msg);
+    const onHome = store.screen === 'home';
+    if (onHome) homeError(msg.msg);
     else toast(msg.msg);
-    if (msg.msg.startsWith('No existe la sala') || wasReconnecting) {
-      // la sala murió (p. ej. se reinició el servidor): volver al inicio limpio
+    // el intento de crear/unirse falló, o la sala murió: volver al inicio limpio
+    if (onHome || msg.msg.startsWith('No existe la sala') || wasReconnecting) {
       store.roomCode = '';
       store.game = null;
-      history.replaceState(null, '', location.pathname);
-      switchScreen('home');
+      net.disconnect();
+      if (!onHome) {
+        history.replaceState(null, '', location.pathname);
+        switchScreen('home');
+      }
     }
   });
 
+  // el mensaje inicial (create_room/join_room) lo envía el propio Net al abrir
   net.onOpen = () => {
-    // enlace directo: http://.../?n=Nombre#SALA entra sin pasar por el formulario
-    const qName = new URLSearchParams(location.search).get('n');
-    if (qName && !store.name) saveName(qName.slice(0, 16));
-
-    // reconexión automática a la sala si estábamos en una
-    if (store.roomCode && store.name) {
-      net.send({ type: 'join_room', name: store.name, token: store.token, code: store.roomCode });
-    } else {
-      $('overlay-reconnect').hidden = true;
-      // auto-unirse si la URL trae un código y ya tenemos nombre
-      const hashCode = location.hash.replace('#', '').trim().toUpperCase();
-      if (hashCode.length === 4 && store.name && store.screen === 'home') {
-        net.send({ type: 'join_room', name: store.name, token: store.token, code: hashCode });
-      }
-    }
+    $('overlay-reconnect').hidden = true;
   };
 
   net.onDrop = () => {
@@ -350,5 +348,19 @@ initHome();
 initLobby();
 wireHudButtons();
 wireNet();
-net.connect();
 switchScreen('home');
+
+// enlace directo ?n=Nombre#SALA: entra a la sala sin pasar por el formulario
+{
+  const qName = new URLSearchParams(location.search).get('n');
+  if (qName && !store.name) saveName(qName.slice(0, 16));
+  const hashCode = location.hash.replace('#', '').trim().toUpperCase();
+  if (hashCode.length === 4 && store.name) {
+    net.connect(wsPathJoin(hashCode), {
+      type: 'join_room',
+      name: store.name,
+      token: store.token,
+      code: hashCode,
+    });
+  }
+}

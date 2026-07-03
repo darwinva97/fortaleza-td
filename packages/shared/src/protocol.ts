@@ -10,6 +10,7 @@ import type {
 import { ENEMIES, ENEMY_ORDER } from './balance/enemies.js';
 import { affixMask } from './balance/affixes.js';
 import { TOWER_ORDER } from './balance/towers.js';
+import { MAPS } from './balance/maps.js';
 import { TICK_RATE } from './constants.js';
 
 // ---------- Lobby / sala ----------
@@ -26,6 +27,15 @@ export interface LobbyPlayer {
   color: string;
   isHost: boolean;
   connected: boolean;
+}
+
+// Los ajustes vienen del cliente: nunca confiar en ellos. Un mapId desconocido
+// haría throw en getMap() al iniciar la partida y tumbaría el proceso/DO entero.
+export function sanitizeSettings(s: Partial<RoomSettings> | undefined): RoomSettings {
+  const mapId = s?.mapId && MAPS.some((m) => m.id === s.mapId) ? s.mapId : MAPS[0].id;
+  const mode = s?.mode === 'endless' ? 'endless' : 'classic';
+  const difficulty = s?.difficulty === 'easy' || s?.difficulty === 'hard' ? s.difficulty : 'normal';
+  return { mapId, mode, difficulty };
 }
 
 // ---------- Snapshot compacto (arrays para ahorrar bytes) ----------

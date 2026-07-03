@@ -1,4 +1,3 @@
-import type { WebSocket } from 'ws';
 import {
   buildSnap,
   createGame,
@@ -7,6 +6,7 @@ import {
   makePlayer,
   makeSimContext,
   midJoinGold,
+  sanitizeSettings,
   stepGame,
   GAME_SPEEDS,
   MAX_PLAYERS,
@@ -21,10 +21,15 @@ import {
   type ServerMsg,
   type SimContext,
 } from '@td/shared';
-import { sanitizeSettings } from '@td/shared';
-import { saveHighscore } from './highscores.js';
+import { saveScore } from './scores.js';
 
-export interface RoomPlayer {
+export interface Env {
+  ASSETS: Fetcher;
+  ROOM: DurableObjectNamespace;
+  SCORES?: KVNamespace;
+}
+
+interface RoomPlayer {
   id: string;
   token: string;
   name: string;
@@ -35,40 +40,115 @@ export interface RoomPlayer {
 
 const CHAT_MAX = 200;
 
-export class Room {
-  readonly code: string;
-  players: RoomPlayer[] = [];
-  settings: RoomSettings;
-  game: GameState | null = null;
-  simCtx: SimContext | null = null;
-  private pendingCmds: PlayerCommand[] = [];
-  private interval: ReturnType<typeof setInterval> | null = null;
-  private paused = false;
-  private speed = 1; // steps de simulación por tick de red (x1/x2/x3)
-  private lastPingAt = new Map<string, number>(); // rate-limit de pings por jugador
-  private nextPlayerNum = 1;
-  emptySince: number | null = Date.now();
-  private onEmpty: (room: Room) => void;
+// Una sala = un Durable Object. Reutiliza toda la simulación de @td/shared;
+// solo el transporte (WebSocket) y la orquestación son específicos de Cloudflare.
+// Mientras haya un WebSocket abierto, el DO permanece en memoria (sin hibernar),
+// así el estado de la partida vive en RAM igual que en el servidor Node.
+export class RoomDO {
+  private env: Env;
+  private code = '';
+  private initialized = false;
+  private reserved = false;
 
-  constructor(code: string, settings: RoomSettings, onEmpty: (room: Room) => void) {
-    this.code = code;
-    this.settings = sanitizeSettings(settings);
-    this.onEmpty = onEmpty;
+  private players: RoomPlayer[] = [];
+  private settings: RoomSettings = sanitizeSettings(undefined);
+  private game: GameState | null = null;
+  private simCtx: SimContext | null = null;
+  private pendingCmds: PlayerCommand[] = [];
+  private loop: ReturnType<typeof setInterval> | null = null;
+  private paused = false;
+  private speed = 1;
+  private lastPingAt = new Map<string, number>();
+  private nextPlayerNum = 1;
+
+  constructor(_state: DurableObjectState, env: Env) {
+    this.env = env;
+  }
+
+  // ---------- entrada HTTP (reserva de código + upgrade a WebSocket) ----------
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+
+    // reserva atómica de un código libre (la usa el Worker al crear una sala)
+    if (url.pathname === '/reserve') {
+      if (this.initialized || this.reserved) return new Response('taken', { status: 409 });
+      this.reserved = true;
+      this.code = (url.searchParams.get('code') ?? '').toUpperCase();
+      return new Response('ok');
+    }
+
+    if (request.headers.get('Upgrade') !== 'websocket') {
+      return new Response('expected websocket', { status: 426 });
+    }
+    if (!this.code) this.code = (url.searchParams.get('code') ?? '').toUpperCase();
+
+    const pair = new WebSocketPair();
+    const client = pair[0];
+    const server = pair[1];
+    this.acceptSocket(server);
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  private acceptSocket(ws: WebSocket): void {
+    ws.accept();
+    ws.addEventListener('message', (ev: MessageEvent) => {
+      let msg: ClientMsg;
+      try {
+        msg = JSON.parse(ev.data as string) as ClientMsg;
+      } catch {
+        return;
+      }
+      try {
+        this.handleMessage(ws, msg);
+      } catch (err) {
+        console.error('[room] error procesando mensaje', (msg as { type?: string })?.type, err);
+        this.sendTo(ws, { type: 'error', msg: 'Mensaje inválido' });
+      }
+    });
+    const drop = () => this.dropSocket(ws);
+    ws.addEventListener('close', drop);
+    ws.addEventListener('error', drop);
+  }
+
+  // ---------- utilidades de socket ----------
+
+  private sendTo(ws: WebSocket, msg: ServerMsg): void {
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+  }
+
+  private send(player: RoomPlayer, msg: ServerMsg): void {
+    if (player.ws && player.ws.readyState === WebSocket.OPEN) player.ws.send(JSON.stringify(msg));
+  }
+
+  private broadcast(msg: ServerMsg): void {
+    const data = JSON.stringify(msg);
+    for (const p of this.players) {
+      if (p.ws && p.ws.readyState === WebSocket.OPEN) p.ws.send(data);
+    }
+  }
+
+  private systemMsg(text: string): void {
+    this.broadcast({ type: 'chat', from: '', color: '#9e9e9e', text });
+  }
+
+  private connectedCount(): number {
+    return this.players.filter((p) => p.ws).length;
   }
 
   // ---------- gestión de jugadores ----------
 
-  addPlayer(name: string, token: string, ws: WebSocket): RoomPlayer | string {
+  private addPlayer(name: string, token: string, ws: WebSocket): RoomPlayer | string {
     const existing = this.players.find((p) => p.token === token);
     if (existing) {
-      // reconexión
       existing.ws?.close();
       existing.ws = ws;
       existing.name = (name || existing.name).slice(0, 16);
       this.markConnected(existing.id, true);
+      this.reviveLoop();
       return existing;
     }
-    if (this.players.filter((p) => p.ws).length >= MAX_PLAYERS) return 'La sala está llena';
+    if (this.connectedCount() >= MAX_PLAYERS) return 'La sala está llena';
     const player: RoomPlayer = {
       id: `p${this.nextPlayerNum++}`,
       token,
@@ -78,28 +158,21 @@ export class Room {
       isHost: this.players.length === 0,
     };
     this.players.push(player);
-    this.emptySince = null;
 
-    // si la partida ya empezó, entra con oro de compensación
     if (this.game && !this.game.over) {
       this.game.players.push(
-        makePlayer(
-          { id: player.id, name: player.name, color: player.color },
-          midJoinGold(this.game.wave),
-        ),
+        makePlayer({ id: player.id, name: player.name, color: player.color }, midJoinGold(this.game.wave)),
       );
       this.systemMsg(`${player.name} se unió a la partida`);
-      // los demás necesitan la lista de jugadores actualizada
       for (const p of this.players) {
         if (p !== player) this.send(p, { type: 'game_started', init: this.gameInit(p.id) });
       }
+      this.reviveLoop();
     }
     return player;
   }
 
-  // Tras el room_joined: si hay partida en curso, reenviar el estado inicial
-  // (cubre tanto a los que entran a mitad de partida como a los que reconectan).
-  sendGameStateTo(player: RoomPlayer): void {
+  private sendGameStateTo(player: RoomPlayer): void {
     if (this.game && !this.game.over) {
       this.send(player, { type: 'game_started', init: this.gameInit(player.id) });
       if (this.speed !== 1) this.send(player, { type: 'speed', speed: this.speed, by: '' });
@@ -107,14 +180,13 @@ export class Room {
     }
   }
 
-  dropSocket(ws: WebSocket): void {
+  private dropSocket(ws: WebSocket): void {
     const player = this.players.find((p) => p.ws === ws);
     if (!player) return;
     player.ws = null;
     this.markConnected(player.id, false);
 
     if (!this.game) {
-      // en el lobby los desconectados se eliminan de la sala
       this.players = this.players.filter((p) => p !== player);
     }
     if (player.isHost) {
@@ -125,37 +197,22 @@ export class Room {
         this.systemMsg(`${next.name} ahora es el anfitrión`);
       }
     }
-    if (this.players.every((p) => !p.ws)) {
-      this.emptySince = Date.now();
-    }
     this.broadcastLobby();
+
+    // sin nadie conectado, paramos el loop para que el DO pueda liberarse
+    // (si alguien reconecta antes de que se evacúe, reviveLoop lo reanuda)
+    if (this.connectedCount() === 0 && this.loop) {
+      clearInterval(this.loop);
+      this.loop = null;
+    }
   }
 
-  private markConnected(playerId: string, connected: boolean) {
+  private markConnected(playerId: string, connected: boolean): void {
     const gp = this.game?.players.find((p) => p.id === playerId);
     if (gp) gp.connected = connected;
   }
 
-  // ---------- mensajería ----------
-
-  send(player: RoomPlayer, msg: ServerMsg): void {
-    if (player.ws && player.ws.readyState === player.ws.OPEN) {
-      player.ws.send(JSON.stringify(msg));
-    }
-  }
-
-  broadcast(msg: ServerMsg): void {
-    const data = JSON.stringify(msg);
-    for (const p of this.players) {
-      if (p.ws && p.ws.readyState === p.ws.OPEN) p.ws.send(data);
-    }
-  }
-
-  systemMsg(text: string): void {
-    this.broadcast({ type: 'chat', from: '', color: '#9e9e9e', text });
-  }
-
-  lobbyPlayers(): LobbyPlayer[] {
+  private lobbyPlayers(): LobbyPlayer[] {
     return this.players.map((p) => ({
       id: p.id,
       name: p.name,
@@ -165,7 +222,7 @@ export class Room {
     }));
   }
 
-  broadcastLobby(): void {
+  private broadcastLobby(): void {
     this.broadcast({
       type: 'lobby_state',
       players: this.lobbyPlayers(),
@@ -174,7 +231,7 @@ export class Room {
     });
   }
 
-  gameInit(forPlayerId: string) {
+  private gameInit(forPlayerId: string) {
     return {
       mapId: this.game!.mapId,
       mode: this.game!.mode,
@@ -186,7 +243,7 @@ export class Room {
 
   // ---------- partida ----------
 
-  startGame(): void {
+  private startGame(): void {
     const map = getMap(this.settings.mapId);
     const seed = (Math.random() * 0xffffffff) | 0;
     this.game = createGame(
@@ -204,9 +261,15 @@ export class Room {
     for (const p of this.players) {
       this.send(p, { type: 'game_started', init: this.gameInit(p.id) });
     }
-    // por si se reinicia dentro de la ventana de gracia de endGame()
-    if (this.interval) clearInterval(this.interval);
-    this.interval = setInterval(() => this.tick(), TICK_MS);
+    this.reviveLoop(true);
+  }
+
+  // arranca (o reanuda) el bucle de simulación si hay partida activa y jugadores
+  private reviveLoop(force = false): void {
+    if (!this.game || this.game.over) return;
+    if (this.loop && !force) return;
+    if (this.loop) clearInterval(this.loop);
+    this.loop = setInterval(() => this.tick(), TICK_MS);
   }
 
   private tick(): void {
@@ -214,16 +277,13 @@ export class Room {
     const cmds = this.pendingCmds;
     this.pendingCmds = [];
     const wasOver = this.game.over !== null;
-    // a velocidad x2/x3 se simulan varios pasos por tick de red (un solo snapshot)
     const events = stepGame(this.game, this.simCtx, cmds);
     for (let i = 1; i < this.speed && !this.game.over; i++) {
       events.push(...stepGame(this.game, this.simCtx, []));
     }
     this.broadcast({ type: 'tick', t: this.game.tick, snap: buildSnap(this.game), events });
 
-    if (this.game.over && !wasOver) {
-      this.endGame();
-    }
+    if (this.game.over && !wasOver) this.endGame();
   }
 
   private endGame(): void {
@@ -248,7 +308,7 @@ export class Room {
       })),
     };
     if (g.mode === 'endless') {
-      saveHighscore({
+      void saveScore(this.env, {
         names: g.players.map((p) => p.name),
         wave: g.wave,
         mapId: g.mapId,
@@ -256,12 +316,10 @@ export class Room {
         date: new Date().toISOString(),
       });
     }
-    // dejar correr unos ticks más para que el cliente vea la explosión final
     setTimeout(() => {
-      // si el anfitrión ya reinició en esta ventana, no destruir la partida nueva
-      if (this.game !== g) return;
-      if (this.interval) clearInterval(this.interval);
-      this.interval = null;
+      if (this.game !== g) return; // ya se reinició
+      if (this.loop) clearInterval(this.loop);
+      this.loop = null;
       this.game = null;
       this.simCtx = null;
       this.broadcast({ type: 'game_over', stats });
@@ -269,15 +327,43 @@ export class Room {
     }, 1200);
   }
 
-  stop(): void {
-    if (this.interval) clearInterval(this.interval);
-    this.interval = null;
-    for (const p of this.players) p.ws?.close();
-  }
-
   // ---------- entrada de mensajes ----------
 
-  handleMessage(ws: WebSocket, msg: ClientMsg): void {
+  private handleMessage(ws: WebSocket, msg: ClientMsg): void {
+    // crear / unirse crean el vínculo socket↔jugador; el resto exige jugador ya ligado
+    if (msg.type === 'create_room') {
+      if (this.initialized) {
+        this.sendTo(ws, { type: 'error', msg: 'Ese código ya está en uso, intenta de nuevo' });
+        return;
+      }
+      this.initialized = true;
+      this.settings = sanitizeSettings(msg.settings);
+      const player = this.addPlayer(msg.name, msg.token, ws);
+      if (typeof player === 'string') {
+        this.sendTo(ws, { type: 'error', msg: player });
+        return;
+      }
+      this.sendTo(ws, { type: 'room_joined', code: this.code, playerId: player.id, isHost: player.isHost });
+      this.broadcastLobby();
+      return;
+    }
+
+    if (msg.type === 'join_room') {
+      if (!this.initialized) {
+        this.sendTo(ws, { type: 'error', msg: `No existe la sala "${this.code}"` });
+        return;
+      }
+      const player = this.addPlayer(msg.name, msg.token, ws);
+      if (typeof player === 'string') {
+        this.sendTo(ws, { type: 'error', msg: player });
+        return;
+      }
+      this.sendTo(ws, { type: 'room_joined', code: this.code, playerId: player.id, isHost: player.isHost });
+      this.broadcastLobby();
+      this.sendGameStateTo(player);
+      return;
+    }
+
     const player = this.players.find((p) => p.ws === ws);
     if (!player) return;
 
@@ -333,7 +419,7 @@ export class Room {
       case 'map_ping': {
         if (!this.game) break;
         const now = Date.now();
-        if (now - (this.lastPingAt.get(player.id) ?? 0) < 600) break; // máx ~1.6/s
+        if (now - (this.lastPingAt.get(player.id) ?? 0) < 600) break;
         const map = getMap(this.game.mapId);
         const x = Number(msg.x);
         const y = Number(msg.y);
@@ -356,13 +442,6 @@ export class Room {
       case 'ping':
         this.send(player, { type: 'pong', t: msg.t });
         break;
-    }
-  }
-
-  maybeCleanup(maxIdleMs: number): void {
-    if (this.emptySince !== null && Date.now() - this.emptySince > maxIdleMs) {
-      this.stop();
-      this.onEmpty(this);
     }
   }
 }

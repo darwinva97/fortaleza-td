@@ -11,7 +11,11 @@ import {
   type ServerMsg,
 } from '@td/shared';
 
-const URL = `ws://localhost:${process.env.PORT ?? 3000}/ws`;
+// Sirve tanto para el servidor Node (ignora el query) como para el Worker de
+// Cloudflare (enruta por ?create=1 / ?code=XXXX al Durable Object de la sala).
+const BASE = `ws://localhost:${process.env.PORT ?? 3000}/ws`;
+const wsUrl = (opts: { create: true } | { code: string }): string =>
+  'create' in opts ? `${BASE}?create=1` : `${BASE}?code=${opts.code}`;
 const failures: string[] = [];
 
 function assert(cond: boolean, msg: string): void {
@@ -29,9 +33,9 @@ class TestClient {
   msgs: ServerMsg[] = [];
   ticks: Extract<ServerMsg, { type: 'tick' }>[] = [];
 
-  constructor(name: string) {
+  constructor(name: string, url: string) {
     this.name = name;
-    this.ws = new WebSocket(URL);
+    this.ws = new WebSocket(url);
     this.ws.on('message', (raw) => {
       const msg = JSON.parse(String(raw)) as ServerMsg;
       if (msg.type === 'tick') this.ticks.push(msg);
@@ -68,7 +72,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function main(): Promise<void> {
   // 1. Ana crea la sala
-  const ana = new TestClient('Ana');
+  const ana = new TestClient('Ana', wsUrl({ create: true }));
   await ana.open();
   ana.send({
     type: 'create_room',
@@ -82,7 +86,7 @@ async function main(): Promise<void> {
   await ana.waitFor('lobby_state');
 
   // 2. Beto se une con el código
-  const beto = new TestClient('Beto');
+  const beto = new TestClient('Beto', wsUrl({ code: joined.code }));
   await beto.open();
   beto.send({ type: 'join_room', name: 'Beto', token: 'token-beto-test', code: joined.code });
   const joined2 = await beto.waitFor('room_joined');
@@ -149,7 +153,7 @@ async function main(): Promise<void> {
   // 8. Reconexión: Beto se cae y vuelve con el mismo token
   beto.ws.close();
   await sleep(300);
-  const beto2 = new TestClient('Beto2');
+  const beto2 = new TestClient('Beto2', wsUrl({ code: joined.code }));
   await beto2.open();
   beto2.send({ type: 'join_room', name: 'Beto', token: 'token-beto-test', code: joined.code });
   await beto2.waitFor('room_joined');

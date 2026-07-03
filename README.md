@@ -10,12 +10,17 @@ reconexión automática y estadísticas de fin de partida.
   y la **simulación completa**. Es TypeScript puro sin I/O: recibe estado + comandos y avanza un tick.
 - **`apps/server`** — Node + `ws`. Corre la simulación autoritativa a **15 ticks/s** por sala,
   valida cada comando (nadie puede hacer trampa desde el cliente) y difunde snapshots compactos.
+  Ideal para un VPS.
+- **`apps/worker`** — el mismo juego para **Cloudflare Workers + Durable Objects**: cada sala es
+  un Durable Object que reutiliza *exactamente* la simulación de `packages/shared`. El Worker sirve
+  el cliente estático y enruta cada WebSocket a la sala por su código. Sin servidor que administrar.
 - **`apps/client`** — Vite + TypeScript vanilla. El juego se dibuja en un `<canvas>` interpolando
   entre snapshots (el HUD es DOM normal). Partículas, audio procedural WebAudio y soporte táctil.
 
 El cliente **nunca** envía estado, solo intenciones (`colocar torre en (x,y)`). Por eso no puede
 pasar lo del juego anterior: aunque haya 300 monstruos, el cliente solo pinta un canvas y el
-servidor solo manda ~15 mensajes/s.
+servidor solo manda ~15 mensajes/s. El cliente es agnóstico del backend: crea la sala conectándose
+a `/ws?create=1` (el backend asigna un código libre) y se une con `/ws?code=XXXX`.
 
 ## Contenido
 
@@ -54,13 +59,16 @@ pnpm dev          # servidor en :3000 + Vite en :5173 (abre http://localhost:517
 ## Pruebas
 
 ```bash
-pnpm check        # typecheck de los 3 paquetes
+pnpm check        # typecheck de los 4 paquetes (shared, server, client, worker)
 pnpm simtest      # simula una partida completa con bots + verifica determinismo
 pnpm build && pnpm start &
 pnpm wstest       # test end-to-end real: 2 clientes WS, sala, torre, oleada, reconexión
+# el wstest sirve para ambos backends:
+#   Node:  pnpm build && pnpm start &  ;  pnpm wstest
+#   Worker: pnpm cf:dev &  ;  PORT=8787 pnpm wstest
 ```
 
-## Producción
+## Producción (Node)
 
 ```bash
 pnpm build        # cliente → apps/client/dist, servidor → apps/server/dist/server.js
@@ -68,6 +76,38 @@ pnpm start        # todo en http://localhost:3000 (sirve el cliente y el WebSock
 ```
 
 Variables: `PORT` (default 3000), `TD_DATA_DIR` (récords, default `./data`).
+
+## Deploy en Cloudflare (Workers + Durable Objects)
+
+Sin servidor que administrar; corre en el edge global. Cada sala es un Durable Object.
+
+```bash
+# una vez: iniciar sesión en Cloudflare
+npx wrangler login
+
+# probar en local (arranca el Worker con Durable Objects reales en http://localhost:8787)
+pnpm cf:dev
+
+# desplegar (compila el cliente y sube el Worker)
+pnpm cf:deploy
+```
+
+La configuración está en [`apps/worker/wrangler.jsonc`](apps/worker/wrangler.jsonc). El Worker sirve el
+cliente (`apps/client/dist`) como SPA y maneja `/ws` y `/api/*`.
+
+**Récords (opcional).** El leaderboard usa KV; si no lo configuras, el juego funciona igual pero sin
+tabla de récords. Para activarlo:
+
+```bash
+npx wrangler kv namespace create SCORES   # copia el id que imprime
+```
+
+y descomenta el bloque `kv_namespaces` en `wrangler.jsonc` pegando ese id.
+
+**Notas / límites.** Mientras hay jugadores conectados a una sala, su Durable Object se mantiene en
+memoria (se factura por tiempo activo, no por hibernación); para partidas en familia es baratísimo.
+Si **todos** los jugadores se desconectan a la vez, la sala se libera (como si el servidor se
+reiniciara) — mientras quede al menos uno conectado, la reconexión de los demás funciona.
 
 ## Deploy en Hetzner (Ubuntu/Debian)
 

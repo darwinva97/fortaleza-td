@@ -7,9 +7,11 @@
     "dev": "concurrently -n server,client -c blue,green \"pnpm --filter @td/server dev\" \"pnpm --filter @td/client dev\"",
     "build": "pnpm --filter @td/client build && pnpm --filter @td/server build",
     "start": "node apps/server/dist/server.js",
-    "check": "tsc -b packages/shared apps/server apps/client",
+    "check": "tsc -b packages/shared apps/server apps/client apps/worker",
     "simtest": "tsx tools/simtest.ts",
-    "wstest": "tsx tools/wstest.ts"
+    "wstest": "tsx tools/wstest.ts",
+    "cf:dev": "pnpm --filter @td/client build && pnpm --filter @td/worker dev",
+    "cf:deploy": "pnpm --filter @td/client build && pnpm --filter @td/worker deploy"
   },
   "devDependencies": {
     "@td/shared": "workspace:*",
@@ -21,10 +23,12 @@
   },
   "pnpm": {
     "onlyBuiltDependencies": [
-      "esbuild"
+      "esbuild",
+      "workerd"
     ],
     "allowBuilds": {
-      "esbuild": true
+      "esbuild": true,
+      "workerd": true
     }
   }
 }

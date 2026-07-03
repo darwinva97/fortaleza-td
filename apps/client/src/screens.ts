@@ -1,5 +1,5 @@
 import { MAPS, type EndStats, type HighscoreEntry, type MapDef, type RoomSettings } from '@td/shared';
-import { net } from './net.js';
+import { net, wsPathCreate, wsPathJoin } from './net.js';
 import { saveName, store } from './store.js';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -184,11 +184,8 @@ export function initHome(): void {
   $('btn-create').addEventListener('click', () => {
     const name = requireName();
     if (!name) return;
-    if (!net.connected) {
-      homeError('Conectando con el servidor… intenta de nuevo en un segundo');
-      return;
-    }
-    net.send({ type: 'create_room', name, token: store.token, settings: { ...homeSel } });
+    // conecta a una sala nueva (el backend asigna un código libre) y crea al abrir
+    net.connect(wsPathCreate(), { type: 'create_room', name, token: store.token, settings: { ...homeSel } });
   });
 
   $('btn-join').addEventListener('click', () => joinFromInput());
@@ -220,12 +217,8 @@ function joinFromInput(): void {
     homeError('El código tiene 4 letras');
     return;
   }
-  if (!net.connected) {
-    homeError('Conectando con el servidor… intenta de nuevo en un segundo');
-    return;
-  }
   homeError('');
-  net.send({ type: 'join_room', name, token: store.token, code });
+  net.connect(wsPathJoin(code), { type: 'join_room', name, token: store.token, code });
 }
 
 async function loadHighscores(): Promise<void> {
@@ -261,7 +254,7 @@ export function initLobby(): void {
 
   $('btn-start').addEventListener('click', () => net.send({ type: 'start_game' }));
   $('btn-leave').addEventListener('click', () => {
-    net.send({ type: 'leave_room' });
+    net.disconnect(); // cierra el socket: el servidor nos saca de la sala
     store.roomCode = '';
     store.game = null;
     history.replaceState(null, '', location.pathname);

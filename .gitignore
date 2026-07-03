@@ -4,3 +4,4 @@ dist-types/
 *.tsbuildinfo
 data/
 .DS_Store
+.wrangler/
