@@ -41,7 +41,8 @@ a `/ws?create=1` (el backend asigna un código libre) y se une con `/ws?code=XXX
 - Modos **Clásico** (20 oleadas) e **Infinito** (con tabla de récords), 3 dificultades,
   y **velocidad x1/x2/x3** controlada por el anfitrión.
 - Co-op de hasta 8: vidas compartidas, oro individual, bonus por llamar la oleada antes,
-  entrar a mitad de partida, pausa del anfitrión, chat y pantalla final con podio y MVP.
+  pausa del anfitrión, chat y pantalla final con podio y MVP. Con la partida en curso
+  nadie nuevo puede entrar (la reconexión de los que ya jugaban sí funciona).
 - **Gráficos vectoriales procedurales** en canvas: torres con torretas que rotan y retroceden,
   12 enemigos animados, partículas ambientales por tema (nieve, brasas…), estelas y screen shake.
 - **Pensado para el celular**: cámara con zoom (pellizco/rueda) y paneo (arrastrar), doble toque

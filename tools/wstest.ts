@@ -150,7 +150,15 @@ async function main(): Promise<void> {
   assert(events.some((e) => e.e === 'wave_start'), 'llegó el evento de inicio de oleada');
   assert(events.some((e) => e.e === 'death' || e.e === 'hit'), 'la torre dispara (hay hits o bajas)');
 
-  // 8. Reconexión: Beto se cae y vuelve con el mismo token
+  // 8. Con la partida en curso, un jugador NUEVO no puede entrar (ni con el código)
+  const carla = new TestClient('Carla', wsUrl({ code: joined.code }));
+  await carla.open();
+  carla.send({ type: 'join_room', name: 'Carla', token: 'token-carla-test', code: joined.code });
+  const rejected = await carla.waitFor('error');
+  assert(rejected.msg.includes('ya comenzó'), 'un jugador nuevo no puede entrar con la partida empezada');
+  carla.ws.close();
+
+  // 9. Reconexión: Beto se cae y vuelve con el mismo token
   beto.ws.close();
   await sleep(300);
   const beto2 = new TestClient('Beto2', wsUrl({ code: joined.code }));

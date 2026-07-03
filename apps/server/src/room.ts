@@ -4,9 +4,7 @@ import {
   createGame,
   getMap,
   makePlacementContext,
-  makePlayer,
   makeSimContext,
-  midJoinGold,
   stepGame,
   GAME_SPEEDS,
   MAX_PLAYERS,
@@ -68,6 +66,9 @@ export class Room {
       this.markConnected(existing.id, true);
       return existing;
     }
+    // con la partida en curso no entra nadie nuevo, aunque tenga el código
+    // (la reconexión de los que ya jugaban sí funciona, por token, arriba)
+    if (this.game && !this.game.over) return 'La partida ya comenzó, espera a que termine';
     if (this.players.filter((p) => p.ws).length >= MAX_PLAYERS) return 'La sala está llena';
     const player: RoomPlayer = {
       id: `p${this.nextPlayerNum++}`,
@@ -79,21 +80,6 @@ export class Room {
     };
     this.players.push(player);
     this.emptySince = null;
-
-    // si la partida ya empezó, entra con oro de compensación
-    if (this.game && !this.game.over) {
-      this.game.players.push(
-        makePlayer(
-          { id: player.id, name: player.name, color: player.color },
-          midJoinGold(this.game.wave),
-        ),
-      );
-      this.systemMsg(`${player.name} se unió a la partida`);
-      // los demás necesitan la lista de jugadores actualizada
-      for (const p of this.players) {
-        if (p !== player) this.send(p, { type: 'game_started', init: this.gameInit(p.id) });
-      }
-    }
     return player;
   }
 

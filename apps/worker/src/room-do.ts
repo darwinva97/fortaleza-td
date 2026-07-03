@@ -3,9 +3,7 @@ import {
   createGame,
   getMap,
   makePlacementContext,
-  makePlayer,
   makeSimContext,
-  midJoinGold,
   sanitizeSettings,
   stepGame,
   GAME_SPEEDS,
@@ -148,6 +146,9 @@ export class RoomDO {
       this.reviveLoop();
       return existing;
     }
+    // con la partida en curso no entra nadie nuevo, aunque tenga el código
+    // (la reconexión de los que ya jugaban sí funciona, por token, arriba)
+    if (this.game && !this.game.over) return 'La partida ya comenzó, espera a que termine';
     if (this.connectedCount() >= MAX_PLAYERS) return 'La sala está llena';
     const player: RoomPlayer = {
       id: `p${this.nextPlayerNum++}`,
@@ -158,17 +159,6 @@ export class RoomDO {
       isHost: this.players.length === 0,
     };
     this.players.push(player);
-
-    if (this.game && !this.game.over) {
-      this.game.players.push(
-        makePlayer({ id: player.id, name: player.name, color: player.color }, midJoinGold(this.game.wave)),
-      );
-      this.systemMsg(`${player.name} se unió a la partida`);
-      for (const p of this.players) {
-        if (p !== player) this.send(p, { type: 'game_started', init: this.gameInit(p.id) });
-      }
-      this.reviveLoop();
-    }
     return player;
   }
 
