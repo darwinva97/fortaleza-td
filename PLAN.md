@@ -16,14 +16,16 @@ y deben ejecutarse con ese modelo (cambiar el modelo antes de lanzarlas).
 - ✅ F2.1 Repeticiones (seed+comandos, motor determinista, seek; identidad probada) — `b39cd09`
 - ✅ F2.2 Modo Horda (bucle + derrota por saturación + cansancio anti-esponja) — `b5ba3b9`
 
+**Fase 4 — Contenido (en curso)**
+- ✅ F4.1 +5 monstruos, +2 jefes y oleadas Green TD (inmunidad/fuga escalonada/bendecida/telegrafía) — `8ef72da`
+
 **Pendiente:** (🧠 = ejecutar con Fable-5)
-- ⏳ F4.1 · Opus · Monstruos + sistema de oleadas Green TD (inmunidad/fuga escalonada/oleada bendecida) — *recomendado siguiente*
-- ⏳ F4.2 · Opus · Torres nuevas + Rango II de specs (procs con identidad)
+- ⏳ F4.2 · Opus · Torres nuevas + Rango II de specs (procs con identidad) — *recomendado siguiente*
 - ⏳ F4.3 · 🧠 Fable-5 · Fusión de torres (6 recetas)
 - ⏳ F3.1 · 🧠 Fable-5 · Música procedural adaptativa — *mejor al final (sabor, no bloquea)*
 - ⏳ F5.1 · 🧠 Fable-5 · Balance global + revisión adversarial + release en Cloudflare
 
-`BALANCE_VERSION` actual: **3** (subió con élites→2, horda→3). Los replays guardan su versión.
+`BALANCE_VERSION` actual: **4** (subió con élites→2, horda→3, F4.1→4). Los replays guardan su versión.
 
 **Reglas de ejecución para el orquestador (aplican a TODAS las tareas):**
 
@@ -220,7 +222,7 @@ Que suene BIEN es la parte difícil; por eso va a Fable-5.
 
 ## Fase 4 — Gran contenido
 
-### F4.1 · +5 monstruos, +2 jefes y sistema de oleadas Green TD — Opus 4.8 · riesgo medio-alto
+### ✅ F4.1 · +5 monstruos, +2 jefes y sistema de oleadas Green TD — HECHO `8ef72da`
 
 Solo enemigos que crean decisiones nuevas (añadir al FINAL de `ENEMY_ORDER`):
 
@@ -327,8 +329,8 @@ Element TD style, pero con recetas CURADAS (no combinatoria):
 | F1.4 Espectador que guía | Opus 4.8 | ✅ hecho | `0ec0936` |
 | F2.1 Repeticiones | 🧠 Fable-5 | ✅ hecho | `b39cd09` |
 | F2.2 Modo Horda | Opus 4.8 | ✅ hecho | `b5ba3b9` |
-| F4.1 Monstruos + oleadas Green TD | Opus 4.8 | ⏳ pendiente (recomendado siguiente) | — |
-| F4.2 Torres + Rango II | Opus 4.8 | ⏳ pendiente | — |
+| F4.1 Monstruos + oleadas Green TD | Opus 4.8 | ✅ hecho | `8ef72da` |
+| F4.2 Torres + Rango II | Opus 4.8 | ⏳ pendiente (recomendado siguiente) | — |
 | F4.3 Fusión de torres | 🧠 **Fable-5** | ⏳ pendiente | — |
 | F3.1 Música procedural | 🧠 **Fable-5** | ⏳ pendiente (mejor al final) | — |
 | F5.1 Balance global + revisión + release | 🧠 **Fable-5** | ⏳ pendiente (cierre) | — |
