@@ -150,12 +150,39 @@ async function main(): Promise<void> {
   assert(events.some((e) => e.e === 'wave_start'), 'llegó el evento de inicio de oleada');
   assert(events.some((e) => e.e === 'death' || e.e === 'hit'), 'la torre dispara (hay hits o bajas)');
 
-  // 8. Con la partida en curso, un jugador NUEVO no puede entrar (ni con el código)
+  // 8. Con la partida en curso, un token NUEVO entra como ESPECTADOR (F1.4):
+  //    ve la partida en vivo y puede guiar (chat con prefijo 👁, sugerir torres).
   const carla = new TestClient('Carla', wsUrl({ code: joined.code }));
   await carla.open();
   carla.send({ type: 'join_room', name: 'Carla', token: 'token-carla-test', code: joined.code });
-  const rejected = await carla.waitFor('error');
-  assert(rejected.msg.includes('ya comenzó'), 'un jugador nuevo no puede entrar con la partida empezada');
+  const carlaJoined = await carla.waitFor('room_joined');
+  assert(carlaJoined.spectator === true, 'un token nuevo entra como espectador con la partida en curso');
+  assert(!carlaJoined.isHost, 'el espectador no es anfitrión');
+  // recibe el estado de la partida para renderizar + ticks en vivo
+  const carlaInit = await carla.waitFor('game_started');
+  assert(carlaInit.init.players.length === 2, 'el espectador recibe el init de la partida en curso');
+  await sleep(1200);
+  assert(carla.ticks.length > 10, `el espectador ve la partida (${carla.ticks.length} ticks)`);
+
+  // su chat llega a los jugadores con el prefijo 👁
+  carla.send({ type: 'chat', text: 'pongan un cañón ahí!' });
+  const specChat = await ana.waitFor('chat');
+  assert(specChat.from.startsWith('👁'), `el chat del espectador lleva prefijo 👁 (from="${specChat.from}")`);
+  assert(specChat.text === 'pongan un cañón ahí!', 'el chat del espectador llega con su texto');
+
+  // su sugerencia de torre (map_ping + towerType) se reenvía a los jugadores
+  carla.send({ type: 'map_ping', x: 3, y: 3, towerType: 'cannon' });
+  const suggestion = await ana.waitFor('map_ping');
+  assert(suggestion.towerType === 'cannon', 'la sugerencia de torre del espectador llega con towerType');
+  assert(suggestion.by.startsWith('👁'), 'la sugerencia se atribuye al espectador (prefijo 👁)');
+
+  // un comando de juego del espectador se IGNORA (no puede colocar torres)
+  const towersBefore = ana.ticks[ana.ticks.length - 1].snap.towers.length;
+  carla.send({ type: 'cmd', cmd: { kind: 'place', towerType: 'archer', cx: 0, cy: 0 } });
+  await sleep(600);
+  const towersAfter = ana.ticks[ana.ticks.length - 1].snap.towers.length;
+  assert(towersAfter === towersBefore, 'el cmd de un espectador se ignora (no coloca torres)');
+
   carla.ws.close();
 
   // 9. Reconexión: Beto se cae y vuelve con el mismo token

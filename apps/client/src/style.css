@@ -417,6 +417,34 @@ html, body {
 #hud-placing b { color: var(--accent-hi); }
 #hud-placing .sep { color: var(--fg-dim); margin: 0 6px; }
 
+/* banner persistente de espectador */
+#spectator-banner {
+  position: absolute;
+  top: 52px; left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  max-width: calc(100% - 24px);
+  text-align: center;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #eceff1;
+  background: linear-gradient(180deg, rgba(69, 90, 120, 0.95), rgba(48, 63, 88, 0.95));
+  border: 1px solid rgba(176, 190, 197, 0.55);
+  border-radius: 999px;
+  padding: 6px 16px;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  pointer-events: none;
+}
+
+/* tarjeta de torre armada en "modo sugerencia" (no coloca, sugiere) */
+.tcard.suggesting {
+  border-color: #4fc3f7;
+  box-shadow: 0 0 14px rgba(79, 195, 247, 0.45);
+  transform: translateY(-4px);
+}
+
 #hud-towers {
   position: absolute;
   bottom: 0; left: 0; right: 0;

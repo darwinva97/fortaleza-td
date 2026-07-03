@@ -5,6 +5,7 @@ import type {
   GameMode,
   GameState,
   TargetMode,
+  TowerTypeId,
   WaveComp,
 } from './types.js';
 import { ENEMIES, ENEMY_ORDER } from './balance/enemies.js';
@@ -187,7 +188,7 @@ export type ClientMsg =
   | { type: 'pause' }
   | { type: 'resume' }
   | { type: 'set_speed'; speed: number }
-  | { type: 'map_ping'; x: number; y: number } // ping cooperativo en el mapa
+  | { type: 'map_ping'; x: number; y: number; towerType?: TowerTypeId } // ping cooperativo (opcional: sugerir una torre)
   | { type: 'ping'; t: number };
 
 // ---------- Mensajes servidor -> cliente ----------
@@ -202,7 +203,7 @@ export interface GameInit {
 
 export type ServerMsg =
   | { type: 'error'; msg: string }
-  | { type: 'room_joined'; code: string; playerId: string; isHost: boolean }
+  | { type: 'room_joined'; code: string; playerId: string; isHost: boolean; spectator?: boolean }
   | { type: 'lobby_state'; players: LobbyPlayer[]; settings: RoomSettings; inGame: boolean }
   | { type: 'game_started'; init: GameInit }
   | { type: 'tick'; t: number; snap: Snap; events: GameEvent[] }
@@ -211,5 +212,5 @@ export type ServerMsg =
   | { type: 'paused'; by: string }
   | { type: 'resumed' }
   | { type: 'speed'; speed: number; by: string }
-  | { type: 'map_ping'; x: number; y: number; by: string; color: string }
+  | { type: 'map_ping'; x: number; y: number; by: string; color: string; towerType?: TowerTypeId }
   | { type: 'pong'; t: number };

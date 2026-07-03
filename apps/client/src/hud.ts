@@ -51,6 +51,18 @@ export function buildTowerBar(): void {
       <span class="tcost">🪙${def.levels[0].cost}</span>
     `;
     card.addEventListener('click', () => {
+      // espectador: la barra funciona en "modo sugerencia" — no coloca; arma el
+      // siguiente toque en el mapa como sugerencia de torre (map_ping + towerType)
+      if (store.spectator) {
+        store.suggestType = store.suggestType === type ? null : type;
+        // sugerir y pinear son excluyentes; desarmar el ping si estaba armado
+        if (store.suggestType) {
+          store.pingArmed = false;
+          $('btn-ping').classList.remove('armed');
+        }
+        syncTowerBar();
+        return;
+      }
       const sel = store.game?.selection;
       setPlacing(sel?.kind === 'placing' && sel.towerType === type ? null : type);
     });
@@ -103,10 +115,39 @@ export function syncTowerBar(): void {
   const placing = gs.selection?.kind === 'placing' ? gs.selection.towerType : null;
   for (const card of document.querySelectorAll<HTMLElement>('.tcard')) {
     const type = card.dataset.type as TowerTypeId;
-    card.classList.toggle('selected', placing === type);
-    card.classList.toggle('poor', gold < TOWERS[type].levels[0].cost);
+    if (store.spectator) {
+      // el espectador no coloca ni gasta: solo "modo sugerencia" (celeste), sin
+      // marca de "sin oro"
+      card.classList.remove('selected', 'poor');
+      card.classList.toggle('suggesting', store.suggestType === type);
+    } else {
+      card.classList.toggle('selected', placing === type);
+      card.classList.toggle('poor', gold < TOWERS[type].levels[0].cost);
+    }
   }
-  syncPlacingInfo();
+  if (!store.spectator) syncPlacingInfo();
+}
+
+// ---------- modo espectador ----------
+
+// Aplica (o revierte) el modo espectador de la UI del juego: banner persistente,
+// oculta el oro propio, los botones de acción de jugador (llamar oleada, pausa,
+// velocidad) y el panel de mejora/venta. La barra de torres se mantiene (en modo
+// sugerencia). Se llama al entrar a la partida (jugador o espectador).
+export function applySpectatorUI(): void {
+  const spec = store.spectator;
+  $('spectator-banner').hidden = !spec;
+  $('hud-gold').hidden = spec;
+  if (spec) {
+    // un espectador nunca ve estos controles (ya se ocultan por !isHost, pero por
+    // si acaso: un espectador jamás es anfitrión)
+    $('btn-callwave').hidden = true;
+    $('btn-pause').hidden = true;
+    $('btn-speed').hidden = true;
+    $('btn-resume').hidden = true;
+    hidePanel();
+    if (store.game) store.game.selection = null;
+  }
 }
 
 // ---------- panel de torre seleccionada ----------
@@ -319,8 +360,9 @@ export function onTick(snap: Snap): void {
   }
 
   // botón de llamar oleada, con el bonus de oro que ganarías ahora mismo
+  // (los espectadores no llaman oleadas: nunca lo ven)
   const btn = $('btn-callwave');
-  if (!snap.active && snap.over === 0) {
+  if (!store.spectator && !snap.active && snap.over === 0) {
     btn.hidden = false;
     const bonus = snap.interludeSec * CALL_WAVE_GOLD_PER_SEC;
     $('callwave-timer').textContent = `${snap.interludeSec}s +🪙${bonus}`;

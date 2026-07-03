@@ -4,7 +4,7 @@ import { net, wsPathJoin } from './net.js';
 import { pushFrame, saveName, startGameStore, store } from './store.js';
 import { addPing, addShake, initRenderer, isMinimapOn, resetRenderer, toggleMinimap, towerFired } from './renderer.js';
 import { initInput } from './input.js';
-import { buildTowerBar, hidePanel, onTick, toast, addChat, refreshPanel, syncSpeedButton } from './hud.js';
+import { applySpectatorUI, buildTowerBar, hidePanel, onTick, toast, addChat, refreshPanel, syncSpeedButton, syncTowerBar } from './hud.js';
 import { hideEnd, homeError, initHome, initLobby, renderLobby, showEnd, switchScreen } from './screens.js';
 import { beam, burst, clearParticles, floatText, line, ring } from './particles.js';
 import { sfx, setSfxVolume, setMusicVolume, unlockAudio } from './audio.js';
@@ -138,6 +138,7 @@ function wireNet(): void {
     store.playerId = msg.playerId;
     store.roomCode = msg.code;
     store.isHost = msg.isHost;
+    store.spectator = msg.spectator ?? false;
     history.replaceState(null, '', `#${msg.code}`);
     $('overlay-reconnect').hidden = true;
     // a partir de ahora, cualquier reconexión se une a esta sala por su código
@@ -153,7 +154,13 @@ function wireNet(): void {
   net.on('lobby_state', (msg) => {
     store.lobby = { players: msg.players, settings: msg.settings, inGame: msg.inGame };
     const me = msg.players.find((p) => p.id === store.playerId);
-    if (me) store.isHost = me.isHost;
+    if (me) {
+      store.isHost = me.isHost;
+      // si aparezco en la lista de jugadores es que fui convertido a jugador al
+      // terminar la partida: ya no soy espectador
+      store.spectator = false;
+      $('spectator-banner').hidden = true;
+    }
     renderLobby();
     $('btn-pause').hidden = !store.isHost;
     $('btn-speed').hidden = !store.isHost;
@@ -178,6 +185,7 @@ function wireNet(): void {
 
     startGameStore(msg.init);
     store.pingArmed = false;
+    store.suggestType = null;
     $('btn-ping').classList.remove('armed');
     clearParticles();
     resetRenderer();
@@ -190,6 +198,9 @@ function wireNet(): void {
     $('btn-pause').hidden = !store.isHost;
     $('btn-speed').hidden = !store.isHost;
     syncSpeedButton();
+    // modo espectador de la UI (banner + ocultar controles de jugador). Para un
+    // jugador normal esto lo desactiva (deja la UI completa).
+    applySpectatorUI();
   });
 
   net.on('tick', (msg) => {
@@ -228,7 +239,7 @@ function wireNet(): void {
   });
 
   net.on('map_ping', (msg) => {
-    addPing(msg.x, msg.y, msg.color, msg.by);
+    addPing(msg.x, msg.y, msg.color, msg.by, msg.towerType);
     const gw = store.game?.map.gridW;
     sfx.ping(gw ? Math.max(-1, Math.min(1, (msg.x / gw) * 2 - 1)) : 0);
   });
@@ -286,6 +297,11 @@ function wireHudButtons(): void {
   $('btn-ping').addEventListener('click', () => {
     store.pingArmed = !store.pingArmed;
     $('btn-ping').classList.toggle('armed', store.pingArmed);
+    // pinear y sugerir son excluyentes: al armar el ping, desarma la sugerencia
+    if (store.pingArmed && store.suggestType) {
+      store.suggestType = null;
+      syncTowerBar();
+    }
   });
 
   // minimapa: mostrar/ocultar (persistido en localStorage vía el renderer)

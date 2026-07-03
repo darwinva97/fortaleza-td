@@ -159,9 +159,11 @@ const projPrev = new Map<number, { x: number; y: number }>();
 interface Ambient { x: number; y: number; vx: number; vy: number; life: number; max: number; size: number; kind: Theme['ambient'] }
 const ambient: Ambient[] = [];
 
-// pings cooperativos: marcadores efímeros en el mapa con el color del jugador
-interface Ping { x: number; y: number; color: string; name: string; life: number }
+// pings cooperativos: marcadores efímeros en el mapa con el color del jugador.
+// Si trae towerType, es una SUGERENCIA de torre (fantasma de esa torre).
+interface Ping { x: number; y: number; color: string; name: string; life: number; towerType?: TowerTypeId }
 const PING_LIFE = 2.6;
+const SUGGEST_LIFE = 4.5; // las sugerencias de torre duran un poco más
 const pings: Ping[] = [];
 
 const toX = (x: number) => view.ox + x * view.scale;
@@ -236,9 +238,10 @@ export function addShake(mag: number): void {
   shake = Math.min(14, shake + mag);
 }
 
-// marca un ping cooperativo en (x, y) celdas
-export function addPing(x: number, y: number, color: string, name: string): void {
-  pings.push({ x, y, color, name, life: PING_LIFE });
+// marca un ping cooperativo en (x, y) celdas. Con towerType es una sugerencia de
+// torre: se dibuja el fantasma de esa torre en la celda (ver drawPings).
+export function addPing(x: number, y: number, color: string, name: string, towerType?: TowerTypeId): void {
+  pings.push({ x, y, color, name, life: towerType ? SUGGEST_LIFE : PING_LIFE, towerType });
   if (pings.length > 12) pings.shift();
 }
 
@@ -900,11 +903,16 @@ function drawAmbient(now: number): void {
 
 function drawPings(dt: number): void {
   const s = view.scale;
+  const now = performance.now();
   for (let i = pings.length - 1; i >= 0; i--) {
     const p = pings[i];
     p.life -= dt;
     if (p.life <= 0) {
       pings.splice(i, 1);
+      continue;
+    }
+    if (p.towerType) {
+      drawSuggestionPing(p, s, now);
       continue;
     }
     const age = 1 - p.life / PING_LIFE;
@@ -953,6 +961,48 @@ function drawPings(dt: number): void {
     g.fillText(p.name, x, my - s * 0.28);
     g.globalAlpha = 1;
   }
+}
+
+// Sugerencia de torre: fantasma semitransparente de la torre en la celda + una
+// etiqueta "nombre sugiere: NombreTorre". La celda es floor(x),floor(y).
+function drawSuggestionPing(p: Ping, s: number, now: number): void {
+  const type = p.towerType!;
+  const cx = Math.floor(p.x);
+  const cy = Math.floor(p.y);
+  const alpha = Math.min(1, p.life / 0.6); // fade out al final
+  const pulse = 0.5 + Math.sin(now / 260) * 0.12;
+
+  // anillo de sugerencia (celeste) bajo el fantasma
+  g.globalAlpha = alpha;
+  g.strokeStyle = p.color;
+  g.lineWidth = Math.max(1.5, s * 0.05);
+  g.setLineDash([s * 0.16, s * 0.1]);
+  g.beginPath();
+  g.arc(toX(cx + 0.5), toY(cy + 0.5), s * (0.42 + pulse * 0.06), 0, Math.PI * 2);
+  g.stroke();
+  g.setLineDash([]);
+
+  // fantasma de la torre (arte real, semitransparente) centrado en la celda
+  g.save();
+  g.globalAlpha = alpha * 0.72;
+  g.translate(toX(cx) + s / 2, toY(cy) + s / 2);
+  drawTowerArt(type, s, 1, now / 1000, { angle: -Math.PI / 2, recoil: 0, flash: 0 }, p.color, false);
+  g.restore();
+
+  // etiqueta "nombre sugiere: NombreTorre"
+  g.globalAlpha = alpha;
+  const label = `${p.name} sugiere: ${TOWERS[type].name}`;
+  const ty = toY(cy) - s * 0.28;
+  const tx = toX(cx + 0.5);
+  g.font = `bold ${Math.max(9, s * 0.2)}px system-ui, sans-serif`;
+  g.textAlign = 'center';
+  g.textBaseline = 'bottom';
+  g.strokeStyle = 'rgba(0,0,0,0.65)';
+  g.lineWidth = 3;
+  g.strokeText(label, tx, ty);
+  g.fillStyle = '#fff';
+  g.fillText(label, tx, ty);
+  g.globalAlpha = 1;
 }
 
 // ---------- interpolación ----------

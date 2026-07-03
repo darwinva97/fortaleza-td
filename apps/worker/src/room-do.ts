@@ -10,6 +10,7 @@ import {
   MAX_PLAYERS,
   PLAYER_COLORS,
   TICK_MS,
+  TOWER_ORDER,
   type ClientMsg,
   type EndStats,
   type GameState,
@@ -18,6 +19,7 @@ import {
   type RoomSettings,
   type ServerMsg,
   type SimContext,
+  type TowerTypeId,
 } from '@td/shared';
 import { saveScore } from './scores.js';
 
@@ -36,7 +38,23 @@ interface RoomPlayer {
   isHost: boolean;
 }
 
+// Espectador: entra con la partida en curso. Ve la partida y puede guiar (chat
+// con prefijo 👁, pings, sugerencias de torre) pero no juega. Al acabar la
+// partida se convierte en jugador (ver endGame).
+interface Spectator {
+  id: string;
+  token: string;
+  name: string;
+  ws: WebSocket;
+}
+
+type JoinResult =
+  | { kind: 'player'; player: RoomPlayer }
+  | { kind: 'spectator'; spectator: Spectator }
+  | { kind: 'error'; msg: string };
+
 const CHAT_MAX = 200;
+const MAX_SPECTATORS = 8;
 
 // Una sala = un Durable Object. Reutiliza toda la simulación de @td/shared;
 // solo el transporte (WebSocket) y la orquestación son específicos de Cloudflare.
@@ -49,6 +67,7 @@ export class RoomDO {
   private reserved = false;
 
   private players: RoomPlayer[] = [];
+  private spectators: Spectator[] = [];
   private settings: RoomSettings = sanitizeSettings(undefined);
   private game: GameState | null = null;
   private simCtx: SimContext | null = null;
@@ -58,6 +77,7 @@ export class RoomDO {
   private speed = 1;
   private lastPingAt = new Map<string, number>();
   private nextPlayerNum = 1;
+  private nextSpectatorNum = 1;
 
   constructor(_state: DurableObjectState, env: Env) {
     this.env = env;
@@ -119,10 +139,15 @@ export class RoomDO {
     if (player.ws && player.ws.readyState === WebSocket.OPEN) player.ws.send(JSON.stringify(msg));
   }
 
+  // difunde a jugadores Y espectadores: ticks, chat, pausa, velocidad, pings y
+  // game_over deben verlos también los que están mirando.
   private broadcast(msg: ServerMsg): void {
     const data = JSON.stringify(msg);
     for (const p of this.players) {
       if (p.ws && p.ws.readyState === WebSocket.OPEN) p.ws.send(data);
+    }
+    for (const s of this.spectators) {
+      if (s.ws.readyState === WebSocket.OPEN) s.ws.send(data);
     }
   }
 
@@ -130,26 +155,49 @@ export class RoomDO {
     this.broadcast({ type: 'chat', from: '', color: '#9e9e9e', text });
   }
 
+  // participantes con socket abierto: mantienen el DO vivo y el loop corriendo.
+  // Los espectadores cuentan: la partida sigue aunque no queden jugadores.
   private connectedCount(): number {
-    return this.players.filter((p) => p.ws).length;
+    return this.players.filter((p) => p.ws).length + this.spectators.length;
   }
 
   // ---------- gestión de jugadores ----------
 
-  private addPlayer(name: string, token: string, ws: WebSocket): RoomPlayer | string {
+  private addPlayer(name: string, token: string, ws: WebSocket): JoinResult {
     const existing = this.players.find((p) => p.token === token);
     if (existing) {
+      // reconexión de un jugador que ya jugaba (por token): sigue siendo jugador
       existing.ws?.close();
       existing.ws = ws;
       existing.name = (name || existing.name).slice(0, 16);
       this.markConnected(existing.id, true);
       this.reviveLoop();
-      return existing;
+      return { kind: 'player', player: existing };
     }
-    // con la partida en curso no entra nadie nuevo, aunque tenga el código
+    // un espectador que reconecta (mismo token) sigue de espectador
+    const spec = this.spectators.find((s) => s.token === token);
+    if (spec) {
+      spec.ws.close();
+      spec.ws = ws;
+      spec.name = (name || spec.name).slice(0, 16);
+      this.reviveLoop();
+      return { kind: 'spectator', spectator: spec };
+    }
+    // con la partida en curso, un token nuevo entra como espectador
     // (la reconexión de los que ya jugaban sí funciona, por token, arriba)
-    if (this.game && !this.game.over) return 'La partida ya comenzó, espera a que termine';
-    if (this.connectedCount() >= MAX_PLAYERS) return 'La sala está llena';
+    if (this.game && !this.game.over) {
+      if (this.spectators.length >= MAX_SPECTATORS) return { kind: 'error', msg: 'Hay demasiados espectadores, intenta luego' };
+      const spectator: Spectator = {
+        id: `s${this.nextSpectatorNum++}`,
+        token,
+        name: (name || 'Espectador').slice(0, 16),
+        ws,
+      };
+      this.spectators.push(spectator);
+      this.reviveLoop();
+      return { kind: 'spectator', spectator };
+    }
+    if (this.players.filter((p) => p.ws).length >= MAX_PLAYERS) return { kind: 'error', msg: 'La sala está llena' };
     const player: RoomPlayer = {
       id: `p${this.nextPlayerNum++}`,
       token,
@@ -159,7 +207,7 @@ export class RoomDO {
       isHost: this.players.length === 0,
     };
     this.players.push(player);
-    return player;
+    return { kind: 'player', player };
   }
 
   private sendGameStateTo(player: RoomPlayer): void {
@@ -170,7 +218,30 @@ export class RoomDO {
     }
   }
 
+  // igual que sendGameStateTo pero para un espectador (usa su propio id como
+  // youAre, aunque no controle nada) para que renderice la partida.
+  private sendGameStateToSpectator(spec: Spectator): void {
+    if (this.game && !this.game.over) {
+      this.sendTo(spec.ws, { type: 'game_started', init: this.gameInit(spec.id) });
+      if (this.speed !== 1) this.sendTo(spec.ws, { type: 'speed', speed: this.speed, by: '' });
+      if (this.paused) this.sendTo(spec.ws, { type: 'paused', by: '' });
+    }
+  }
+
   private dropSocket(ws: WebSocket): void {
+    // ¿era un espectador? quitarlo de la lista
+    const spec = this.spectators.find((s) => s.ws === ws);
+    if (spec) {
+      this.spectators = this.spectators.filter((s) => s !== spec);
+      // los espectadores cuentan para mantener el loop vivo: si el último se va
+      // (y no quedan jugadores conectados) el loop se para
+      if (this.connectedCount() === 0 && this.loop) {
+        clearInterval(this.loop);
+        this.loop = null;
+      }
+      return;
+    }
+
     const player = this.players.find((p) => p.ws === ws);
     if (!player) return;
     player.ws = null;
@@ -189,8 +260,8 @@ export class RoomDO {
     }
     this.broadcastLobby();
 
-    // sin nadie conectado, paramos el loop para que el DO pueda liberarse
-    // (si alguien reconecta antes de que se evacúe, reviveLoop lo reanuda)
+    // sin nadie conectado (ni jugadores ni espectadores), paramos el loop para
+    // que el DO pueda liberarse (si alguien reconecta antes, reviveLoop reanuda)
     if (this.connectedCount() === 0 && this.loop) {
       clearInterval(this.loop);
       this.loop = null;
@@ -313,8 +384,37 @@ export class RoomDO {
       this.game = null;
       this.simCtx = null;
       this.broadcast({ type: 'game_over', stats });
+      this.promoteSpectators();
       this.broadcastLobby();
     }, 1200);
+  }
+
+  // Al terminar la partida, los espectadores pasan a ser jugadores de pleno
+  // derecho en el lobby (respetando MAX_PLAYERS). Los que no caben siguen como
+  // espectadores.
+  private promoteSpectators(): void {
+    if (this.spectators.length === 0) return;
+    const stayed: Spectator[] = [];
+    for (const spec of this.spectators) {
+      if (this.players.filter((p) => p.ws).length >= MAX_PLAYERS) {
+        stayed.push(spec);
+        continue;
+      }
+      const player: RoomPlayer = {
+        // conserva el id del espectador para que el cliente se reconozca como el
+        // mismo participante (si no, quedaría atascado en modo espectador)
+        id: spec.id,
+        token: spec.token,
+        name: spec.name,
+        color: PLAYER_COLORS[this.players.length % PLAYER_COLORS.length],
+        ws: spec.ws,
+        isHost: this.players.length === 0,
+      };
+      this.players.push(player);
+      // avísale que ya es jugador (actualiza spectator/isHost en el cliente)
+      this.send(player, { type: 'room_joined', code: this.code, playerId: player.id, isHost: player.isHost, spectator: false });
+    }
+    this.spectators = stayed;
   }
 
   // ---------- entrada de mensajes ----------
@@ -328,11 +428,21 @@ export class RoomDO {
       }
       this.initialized = true;
       this.settings = sanitizeSettings(msg.settings);
-      const player = this.addPlayer(msg.name, msg.token, ws);
-      if (typeof player === 'string') {
-        this.sendTo(ws, { type: 'error', msg: player });
+      const res = this.addPlayer(msg.name, msg.token, ws);
+      if (res.kind === 'error') {
+        this.sendTo(ws, { type: 'error', msg: res.msg });
         return;
       }
+      // crear una sala nunca produce espectador (no hay partida), pero por
+      // simetría con join_room lo tratamos igual
+      if (res.kind === 'spectator') {
+        const spec = res.spectator;
+        this.sendTo(ws, { type: 'room_joined', code: this.code, playerId: spec.id, isHost: false, spectator: true });
+        this.broadcastLobby();
+        this.sendGameStateToSpectator(spec);
+        return;
+      }
+      const player = res.player;
       this.sendTo(ws, { type: 'room_joined', code: this.code, playerId: player.id, isHost: player.isHost });
       this.broadcastLobby();
       return;
@@ -343,14 +453,29 @@ export class RoomDO {
         this.sendTo(ws, { type: 'error', msg: `No existe la sala "${this.code}"` });
         return;
       }
-      const player = this.addPlayer(msg.name, msg.token, ws);
-      if (typeof player === 'string') {
-        this.sendTo(ws, { type: 'error', msg: player });
+      const res = this.addPlayer(msg.name, msg.token, ws);
+      if (res.kind === 'error') {
+        this.sendTo(ws, { type: 'error', msg: res.msg });
         return;
       }
+      if (res.kind === 'spectator') {
+        const spec = res.spectator;
+        this.sendTo(ws, { type: 'room_joined', code: this.code, playerId: spec.id, isHost: false, spectator: true });
+        this.broadcastLobby();
+        this.sendGameStateToSpectator(spec);
+        return;
+      }
+      const player = res.player;
       this.sendTo(ws, { type: 'room_joined', code: this.code, playerId: player.id, isHost: player.isHost });
       this.broadcastLobby();
       this.sendGameStateTo(player);
+      return;
+    }
+
+    // canal restringido de espectador: solo chat, ping de mapa y keepalive
+    const spectator = this.spectators.find((s) => s.ws === ws);
+    if (spectator) {
+      this.handleSpectatorMessage(spectator, msg);
       return;
     }
 
@@ -406,24 +531,9 @@ export class RoomDO {
         break;
       }
 
-      case 'map_ping': {
-        if (!this.game) break;
-        const now = Date.now();
-        if (now - (this.lastPingAt.get(player.id) ?? 0) < 600) break;
-        const map = getMap(this.game.mapId);
-        const x = Number(msg.x);
-        const y = Number(msg.y);
-        if (!Number.isFinite(x) || !Number.isFinite(y)) break;
-        this.lastPingAt.set(player.id, now);
-        this.broadcast({
-          type: 'map_ping',
-          x: Math.max(0, Math.min(map.gridW, x)),
-          y: Math.max(0, Math.min(map.gridH, y)),
-          by: player.name,
-          color: player.color,
-        });
+      case 'map_ping':
+        this.emitPing(player.id, player.name, player.color, msg);
         break;
-      }
 
       case 'leave_room':
         ws.close();
@@ -433,5 +543,48 @@ export class RoomDO {
         this.send(player, { type: 'pong', t: msg.t });
         break;
     }
+  }
+
+  // canal restringido de espectador (chat con prefijo 👁, ping y keepalive)
+  private handleSpectatorMessage(spec: Spectator, msg: ClientMsg): void {
+    switch (msg.type) {
+      case 'chat': {
+        const text = String(msg.text ?? '').slice(0, CHAT_MAX).trim();
+        if (!text) break;
+        // prefijo 👁 en el nombre para distinguir a quien mira de quien juega
+        this.broadcast({ type: 'chat', from: `👁 ${spec.name}`, color: '#b0bec5', text });
+        break;
+      }
+      case 'map_ping':
+        this.emitPing(spec.id, `👁 ${spec.name}`, '#b0bec5', msg);
+        break;
+      case 'ping':
+        this.sendTo(spec.ws, { type: 'pong', t: msg.t });
+        break;
+      // cmd, start_game, pause, resume, set_speed, set_settings, leave_room: ignorados
+    }
+  }
+
+  // ping cooperativo (de jugador o espectador), rate-limit por participante.
+  // Si trae towerType válido (de TOWER_ORDER) lo reenvía como sugerencia de torre.
+  private emitPing(id: string, by: string, color: string, msg: Extract<ClientMsg, { type: 'map_ping' }>): void {
+    if (!this.game) return;
+    const now = Date.now();
+    if (now - (this.lastPingAt.get(id) ?? 0) < 600) return;
+    const map = getMap(this.game.mapId);
+    const x = Number(msg.x);
+    const y = Number(msg.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    this.lastPingAt.set(id, now);
+    const towerType =
+      msg.towerType && (TOWER_ORDER as TowerTypeId[]).includes(msg.towerType) ? msg.towerType : undefined;
+    this.broadcast({
+      type: 'map_ping',
+      x: Math.max(0, Math.min(map.gridW, x)),
+      y: Math.max(0, Math.min(map.gridH, y)),
+      by,
+      color,
+      ...(towerType ? { towerType } : {}),
+    });
   }
 }

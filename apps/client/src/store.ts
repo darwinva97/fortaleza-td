@@ -61,7 +61,12 @@ export const store = {
   playerId: '',
   roomCode: '',
   isHost: false,
+  spectator: false, // true si entramos con la partida en curso (miramos, no jugamos)
   pingArmed: false, // el botón 📍 arma el siguiente toque como ping
+  // modo sugerencia: al armar una torre desde la barra, el siguiente toque en el
+  // mapa manda un map_ping con towerType en vez de colocar (espectadores; también
+  // disponible para jugadores). null = sin sugerencia armada.
+  suggestType: null as TowerTypeId | null,
   lobby: {
     players: [] as LobbyPlayer[],
     settings: { mapId: 'sendero', mode: 'classic', difficulty: 'normal' } as RoomSettings,

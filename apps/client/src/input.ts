@@ -38,13 +38,14 @@ function worldFromPoint(canvas: HTMLCanvasElement, clientX: number, clientY: num
   };
 }
 
-// envía un ping cooperativo en el punto de pantalla dado; devuelve true si se envió
-function sendPing(canvas: HTMLCanvasElement, clientX: number, clientY: number): boolean {
+// envía un ping cooperativo en el punto de pantalla dado; devuelve true si se envió.
+// Si `towerType` viene dado, es una sugerencia de torre (map_ping con towerType).
+function sendPing(canvas: HTMLCanvasElement, clientX: number, clientY: number, towerType?: TowerTypeId): boolean {
   const gs = store.game;
   if (!gs) return false;
   const w = worldFromPoint(canvas, clientX, clientY);
   if (w.x < -0.5 || w.y < -0.5 || w.x > gs.map.gridW + 0.5 || w.y > gs.map.gridH + 0.5) return false;
-  net.send({ type: 'map_ping', x: w.x, y: w.y });
+  net.send({ type: 'map_ping', x: w.x, y: w.y, ...(towerType ? { towerType } : {}) });
   if (navigator.vibrate) navigator.vibrate(15);
   return true;
 }
@@ -90,6 +91,14 @@ function tapSelect(canvas: HTMLCanvasElement, clientX: number, clientY: number, 
   const gs = store.game;
   if (!gs || !gs.latest || gs.over) return;
 
+  // modo sugerencia (torre armada desde la barra): el toque manda una sugerencia
+  // de torre (map_ping + towerType) en vez de colocar. Tiene prioridad sobre el
+  // ping normal. La sugerencia queda armada para poder sugerir varias.
+  if (store.suggestType) {
+    sendPing(canvas, clientX, clientY, store.suggestType);
+    return;
+  }
+
   // modo ping armado por el botón 📍: el siguiente toque es un ping.
   // solo se desarma si el toque cayó dentro del mapa y se envió de verdad.
   if (store.pingArmed) {
@@ -99,6 +108,9 @@ function tapSelect(canvas: HTMLCanvasElement, clientX: number, clientY: number, 
     }
     return;
   }
+
+  // el espectador no coloca torres ni abre el panel: cualquier otro toque no hace nada
+  if (store.spectator) return;
 
   const cell = cellFromPoint(canvas, clientX, clientY);
   if (!cell) {
@@ -342,11 +354,26 @@ export function initInput(canvas: HTMLCanvasElement): void {
     if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) return;
 
     if (e.key === 'Escape') {
+      if (store.spectator) {
+        store.suggestType = null;
+        syncTowerBar();
+        return;
+      }
       clearSelection();
       return;
     }
     const type = TOWER_ORDER.find((t) => TOWERS[t].hotkey === e.key);
     if (type) {
+      // espectador: la hotkey arma/desarma el "modo sugerencia" de esa torre
+      if (store.spectator) {
+        store.suggestType = store.suggestType === type ? null : type;
+        if (store.suggestType) {
+          store.pingArmed = false;
+          document.getElementById('btn-ping')?.classList.remove('armed');
+        }
+        syncTowerBar();
+        return;
+      }
       const current = store.game.selection;
       setPlacing(current?.kind === 'placing' && current.towerType === type ? null : type);
     }
