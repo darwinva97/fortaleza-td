@@ -72,6 +72,7 @@
         </div>
         <button id="btn-load-replay" class="btn ghost small">📂 Cargar repetición (.json)</button>
         <input id="replay-file" type="file" accept="application/json,.json" hidden />
+        <button id="btn-bestiary" class="btn ghost small">📖 Bestiario — conoce a los enemigos</button>
       </div>
     </section>
 
@@ -158,7 +159,6 @@
           <input id="set-music" type="range" min="0" max="100" step="1" />
           <span id="set-music-val" class="set-val">60%</span>
         </label>
-        <p class="hint set-hint">La música llega en una próxima actualización.</p>
       </div>
 
       <div id="spectator-banner" hidden>👁 Estás mirando — entrarás en la próxima partida</div>
@@ -207,6 +207,7 @@
           <h2>⏸ Pausa</h2>
           <p id="pause-by"></p>
           <button id="btn-resume" class="btn primary" hidden>Reanudar</button>
+          <button id="btn-bestiary-pause" class="btn ghost small">📖 Bestiario</button>
         </div>
       </div>
 
@@ -226,6 +227,16 @@
 
     <div id="overlay-reconnect" class="overlay" hidden>
       <div class="overlay-card panel"><h2>📡 Reconectando…</h2></div>
+    </div>
+
+    <!-- ============ BESTIARIO (desde Home o pausa) ============ -->
+    <div id="overlay-bestiary" class="overlay" hidden>
+      <div class="overlay-card panel bestiary-card">
+        <button id="bestiary-close" class="overlay-close" aria-label="Cerrar">✕</button>
+        <h2>📖 Bestiario</h2>
+        <p class="hint">Todos los enemigos y qué hace cada uno. 💀 = jefe.</p>
+        <div id="bestiary-grid" class="bestiary-grid"></div>
+      </div>
     </div>
 
   </div>

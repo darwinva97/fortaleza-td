@@ -684,6 +684,66 @@ html, body {
 .overlay-card h2 { font-size: 1.9rem; margin-bottom: 8px; }
 .overlay-card .btn { margin-top: 16px; }
 
+/* ---------- bestiario ---------- */
+.overlay-close {
+  position: absolute;
+  top: 10px; right: 12px;
+  background: transparent;
+  border: none;
+  color: var(--fg-dim);
+  font-size: 1.4rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 4px 6px;
+  margin: 0;
+}
+.overlay-close:hover { color: var(--fg); }
+.overlay-card.bestiary-card {
+  width: min(900px, 95vw);
+  max-height: 90vh;
+  overflow-y: auto;
+  text-align: left;
+  padding: 24px;
+}
+.bestiary-card > h2 { text-align: left; }
+.bestiary-grid {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+}
+.enemy-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+.enemy-card.boss { border-color: rgba(239, 83, 80, 0.6); background: rgba(239, 83, 80, 0.06); }
+.ecard-head { display: flex; align-items: center; gap: 8px; }
+.ecard-head .eicon { font-size: 1.6rem; line-height: 1; }
+.ecard-head .ename { font-weight: 700; font-size: 1rem; }
+.etraits { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0 6px; }
+.etrait {
+  font-size: 0.68rem;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  color: var(--fg-dim);
+  white-space: nowrap;
+}
+.etrait.boss { background: rgba(239, 83, 80, 0.18); color: #ff8a80; border-color: transparent; }
+.etrait.air { background: rgba(92, 107, 192, 0.22); color: #9fa8da; border-color: transparent; }
+.etrait.immune { background: rgba(66, 165, 245, 0.18); color: #90caf9; border-color: transparent; }
+.edesc { font-size: 0.8rem; line-height: 1.35; margin: 4px 0 8px; color: var(--fg); }
+.estats { display: flex; flex-wrap: wrap; gap: 10px; font-size: 0.78rem; color: var(--fg-dim); }
+.estats span { white-space: nowrap; }
+@media (max-width: 700px) {
+  .overlay-card.bestiary-card { padding: 18px 14px; }
+  .bestiary-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+  .enemy-card { padding: 8px 10px; }
+}
+
 /* podio de fin de partida */
 #end-podium {
   display: flex;
