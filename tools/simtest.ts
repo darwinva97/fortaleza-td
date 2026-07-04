@@ -861,6 +861,61 @@ console.log('— F4.1 · Zapador: aturde la torre más cercana (deja de disparar
   assert(st.towers.find((t) => t.id === 2800)!.damage > dmgBefore, 'la torre se LIBERA y vuelve a disparar cuando el Zapador muere');
 }
 
+console.log('— F4.4 · Zapadores coordinados: nunca aturden dos la misma torre —');
+{
+  const map = getMap('sendero');
+  const simCtx = makeSimContext(map, makePlacementContext(map));
+  const st = createGame('sendero', 'endless', 'normal', 563, [{ id: 'p1', name: 'A', color: '#fff' }]);
+  st.nextId = 8000; st.wave = 1; st.waveState = 'active'; st.spawnQueue = []; st.pendingWave = [];
+
+  // dos arqueros pegados al camino; dos zapadores llegan a la vez y AMBAS torres
+  // están al alcance de AMBOS: deben repartirse (uno cada torre), no apilarse.
+  const archerA = mkTower('archer', { id: 3200, cx: 5, cy: 1, level: 3, invested: 200 });
+  const archerB = mkTower('archer', { id: 3201, cx: 6, cy: 1, level: 3, invested: 200 });
+  st.towers.push(archerA, archerB);
+  const sap1 = mkEnemy('sapper', { id: 2300, hp: 100000, maxHp: 100000, x: 5.5, y: 2.5, wpIdx: 1 });
+  const sap2 = mkEnemy('sapper', { id: 2301, hp: 100000, maxHp: 100000, x: 6.5, y: 2.5, wpIdx: 1 });
+  st.enemies.push(sap1, sap2);
+
+  stepGame(st, simCtx, []);
+  assert(
+    sap1.stunTowerId > 0 && sap2.stunTowerId > 0 && sap1.stunTowerId !== sap2.stunTowerId,
+    `cada zapador aturde una torre DISTINTA (${sap1.stunTowerId} vs ${sap2.stunTowerId})`,
+  );
+  assert(
+    archerA.stunnedUntil > st.tick - 1 && archerB.stunnedUntil > st.tick - 1,
+    'con dos zapadores y dos torres, AMBAS torres quedan aturdidas',
+  );
+
+  // vendemos la torre del segundo zapador: como la otra ya está tomada por el
+  // primero, el segundo debe SEGUIR CAMINANDO (no re-aturdir la misma).
+  const takenBy1 = sap1.stunTowerId;
+  st.towers = st.towers.filter((t) => t.id !== sap2.stunTowerId);
+  const xBefore = sap2.x;
+  for (let i = 0; i < TICK_RATE; i++) stepGame(st, simCtx, []);
+  assert(sap1.stunTowerId === takenBy1, 'el primer zapador conserva su torre');
+  assert(sap2.stunTowerId === 0, 'el segundo zapador NO re-aturde la torre ya tomada');
+  assert(sap2.x > xBefore + 0.3, `el segundo zapador sigue caminando en busca de otra torre (x ${xBefore.toFixed(1)} → ${sap2.x.toFixed(1)})`);
+}
+
+console.log('— F4.4 · El Zapador ignora torres que no disparan (mina/estandarte) —');
+{
+  const map = getMap('sendero');
+  const simCtx = makeSimContext(map, makePlacementContext(map));
+  const st = createGame('sendero', 'endless', 'normal', 564, [{ id: 'p1', name: 'A', color: '#fff' }]);
+  st.nextId = 8000; st.wave = 1; st.waveState = 'active'; st.spawnQueue = []; st.pendingWave = [];
+  // solo hay una MINA junto al camino: aturdirla no haría nada, así que el zapador
+  // debe pasar de largo sin detenerse.
+  const bank = mkTower('bank', { id: 3300, cx: 5, cy: 1, level: 3, invested: 260 });
+  st.towers.push(bank);
+  const sap = mkEnemy('sapper', { id: 2400, hp: 100000, maxHp: 100000, x: 5.5, y: 2.5, wpIdx: 1 });
+  st.enemies.push(sap);
+  const xBefore = sap.x;
+  for (let i = 0; i < TICK_RATE; i++) stepGame(st, simCtx, []);
+  assert(sap.stunTowerId === 0 && bank.stunnedUntil === 0, 'el Zapador NO se detiene a aturdir una mina');
+  assert(sap.x > xBefore + 0.5, 'el Zapador sigue su camino si solo hay torres que no disparan');
+}
+
 console.log('— F4.1 · Behemot: aturde las torres en radio al cruzar una esquina —');
 {
   const map = getMap('sendero');
@@ -1019,6 +1074,63 @@ console.log('— F4.2 · Trampa de púas: SOLO se coloca sobre el camino —');
   assert(placementError(map, ctx, [], pathCell[0], pathCell[1], 'archer') === 'camino', 'una torre normal NO puede ir sobre el camino');
   // una torre normal fuera del camino: permitida
   assert(placementError(map, ctx, [], off[0], off[1], 'archer') === null, 'una torre normal SÍ va fuera del camino');
+}
+
+console.log('— F4.4 · Barril explosivo: detona UNA vez en área al ser pisado y desaparece —');
+{
+  const map = getMap('sendero');
+  const simCtx = makeSimContext(map, makePlacementContext(map));
+  const st = createGame('sendero', 'endless', 'normal', 701, [{ id: 'p1', name: 'A', color: '#fff' }]);
+  st.nextId = 8000; st.wave = 1; st.waveState = 'active'; st.spawnQueue = []; st.pendingWave = [];
+
+  // barril en una celda del camino (fila 2 de «sendero»); alrededor:
+  //  - un bruto INMUNE inmóvil PISANDO la celda (dispara la detonación; prueba que
+  //    el daño físico entra a inmunes y que la armadura sí descuenta)
+  //  - un goblin inmóvil DENTRO del radio (1.5 celdas) → debe morir
+  //  - un goblin inmóvil FUERA del radio (4 celdas) → intacto
+  const barrel = mkTower('boom', { id: 3400, cx: 8, cy: 2, level: 1, spec: -1, charges: 1, invested: 90 });
+  st.towers.push(barrel);
+  const brute = mkEnemy('brute', { id: 2500, hp: 100000, maxHp: 100000, spellImmune: true, speedMult: 0, x: 8.5, y: 2.5, wpIdx: 1 });
+  const near = mkEnemy('goblin', { id: 2501, hp: 32, maxHp: 32, speedMult: 0, x: 10.0, y: 2.5, wpIdx: 1 });
+  const far = mkEnemy('goblin', { id: 2502, hp: 32, maxHp: 32, speedMult: 0, x: 12.5, y: 2.5, wpIdx: 1 });
+  st.enemies.push(brute, near, far);
+
+  let sawSplash = false;
+  let sawPoof = false;
+  const events = stepGame(st, simCtx, []);
+  for (const ev of events) {
+    if (ev.e === 'hit' && ev.kind === 'splash' && ev.r >= 1.5) sawSplash = true;
+    if (ev.e === 'sell' && ev.refund === 0) sawPoof = true;
+  }
+  // bruto: 240 de explosión − 2 de armadura = 238 (el daño físico SÍ entra a inmunes)
+  assert(brute.hp === 100000 - 238, `la explosión daña al inmune descontando armadura (${(100000 - brute.hp).toFixed(0)} de daño)`);
+  assert(!st.enemies.some((e) => e.id === 2501), 'el goblin DENTRO del radio muere por la explosión');
+  assert(st.enemies.some((e) => e.id === 2502) && far.hp === 32, 'el goblin FUERA del radio queda intacto');
+  assert(!st.towers.some((t) => t.id === 3400), 'el barril se AUTODESTRUYE tras detonar (un solo uso)');
+  assert(sawSplash, 'la detonación emite un evento de explosión en área');
+  assert(sawPoof, 'la retirada del barril emite el evento de auto-venta (refund 0)');
+}
+
+console.log('— F4.4 · Barril explosivo: los voladores NI lo disparan NI lo sufren —');
+{
+  const map = getMap('sendero');
+  const simCtx = makeSimContext(map, makePlacementContext(map));
+  const st = createGame('sendero', 'endless', 'normal', 702, [{ id: 'p1', name: 'A', color: '#fff' }]);
+  st.nextId = 8000; st.wave = 1; st.waveState = 'active'; st.spawnQueue = []; st.pendingWave = [];
+  const barrel = mkTower('boom', { id: 3500, cx: 8, cy: 2, level: 1, spec: -1, charges: 1, invested: 90 });
+  st.towers.push(barrel);
+  // un murciélago inmóvil "sobre" la celda del barril: vuela, no lo pisa
+  const bat = mkEnemy('bat', { id: 2600, hp: 100000, maxHp: 100000, speedMult: 0, x: 8.5, y: 2.5, wpIdx: 1 });
+  st.enemies.push(bat);
+  for (let i = 0; i < TICK_RATE; i++) stepGame(st, simCtx, []);
+  assert(st.towers.some((t) => t.id === 3500), 'un volador NO dispara la detonación del barril');
+  assert(bat.hp === 100000, 'el volador no recibe daño del barril');
+
+  // colocación: mismas reglas que la Trampa (solo SOBRE el camino)
+  const ctx = makePlacementContext(map);
+  const off = buildCellCandidates('sendero')[0];
+  assert(placementError(map, ctx, [], 8, 2, 'boom') === null, 'el Barril SÍ se coloca sobre el camino');
+  assert(placementError(map, ctx, [], off[0], off[1], 'boom') === 'fuera_camino', 'el Barril NO se coloca fuera del camino');
 }
 
 console.log('— F4.2 · Alquimista: +30% de bounty en su radio, sin apilar —');

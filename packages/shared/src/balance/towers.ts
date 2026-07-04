@@ -14,6 +14,8 @@ export const TOWER_ORDER: TowerTypeId[] = [
   // F4.2 — al FINAL para no romper índices de snapshot
   'trap',
   'alchemist',
+  // F4.4 — al FINAL para no romper índices de snapshot
+  'boom',
 ];
 
 export const TOWERS: Record<TowerTypeId, TowerDef> = {
@@ -603,6 +605,32 @@ export const TOWERS: Record<TowerTypeId, TowerDef> = {
           auraBounty: 0.45,
         },
       },
+    ],
+  },
+
+  // ---------- F4.4 · Barril explosivo ----------
+  boom: {
+    id: 'boom',
+    name: 'Barril explosivo',
+    desc: 'Se coloca SOBRE el camino. Detona UNA vez cuando lo pisan: gran daño físico en área. Funciona contra inmunes.',
+    color: '#ff7043',
+    hotkey: 'w',
+    targetsAir: false,
+    targetsGround: true,
+    projectileKind: 'none',
+    onPathOnly: true,
+    detonates: true,
+    levels: [
+      // Un solo uso: `charges: 1` (la detonación la consume y el barril desaparece).
+      // `damage` es el daño de la explosión (físico, funciona vs inmunes) y `splash`
+      // su radio. No se mejora ni se especializa: es un botón de pánico barato.
+      { cost: 90, damage: 240, range: 0, cooldown: 0, splash: 1.7, charges: 1 },
+      { cost: 90, damage: 240, range: 0, cooldown: 0, splash: 1.7, charges: 1 },
+      { cost: 90, damage: 240, range: 0, cooldown: 0, splash: 1.7, charges: 1 },
+    ],
+    specs: [
+      { key: 'boom', name: 'Barril explosivo', desc: 'No se especializa.', cost: 0, damage: 240, range: 0, cooldown: 0, splash: 1.7, charges: 1 },
+      { key: 'boom', name: 'Barril explosivo', desc: 'No se especializa.', cost: 0, damage: 240, range: 0, cooldown: 0, splash: 1.7, charges: 1 },
     ],
   },
 };

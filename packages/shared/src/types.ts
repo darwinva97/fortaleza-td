@@ -14,7 +14,9 @@ export type TowerTypeId =
   | 'banner'
   // F4.2 — nuevas torres (al FINAL del orden de snapshot)
   | 'trap' // Trampa de púas: se coloca SOBRE el camino; daño físico por cargas
-  | 'alchemist'; // Alquimista: aura económica (+bounty por bajas en su radio)
+  | 'alchemist' // Alquimista: aura económica (+bounty por bajas en su radio)
+  // F4.4 — al FINAL del orden de snapshot
+  | 'boom'; // Barril explosivo: SOBRE el camino; detona una vez en área y desaparece
 
 export type EnemyTypeId =
   | 'goblin'
@@ -135,6 +137,9 @@ export interface TowerDef {
   // F4.2 · Trampa de púas: única torre construible SOBRE el camino (y solo ahí).
   // El resto de torres siguen sin poder ir sobre el camino.
   onPathOnly?: boolean;
+  // F4.4 · Barril explosivo: en cuanto un enemigo terrestre pisa su celda, DETONA
+  // (daño físico en radio `splash` a todos los terrestres) y se autodestruye.
+  detonates?: boolean;
 }
 
 export interface EnemyDef {

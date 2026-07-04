@@ -39,6 +39,8 @@ export const TOWER_ICONS: Record<TowerTypeId, string> = {
   // F4.2
   trap: '🪤',
   alchemist: '⚗️',
+  // F4.4
+  boom: '💥',
 };
 
 export const ENEMY_ICONS: Record<EnemyTypeId, string> = {
@@ -1757,6 +1759,66 @@ function drawTowerArt(
       g.fillStyle = `rgba(255,213,79,${0.5 + Math.sin(t * 4) * 0.4})`;
       g.beginPath();
       g.arc(s * 0.14, -s * 0.2, s * 0.035, 0, Math.PI * 2);
+      g.fill();
+      break;
+    }
+    case 'boom': {
+      // Barril de pólvora sobre el camino: cuerpo de madera con flejes metálicos,
+      // calavera de aviso y mecha encendida con chispa parpadeante.
+      const bw = s * 0.44;
+      const bh = s * 0.5;
+      // cuerpo (ligero abombado con dos tonos de duela)
+      g.fillStyle = '#6d4c41';
+      roundRect(g, -bw / 2, -bh / 2 + s * 0.06, bw, bh, s * 0.1);
+      g.fill();
+      g.fillStyle = 'rgba(0,0,0,0.18)';
+      roundRect(g, -bw / 2 + bw * 0.6, -bh / 2 + s * 0.06, bw * 0.4, bh, s * 0.1);
+      g.fill();
+      // duelas verticales
+      g.strokeStyle = 'rgba(62,39,35,0.9)';
+      g.lineWidth = Math.max(1, s * 0.02);
+      for (let i = -1; i <= 1; i++) {
+        g.beginPath();
+        g.moveTo(i * bw * 0.25, -bh / 2 + s * 0.08);
+        g.lineTo(i * bw * 0.25, bh / 2 + s * 0.04);
+        g.stroke();
+      }
+      // flejes metálicos
+      g.strokeStyle = '#90a4ae';
+      g.lineWidth = Math.max(1.5, s * 0.045);
+      for (const fy of [-bh * 0.24, bh * 0.24]) {
+        g.beginPath();
+        g.moveTo(-bw / 2, fy + s * 0.06);
+        g.lineTo(bw / 2, fy + s * 0.06);
+        g.stroke();
+      }
+      // calavera de aviso
+      g.fillStyle = '#eceff1';
+      g.beginPath();
+      g.arc(0, s * 0.06, s * 0.075, 0, Math.PI * 2);
+      g.fill();
+      g.fillStyle = '#37474f';
+      g.beginPath();
+      g.arc(-s * 0.027, s * 0.045, s * 0.02, 0, Math.PI * 2);
+      g.arc(s * 0.027, s * 0.045, s * 0.02, 0, Math.PI * 2);
+      g.fill();
+      // mecha con chispa parpadeante (¡está armado!)
+      const fx = bw * 0.12;
+      const fy = -bh / 2 + s * 0.06;
+      g.strokeStyle = '#8d6e63';
+      g.lineWidth = Math.max(1, s * 0.03);
+      g.beginPath();
+      g.moveTo(fx, fy);
+      g.quadraticCurveTo(fx + s * 0.1, fy - s * 0.12, fx + s * 0.03, fy - s * 0.2);
+      g.stroke();
+      const sparkle = 0.55 + Math.sin(t * 9) * 0.45;
+      g.fillStyle = `rgba(255,213,79,${sparkle})`;
+      g.beginPath();
+      g.arc(fx + s * 0.03, fy - s * 0.22, s * (0.045 + 0.02 * sparkle), 0, Math.PI * 2);
+      g.fill();
+      g.fillStyle = `rgba(255,112,67,${sparkle * 0.8})`;
+      g.beginPath();
+      g.arc(fx + s * 0.03, fy - s * 0.22, s * 0.022, 0, Math.PI * 2);
       g.fill();
       break;
     }

@@ -15,7 +15,7 @@ const PLACE_ERRORS: Record<Exclude<PlacementError, null>, string> = {
   camino: 'No se puede construir sobre el camino',
   bloqueado: 'Esa celda está bloqueada',
   ocupado: 'Ya hay una torre en esa celda',
-  fuera_camino: 'La Trampa solo se coloca SOBRE el camino',
+  fuera_camino: 'Esta torre solo se coloca SOBRE el camino',
 };
 
 function cellFromPoint(canvas: HTMLCanvasElement, clientX: number, clientY: number): { cx: number; cy: number } | null {

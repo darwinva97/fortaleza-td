@@ -350,6 +350,22 @@ function isBanner(lvl: { auraDamage?: number; auraHaste?: number }): boolean {
   return lvl.auraDamage !== undefined || lvl.auraHaste !== undefined;
 }
 
+// ¿Esta torre DISPARA? No disparan: la mina, la Escarcha Eterna, el Estandarte,
+// el Alquimista ni las torres de camino (Trampa/Barril). EXCEPCIÓN: el Señor de
+// la Guerra (`alsoFires`) tiene aura Y ADEMÁS dispara. La usan fireTower y el
+// Zapador (aturdir una torre que no dispara no hace nada, así que las ignora).
+function towerFires(tower: TowerState): boolean {
+  const lvl = statsOf(tower);
+  if (lvl.alsoFires) return true;
+  return !(
+    lvl.incomePerWave ||
+    lvl.slowAura ||
+    isBanner(lvl) ||
+    lvl.auraBounty !== undefined ||
+    TOWERS[tower.type].onPathOnly
+  );
+}
+
 // Calcula, por cada torre buffeada, el MEJOR aura de daño y de cadencia de todos
 // los Estandartes que la cubren (de CUALQUIER dueño, co-op). No se apila: se toma
 // el máximo de cada tipo, no la suma. Solo lee `state`; es determinista (orden
@@ -398,11 +414,7 @@ function fireTower(
   const towerDef = TOWERS[tower.type];
   const fusion = fusionOf(tower);
   const lvl = statsOf(tower);
-  // no disparan: la mina, la Escarcha Eterna, el Estandarte, el Alquimista (aura de
-  // bounty), la Trampa de púas (daña por contacto, ver stepTraps) ni el Corazón de
-  // Invierno (slowAura). EXCEPCIÓN: el Señor de la Guerra (`alsoFires`) tiene aura
-  // de Estandarte Y ADEMÁS dispara.
-  if (!lvl.alsoFires && (lvl.incomePerWave || lvl.slowAura || isBanner(lvl) || lvl.auraBounty !== undefined || towerDef.onPathOnly)) return;
+  if (!towerFires(tower)) return;
 
   // una torre fusionada dispara con el "cuerpo" de su fusión, no el de su tipo base
   const projectileKind = fusion ? fusion.projectileKind : towerDef.projectileKind;
@@ -659,12 +671,21 @@ function stepProjectiles(state: GameState, ctx: SimContext, events: GameEvent[])
   state.projectiles = alive;
 }
 
-// Torre viva más cercana a un punto, dentro de `maxDist` (celdas). Orden estable:
-// recorre `state.towers` en orden y desempata por el primero (determinista).
-function nearestTower(state: GameState, x: number, y: number, maxDist: number): TowerState | null {
+// Torre "aturdible" más cercana a un punto, dentro de `maxDist` (celdas), que
+// dispare de verdad y no esté ya reclamada por otro zapador este tick. Orden
+// estable: recorre `state.towers` en orden y desempata por el primero (determinista).
+function nearestSappableTower(
+  state: GameState,
+  x: number,
+  y: number,
+  maxDist: number,
+  claimed: Set<number>,
+): TowerState | null {
   let best: TowerState | null = null;
   let bestD = maxDist;
   for (const t of state.towers) {
+    if (claimed.has(t.id)) continue;
+    if (!towerFires(t)) continue; // aturdir una mina/aura/trampa no hace nada
     const d = dist(x, y, t.cx + 0.5, t.cy + 0.5);
     if (d < bestD) {
       bestD = d;
@@ -678,6 +699,11 @@ function stepEnemies(state: GameState, ctx: SimContext, events: GameEvent[]): vo
   const players = connectedCount(state);
   const speedMult = state.difficulty === 'easy' ? 0.9 : state.difficulty === 'hard' ? 1.08 : 1;
   const stunTicks = 2; // ticks que dura el aturdimiento del Zapador (se renueva cada tick)
+  const sapRange = 1.6; // alcance al que un zapador se para junto a una torre
+  // Torres ya reclamadas por un zapador ESTE tick: dos zapadores nunca aturden la
+  // misma torre (aturdir lo ya aturdido no aporta nada). Determinista: los enemigos
+  // se recorren en orden estable y el primero que llega se la queda.
+  const sapClaimed = new Set<number>();
 
   // longitud fija: las crías que nacen al morir un enemigo (veneno) NO deben
   // moverse/curar en su propio tick de nacimiento; se procesan en el siguiente
@@ -726,13 +752,29 @@ function stepEnemies(state: GameState, ctx: SimContext, events: GameEvent[]): vo
       rageMult = def.berserkMult ?? 1;
     }
 
-    // Zapador: si hay una torre viva a su alcance, se DETIENE junto a ella y la
-    // aturde mientras siga vivo (el aturdimiento se renueva cada tick; al morir el
-    // zapador, expira solo en `stunTicks`). Determinista: torre más cercana estable.
+    // Zapador: si hay una torre LIBRE a su alcance (que dispare y que ningún otro
+    // zapador esté aturdiendo), se DETIENE junto a ella y la aturde mientras siga
+    // vivo (el aturdimiento se renueva cada tick; al morir el zapador, expira solo
+    // en `stunTicks`). Si todas las torres cercanas ya están tomadas, SIGUE
+    // CAMINANDO en busca de otra. Prefiere quedarse con su torre actual para no
+    // saltar entre torres. Determinista: orden estable + set de reclamadas.
     let sapping = false;
     if (def.sapper) {
-      const tower = nearestTower(state, enemy.x, enemy.y, 1.6);
+      let tower: TowerState | null = null;
+      if (enemy.stunTowerId > 0) {
+        const cur = state.towers.find((t) => t.id === enemy.stunTowerId);
+        if (
+          cur &&
+          !sapClaimed.has(cur.id) &&
+          towerFires(cur) &&
+          dist(enemy.x, enemy.y, cur.cx + 0.5, cur.cy + 0.5) <= sapRange
+        ) {
+          tower = cur;
+        }
+      }
+      if (!tower) tower = nearestSappableTower(state, enemy.x, enemy.y, sapRange, sapClaimed);
       if (tower) {
+        sapClaimed.add(tower.id);
         tower.stunnedUntil = state.tick + stunTicks;
         enemy.stunTowerId = tower.id;
         sapping = true;
@@ -955,20 +997,52 @@ function stepTowers(state: GameState, ctx: SimContext, events: GameEvent[], aura
   }
 }
 
-// Trampa de púas (F4.2): NO dispara. Cada tick que hay ≥1 enemigo sobre su celda,
-// golpea a TODOS los de la celda (daño FÍSICO, funciona contra inmunes) y consume 1
-// carga. A 0 cargas se auto-elimina (poof discreto, SIN aviso de chat). Determinista: orden estable de
+// Torres de camino (F4.2/F4.4): NO disparan; reaccionan a los enemigos que pisan
+// su celda. Trampa de púas: cada tick con ≥1 enemigo encima golpea a TODOS los de
+// la celda (daño FÍSICO, funciona contra inmunes) y consume 1 carga. Barril
+// explosivo (`detonates`): en cuanto la pisan DETONA una única vez — daño físico
+// en radio `splash` a todos los terrestres — y desaparece. A 0 cargas se
+// auto-eliminan (poof discreto, SIN aviso de chat). Determinista: orden estable de
 // torres y enemigos, sin RNG. Se ejecuta tras el movimiento de enemigos.
 function stepTraps(state: GameState, ctx: SimContext, events: GameEvent[]): void {
   let removedAny = false;
   for (const trap of state.towers) {
     const def = TOWERS[trap.type];
-    if (!def.onPathOnly) continue; // solo las trampas
+    if (!def.onPathOnly) continue; // solo las torres de camino
     if (trap.charges <= 0) continue;
     const lvl = statsOf(trap);
-    // enemigos cuya celda coincide con la de la trampa (longitud fija: las crías que
-    // nazcan por una muerte no reciben este mismo golpe)
+    // longitud fija: las crías que nazcan por una muerte no reciben este mismo golpe
     const n = state.enemies.length;
+
+    if (def.detonates) {
+      // Barril: ¿algún enemigo terrestre vivo pisa su celda? → detonar.
+      let triggered = false;
+      for (let i = 0; i < n && !triggered; i++) {
+        const e = state.enemies[i];
+        if (e.hp <= 0 || ENEMIES[e.type].flying) continue;
+        if (Math.floor(e.x) === trap.cx && Math.floor(e.y) === trap.cy) triggered = true;
+      }
+      if (triggered) {
+        const bx = trap.cx + 0.5;
+        const by = trap.cy + 0.5;
+        const splash = lvl.splash ?? 1.5;
+        for (let i = 0; i < n; i++) {
+          const e = state.enemies[i];
+          if (e.hp <= 0 || ENEMIES[e.type].flying) continue; // explosión a ras de suelo
+          if (dist(bx, by, e.x, e.y) <= splash + ENEMIES[e.type].radius * e.radiusMult) {
+            // daño físico directo (funciona contra inmunes; la armadura sí cuenta)
+            damageEnemy(state, ctx, e, lvl.damage, false, trap.id, events, 0, 0, 0);
+          }
+        }
+        trap.charges = 0;
+        removedAny = true;
+        events.push({ e: 'hit', x: bx, y: by, r: splash, kind: 'splash' });
+        events.push({ e: 'sell', x: bx, y: by, refund: 0 });
+      }
+      continue;
+    }
+
+    // Trampa de púas: golpea a los enemigos cuya celda coincide con la suya.
     let hitAny = false;
     for (let i = 0; i < n; i++) {
       const e = state.enemies[i];

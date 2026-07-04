@@ -72,7 +72,7 @@
         </div>
         <button id="btn-load-replay" class="btn ghost small">📂 Cargar repetición (.json)</button>
         <input id="replay-file" type="file" accept="application/json,.json" hidden />
-        <button id="btn-bestiary" class="btn ghost small">📖 Bestiario — conoce a los enemigos</button>
+        <button id="btn-bestiary" class="btn ghost small">📖 Guía — enemigos, élites y fusiones</button>
       </div>
     </section>
 
@@ -139,6 +139,7 @@
         <div class="hud-group">
           <button id="btn-callwave" class="btn small primary" hidden>⚔️ ¡Ya! <span id="callwave-timer"></span></button>
           <button id="btn-ping" class="btn small ghost" title="Marcar un punto para tu equipo (o mantén pulsado el mapa)">📍</button>
+          <button id="btn-guide" class="btn small ghost" title="Guía: enemigos, élites y fusiones">📖</button>
           <button id="btn-minimap" class="btn small ghost" title="Mostrar/ocultar el minimapa">🗺</button>
           <button id="btn-speed" class="btn small ghost" hidden>▶ x1</button>
           <button id="btn-pause" class="btn small ghost" hidden>⏸</button>
@@ -207,7 +208,7 @@
           <h2>⏸ Pausa</h2>
           <p id="pause-by"></p>
           <button id="btn-resume" class="btn primary" hidden>Reanudar</button>
-          <button id="btn-bestiary-pause" class="btn ghost small">📖 Bestiario</button>
+          <button id="btn-bestiary-pause" class="btn ghost small">📖 Guía</button>
         </div>
       </div>
 
@@ -229,13 +230,19 @@
       <div class="overlay-card panel"><h2>📡 Reconectando…</h2></div>
     </div>
 
-    <!-- ============ BESTIARIO (desde Home o pausa) ============ -->
+    <!-- ============ GUÍA (desde Home, pausa o el HUD del juego) ============ -->
     <div id="overlay-bestiary" class="overlay" hidden>
       <div class="overlay-card panel bestiary-card">
         <button id="bestiary-close" class="overlay-close" aria-label="Cerrar">✕</button>
-        <h2>📖 Bestiario</h2>
-        <p class="hint">Todos los enemigos y qué hace cada uno. 💀 = jefe.</p>
+        <h2>📖 Guía</h2>
+        <div class="guide-tabs">
+          <button id="guide-tab-enemies" class="tab active">👾 Enemigos</button>
+          <button id="guide-tab-elites" class="tab">👑 Élites y oleadas</button>
+          <button id="guide-tab-fusions" class="tab">⚗ Fusiones</button>
+        </div>
         <div id="bestiary-grid" class="bestiary-grid"></div>
+        <div id="guide-elites" hidden></div>
+        <div id="guide-fusions" hidden></div>
       </div>
     </div>
 

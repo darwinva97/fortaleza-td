@@ -5,6 +5,8 @@ import {
   ENEMY_ORDER,
   findFusion,
   fusionByIndex,
+  FUSION_ORDER,
+  FUSIONS,
   hasRank2,
   HORDE_CAP,
   rank2Cost,
@@ -21,7 +23,7 @@ import {
 import { net } from './net.js';
 import { myGold, store } from './store.js';
 import { countBannerTargets, ENEMY_ICONS, TOWER_ICONS } from './renderer.js';
-import { setPlacing } from './input.js';
+import { clearSelection, setPlacing } from './input.js';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -84,7 +86,7 @@ function specialStats(lvl: TowerLevelDef): string[] {
   if (lvl.chain) out.push(`Salta a ${lvl.chain.targets}`);
   if (lvl.incomePerWave) out.push(`+🪙${lvl.incomePerWave}/oleada`);
   if (lvl.auraBounty) out.push(`+${Math.round(lvl.auraBounty * 100)}% oro por baja`);
-  if (lvl.charges) out.push(`${lvl.charges} cargas`);
+  if (lvl.charges && lvl.charges > 1) out.push(`${lvl.charges} cargas`);
   if (lvl.shots && lvl.shots > 1) out.push(`${lvl.shots} disparos`);
   if (lvl.pierceArmor) out.push('Antiarmadura');
   if (lvl.minRange) out.push(`Mín. ${lvl.minRange}`);
@@ -104,7 +106,7 @@ function syncPlacingInfo(): void {
   const parts: string[] = [`${TOWER_ICONS[type]} <b>${def.name}</b> 🪙${lvl.cost}`];
   const isAura = lvl.auraDamage !== undefined || lvl.auraHaste !== undefined || lvl.auraBounty !== undefined;
   if (lvl.damage > 0 && !def.onPathOnly) parts.push(`Daño <b>${lvl.damage}</b>`);
-  if (def.onPathOnly) parts.push(`Daño por golpe <b>${lvl.damage}</b>`);
+  if (def.onPathOnly) parts.push(def.detonates ? `💥 Detona al pisarlo: <b>${lvl.damage}</b> en área (un solo uso)` : `Daño por golpe <b>${lvl.damage}</b>`);
   if (lvl.auraDamage !== undefined && lvl.auraDamage > 0) parts.push(`Aura de daño <b>+${Math.round(lvl.auraDamage * 100)}%</b>`);
   if (lvl.auraHaste !== undefined && lvl.auraHaste > 0) parts.push(`Aura de cadencia <b>+${Math.round(lvl.auraHaste * 100)}%</b>`);
   if (lvl.auraBounty !== undefined && lvl.auraBounty > 0) parts.push(`Aura de oro <b>+${Math.round(lvl.auraBounty * 100)}%</b>`);
@@ -169,6 +171,8 @@ export function showPanel(): void {
 export function hidePanel(): void {
   $('hud-panel').hidden = true;
   lastPanelHtml = '';
+  // en móvil, la barra de torres vuelve a verse al cerrar el panel (CSS .panel-open)
+  $('screen-game').classList.remove('panel-open');
 }
 
 // Los botones del panel se recrean al refrescar; con delegación en el contenedor
@@ -185,6 +189,12 @@ function wirePanel(): void {
     if (!gs || gs.selection?.kind !== 'tower') return;
     const towerId = gs.selection.id;
     const target = e.target as HTMLElement;
+    // el botón ✕ cierra el panel y deselecciona (imprescindible en móvil, donde
+    // el panel es una hoja inferior y "tocar fuera" no siempre es obvio)
+    if (target.closest('#panel-close')) {
+      clearSelection();
+      return;
+    }
     const upgrade = target.closest<HTMLButtonElement>('#panel-upgrade');
     const sell = target.closest<HTMLButtonElement>('#panel-sell');
     const specBtn = target.closest<HTMLButtonElement>('.spec-btn');
@@ -274,12 +284,15 @@ export function refreshPanel(): void {
   const panel = $('hud-panel');
   if (!gs || gs.selection?.kind !== 'tower' || !gs.latest) {
     panel.hidden = true;
+    $('screen-game').classList.remove('panel-open');
     return;
   }
   const selectedId = gs.selection.id;
   const data = gs.latest.towers.find((t) => t[0] === selectedId);
   if (!data) {
+    // la torre ya no existe (vendida / trampa agotada / barril detonado)
     panel.hidden = true;
+    $('screen-game').classList.remove('panel-open');
     gs.selection = null;
     return;
   }
@@ -316,11 +329,30 @@ export function refreshPanel(): void {
     // el Señor de la Guerra además dispara: muestra también su historial de combate
     if (lvl.alsoFires) statLines.push(`Bajas: <b>${kills}</b> · Daño total: <b>${damage.toLocaleString()}</b>`);
   } else if (def.onPathOnly) {
-    // Trampa de púas: cargas restantes (no acumula kills/daño clásicos)
-    statLines.push(`Cargas: <b>${charges}</b>`);
+    if (def.detonates) {
+      // Barril explosivo: se consume al detonar (no tiene cargas que contar)
+      statLines.push('💥 Detona <b>una sola vez</b> cuando un enemigo terrestre lo pisa');
+    } else {
+      // Trampa de púas: cargas restantes (no acumula kills/daño clásicos)
+      statLines.push(`Cargas: <b>${charges}</b>`);
+    }
     statLines.push(`Bajas: <b>${kills}</b> · Daño total: <b>${damage.toLocaleString()}</b>`);
   } else {
     statLines.push(`Bajas: <b>${kills}</b> · Daño total: <b>${damage.toLocaleString()}</b>`);
+  }
+  // F4.4 · descubribilidad de las fusiones: toda torre con receta muestra con qué
+  // se combina (y qué sale), aunque aún no haya vecina candidata.
+  if (!fusion && !def.onPathOnly) {
+    const recipes = FUSION_ORDER.map((fid) => FUSIONS[fid]).filter((f) => f.ingredients.includes(type));
+    if (recipes.length > 0) {
+      const partners = recipes
+        .map((f) => {
+          const other = f.ingredients[0] === type ? f.ingredients[1] : f.ingredients[0];
+          return `${TOWER_ICONS[other]} ${TOWERS[other].name} → <b>${f.icon} ${f.name}</b>`;
+        })
+        .join(' · ');
+      statLines.push(`⚗ Se fusiona con: ${partners} <span class="fuse-req">(ambas ★ especializadas y pegadas)</span>`);
+    }
   }
   statLines.push(`Dueño: <b style="color:${owner?.color}">${escapeHtml(owner?.name ?? '?')}</b>`);
 
@@ -426,7 +458,7 @@ export function refreshPanel(): void {
   }
 
   const html = `
-    <h3><span>${title}</span><span class="lvl">${levelTag}</span></h3>
+    <h3><span>${title}</span><span class="lvl">${levelTag}</span><button id="panel-close" aria-label="Cerrar">✕</button></h3>
     <div class="pstats">${statLines.join('<br>')}</div>
     ${actions}
   `;
@@ -438,6 +470,8 @@ export function refreshPanel(): void {
     panel.innerHTML = html;
   }
   panel.hidden = false;
+  // en móvil el panel es una hoja inferior que SUSTITUYE a la barra de torres
+  $('screen-game').classList.add('panel-open');
   void id;
 }
 

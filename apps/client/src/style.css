@@ -529,8 +529,25 @@ html, body {
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
 }
-#hud-panel h3 { display: flex; justify-content: space-between; font-size: 1.05rem; }
-#hud-panel .lvl { color: var(--accent-hi); }
+#hud-panel h3 { display: flex; align-items: center; gap: 8px; font-size: 1.05rem; }
+#hud-panel .lvl { color: var(--accent-hi); margin-left: auto; white-space: nowrap; font-size: 0.9rem; }
+/* botón ✕ del panel: cierre explícito (clave en móvil, donde el panel es una hoja) */
+#panel-close {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(10, 14, 24, 0.6);
+  color: var(--fg-dim);
+  font-size: 0.95rem;
+  font-weight: 700;
+  cursor: pointer;
+  line-height: 1;
+}
+#panel-close:active { transform: scale(0.94); }
+/* recordatorio de recetas en las stats del panel */
+#hud-panel .fuse-req { color: var(--fg-dim); font-size: 0.72rem; }
 #hud-panel .pstats { font-size: 0.85rem; color: var(--fg-dim); margin: 8px 0; line-height: 1.55; }
 #hud-panel .pstats .up { color: var(--ok); font-weight: 700; }
 #hud-panel .prow { display: flex; gap: 8px; margin-top: 8px; }
@@ -740,10 +757,29 @@ html, body {
 .edesc { font-size: 0.8rem; line-height: 1.35; margin: 4px 0 8px; color: var(--fg); }
 .estats { display: flex; flex-wrap: wrap; gap: 10px; font-size: 0.78rem; color: var(--fg-dim); }
 .estats span { white-space: nowrap; }
+/* ---------- guía: pestañas, élites y recetas de fusión ---------- */
+.guide-tabs { display: flex; gap: 8px; margin-top: 12px; }
+.guide-tabs .tab { padding: 8px 6px; font-size: 0.88rem; }
+.guide-intro { margin-top: 16px; }
+.guide-intro h3 { font-size: 1.02rem; margin-bottom: 4px; }
+.guide-intro .edesc { margin: 4px 0; }
+#guide-elites .bestiary-grid { margin-top: 10px; }
+.fusion-list { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.fusion-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+.fusion-recipe { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-weight: 700; font-size: 0.92rem; }
+.fusion-recipe .fplus { color: var(--fg-dim); font-weight: 800; }
+.fusion-recipe .fresult { font-size: 1rem; }
+
 @media (max-width: 700px) {
   .overlay-card.bestiary-card { padding: 18px 14px; }
   .bestiary-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
   .enemy-card { padding: 8px 10px; }
+  .guide-tabs .tab { font-size: 0.76rem; padding: 8px 4px; }
 }
 
 /* podio de fin de partida */
@@ -808,50 +844,64 @@ html, body {
   .logo { font-size: 2.1rem; }
   .map-grid { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); }
 
-  /* panel de torre: hoja inferior COMPACTA (antes ocupaba media pantalla). Texto y
-     espaciados reducidos + tope de altura con scroll para que no tape el tablero. */
+  /* Panel de torre: HOJA INFERIOR real. Ancla abajo del todo, sustituye a la
+     barra de torres mientras está abierto (.panel-open la oculta) y se cierra
+     con su botón ✕ o tocando el mapa. Así seleccionar una torre ya no tapa casi
+     toda la pantalla: como mucho el 45% inferior, con scroll interno. */
   #hud-panel {
-    right: 8px;
-    left: 8px;
+    left: 0;
+    right: 0;
+    bottom: 0;
     width: auto;
-    bottom: 130px;
-    padding: 10px 12px;
-    max-height: 42vh;
+    border-radius: 18px 18px 0 0;
+    border-bottom: none;
+    padding: 10px 14px;
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+    max-height: 45vh;
     overflow-y: auto;
+    z-index: 25;
   }
   #hud-panel h3 { font-size: 0.98rem; }
   #hud-panel .pstats { font-size: 0.76rem; margin: 6px 0; line-height: 1.4; }
   #hud-panel .prow { margin-top: 6px; }
-  #hud-panel .prow .btn { font-size: 0.82rem; padding: 8px 6px; }
+  #hud-panel .prow .btn { font-size: 0.85rem; padding: 10px 6px; }
   #hud-panel .spec-title { margin-top: 6px; }
   #hud-panel .spec-desc { font-size: 0.74rem; }
-  #hud-panel .spec-btn { padding: 6px 9px; }
+  #hud-panel .spec-btn { padding: 8px 9px; }
   #hud-panel .tmodes { margin-top: 6px; }
-  #hud-panel .tmode { font-size: 0.66rem; padding: 5px 2px; }
+  #hud-panel .tmode { font-size: 0.7rem; padding: 8px 2px; }
+  /* mientras el panel está abierto, la barra de torres y el chat le ceden el sitio */
+  .panel-open #hud-towers,
+  .panel-open #hud-placing,
+  .panel-open #hud-chat { display: none; }
   /* chat compacto: solo el botón 💬; el log aparece al abrirlo */
-  #hud-chat { bottom: 132px; width: min(260px, 64vw); }
+  #hud-chat { bottom: 86px; width: min(260px, 64vw); }
   #hud-chat .chat-log.compact { display: none; }
   #hud-chat.open .chat-log.compact { display: flex; }
-  #hud-preview { top: auto; bottom: 172px; right: 8px; max-width: 46vw; font-size: 0.75rem; }
-  #hud-placing { bottom: 128px; font-size: 0.75rem; padding: 6px 10px; }
-  /* barra de torres: en móvil ENVOLVER en filas centradas para que NINGUNA torre
-     quede recortada (antes era scroll horizontal y las últimas —Trampa, Alquimista,
-     fusiones— se cortaban fuera de vista). */
+  #hud-preview { top: auto; bottom: 132px; right: 8px; max-width: 46vw; font-size: 0.75rem; }
+  #hud-placing { bottom: 86px; font-size: 0.75rem; padding: 6px 10px; }
+  /* Barra de torres: UNA sola fila con scroll horizontal + snap (envolver en dos
+     filas tapaba demasiado tablero). El degradado de los bordes avisa de que hay
+     más torres a los lados; ninguna queda inaccesible. */
   #hud-towers {
-    flex-wrap: wrap;
-    justify-content: center;
-    overflow-x: visible;
+    flex-wrap: nowrap;
+    overflow-x: auto;
     gap: 6px;
-    padding: 8px;
+    padding: 8px 14px;
     padding-bottom: max(8px, env(safe-area-inset-bottom));
+    scroll-snap-type: x proximity;
+    -webkit-overflow-scrolling: touch;
+    mask-image: linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
+    -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 14px), transparent 100%);
   }
-  #hud-towers .tcard:first-child { margin-left: 0; }
-  #hud-towers .tcard:last-child { margin-right: 0; }
-  .tcard { width: 54px; padding: 5px 3px 4px; }
+  .tcard { width: 56px; padding: 6px 3px 5px; scroll-snap-align: center; }
+  .tcard.selected { transform: translateY(-2px); }
   .tcard .ticon { font-size: 1.3rem; line-height: 1.5rem; }
   .tcard .tname { display: none; }
   .tcard .thk { display: none; }
   .tcard .tcost { font-size: 0.72rem; }
+  /* botones de confirmación de colocación más grandes para el pulgar */
+  .place-btn { width: 52px; height: 52px; font-size: 1.45rem; }
   /* barra superior: compacta y SIN solapes. Los stats (❤/oleada/🪙) van en UNA sola
      línea (nowrap); si los botones no caben, envuelven a la DERECHA sin chocar con los
      chips de jugador (que están a la izquierda). Antes los stats envolvían a una 2ª
@@ -874,7 +924,20 @@ html, body {
   .tcard { width: 58px; padding: 4px 3px 3px; }
   .tcard .ticon { font-size: 1.15rem; line-height: 1.3rem; }
   .tcard .tname { display: none; }
-  #hud-panel { bottom: 84px; width: 230px; left: auto; right: 8px; padding: 10px; font-size: 0.9rem; }
+  /* apaisado: el panel vuelve a ser flotante a la derecha (una hoja inferior
+     taparía todo el alto disponible) */
+  #hud-panel {
+    bottom: 84px;
+    width: 240px;
+    left: auto;
+    right: 8px;
+    padding: 10px;
+    font-size: 0.9rem;
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    max-height: calc(100vh - 130px);
+    overflow-y: auto;
+  }
   #hud-placing { bottom: 80px; }
   #hud-preview { display: none; }
 }

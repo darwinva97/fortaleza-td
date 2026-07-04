@@ -35,7 +35,7 @@ export function applyCommands(
             camino: 'No puedes construir sobre el camino',
             bloqueado: 'Celda bloqueada',
             ocupado: 'Ya hay una torre ahí',
-            fuera_camino: 'La Trampa solo va SOBRE el camino',
+            fuera_camino: 'Esta torre solo va SOBRE el camino',
           };
           reject(events, playerId, msgs[err]);
           break;
@@ -72,9 +72,9 @@ export function applyCommands(
           reject(events, playerId, 'Solo el dueño puede mejorar esta torre');
           break;
         }
-        // la Trampa de púas no se mejora (se agota y desaparece)
+        // las torres de camino (Trampa/Barril) no se mejoran (se agotan y desaparecen)
         if (TOWERS[tower.type].onPathOnly) {
-          reject(events, playerId, 'La Trampa no se puede mejorar');
+          reject(events, playerId, 'Esta torre no se puede mejorar');
           break;
         }
         // una torre fusionada no admite más mejoras (F4.3)
