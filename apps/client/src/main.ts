@@ -7,7 +7,7 @@ import { initInput } from './input.js';
 import { initBestiary } from './bestiary.js';
 import { applySpectatorUI, buildTowerBar, hidePanel, onTick, toast, addChat, refreshPanel, syncSpeedButton, syncTowerBar } from './hud.js';
 import { hideEnd, homeError, initHome, initLobby, renderLobby, showEnd, switchScreen } from './screens.js';
-import { beam, burst, clearParticles, floatText, line, ring } from './particles.js';
+import { beam, burst, clearParticles, floatText, fx, line, ring } from './particles.js';
 import { sfx, setSfxVolume, setMusicVolume, unlockAudio } from './audio.js';
 import { startMusic, setMusicState, pauseMusic, resumeMusic, stopMusic, type MusicState } from './music.js';
 import { initReplayHome, saveReplay, setReplayEventSink, startReplay } from './replay.js';
@@ -32,26 +32,30 @@ function processEvents(events: GameEvent[]): void {
     switch (ev.e) {
       case 'shot':
         line(ev.x, ev.y, ev.tx, ev.ty, ev.color);
+        fx(ev.tx, ev.ty, 'spark', ev.color, 0.7, 0.25, { add: true }); // fogonazo en el blanco
         towerFired(ev.x, ev.y);
         sfx.snipe(panOf(ev.x), ev.color);
         break;
       case 'chain':
         beam(ev.pts, ev.color);
+        for (const [px, py] of ev.pts) fx(px, py, 'spark', '#fff59d', 0.55, 0.2, { add: true });
         towerFired(ev.pts[0][0], ev.pts[0][1]);
         sfx.zap(panOf(ev.pts[0][0]));
         break;
       case 'hit':
         if (ev.kind === 'splash') {
           ring(ev.x, ev.y, ev.r, '#ffab40');
-          burst(ev.x, ev.y, '#ff7043', 10, 2.6);
+          fx(ev.x, ev.y, 'flame', '#ffab40', ev.r * 0.9, 0.35, { add: true });
+          fx(ev.x, ev.y, 'smoke', '#b0a89a', ev.r * 0.8, 0.7, { grow: 1.3, add: false, spin: 0.6 });
+          fx(ev.x, ev.y, 'spark', '#ff7043', ev.r * 0.7, 0.28, { add: true });
           if (ev.r >= 1.2) addShake(2.5);
           sfx.boom(panOf(ev.x));
         } else if (ev.kind === 'poison') {
-          burst(ev.x, ev.y, '#9ccc65', 4, 1.2);
+          fx(ev.x, ev.y, 'glow', '#9ccc65', 0.55, 0.4, { add: true });
         } else if (ev.kind === 'frost') {
-          burst(ev.x, ev.y, '#81d4fa', 4, 1.2);
+          fx(ev.x, ev.y, 'sparkle', '#81d4fa', 0.55, 0.35, { add: true, spin: 2 });
         } else {
-          burst(ev.x, ev.y, '#ffe082', 3, 1.4);
+          fx(ev.x, ev.y, 'spark', '#ffe082', 0.5, 0.25, { add: true });
           sfx.shot(panOf(ev.x));
         }
         break;
@@ -59,8 +63,11 @@ function processEvents(events: GameEvent[]): void {
         const def = ENEMIES[ev.type];
         const big = def.boss || ev.elite;
         const pan = panOf(ev.x);
-        burst(ev.x, ev.y, def.color, def.boss ? 30 : ev.elite ? 18 : 9, big ? 3.5 : 2.2);
+        burst(ev.x, ev.y, def.color, def.boss ? 24 : ev.elite ? 14 : 7, big ? 3.5 : 2.2);
         ring(ev.x, ev.y, def.boss ? 1.6 : ev.elite ? 1.1 : def.radius * 2.2, def.color);
+        fx(ev.x, ev.y, 'glow', def.color, big ? 2.0 : 1.0, 0.4, { add: true });
+        if (big) for (let k = 0; k < (def.boss ? 8 : 4); k++)
+          fx(ev.x, ev.y, 'spark', '#fff', 0.6, 0.4, { vx: (Math.random() - 0.5) * 4, vy: (Math.random() - 0.5) * 4, add: true });
         if (def.boss) addShake(10);
         else if (ev.elite) addShake(3);
         if (ev.bounty > 0) {

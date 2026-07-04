@@ -22,7 +22,22 @@ import {
   type TowerTypeId,
 } from '@td/shared';
 import { store, type GameStore, type SnapFrame } from './store.js';
-import { drawParticles, updateParticles } from './particles.js';
+import { drawParticles, updateParticles, fx } from './particles.js';
+import { getTowerSprite, getProjSprite } from './sprites.js';
+
+// ancho del sprite de torre en celdas (la base ≈ este valor; la estructura sube).
+const SPRITE_W = 1.15;
+// LARGO (alto) del sprite de proyectil en celdas — apuntan al norte, así que su
+// dimensión larga es la altura; escalar por ancho hacía las flechas enormes.
+const PROJ_H = 0.7;
+// sprite de proyectil por tipo de torre (tesla/francotirador son instantáneos, sin sprite).
+const PROJ_BY_TYPE: Partial<Record<TowerTypeId, string>> = {
+  archer: 'arrow',
+  frost: 'iceshard',
+  poison: 'poison',
+  cannon: 'cannonball',
+  mortar: 'bomb',
+};
 
 // Los emojis siguen siendo el "lenguaje" de iconos del HUD (DOM);
 // en el canvas todo se dibuja con arte vectorial procedural.
@@ -1291,7 +1306,24 @@ function drawTowers(gs: GameStore, interp: InterpResult | null, now: number, dt:
 
     g.save();
     g.translate(x + s / 2, y + s / 2);
-    drawTowerArt(type, s, level, t, anim, owner?.color ?? '#888', id === selected, spec, fusionIdx);
+    // sprite real si existe (torres base, no fusiones); si no, arte vectorial.
+    const sprite = fusionIdx < 0 ? getTowerSprite(type, level, spec) : null;
+    if (sprite) {
+      // la base ocupa ~1.15 celdas (antes 1.55 = desbordaba); la estructura sube.
+      const w = s * SPRITE_W;
+      const h = (sprite.naturalHeight / sprite.naturalWidth) * w;
+      const rx = Math.cos(anim.angle) * anim.recoil * s * 0.12;
+      const ry = Math.sin(anim.angle) * anim.recoil * s * 0.12;
+      if (id === selected) {
+        g.shadowColor = 'rgba(255,213,79,0.85)';
+        g.shadowBlur = s * 0.28;
+      }
+      // ancla: la base se apoya cerca del borde inferior de la celda
+      g.drawImage(sprite, -w / 2 - rx, s * 0.5 - h - ry, w, h);
+      g.shadowBlur = 0;
+    } else {
+      drawTowerArt(type, s, level, t, anim, owner?.color ?? '#888', id === selected, spec, fusionIdx);
+    }
     // Trampa de púas: contador de cargas restantes + barra de desgaste bajo la placa.
     const charges = tw[11] ?? 0;
     if (type === 'trap' && charges > 0) {
@@ -3081,10 +3113,26 @@ function drawProjectiles(interp: InterpResult): void {
     if (!projSeen.has(p.id)) {
       projSeen.add(p.id);
       towerFired(p.x, p.y);
+      fx(p.x, p.y, 'glow', color, 0.55, 0.13, { add: true });
     }
     const prev = projPrev.get(p.id);
     const ang = prev ? Math.atan2(p.y - prev.y, p.x - prev.x) : 0;
     projPrev.set(p.id, { x: p.x, y: p.y });
+
+    // sprite real del proyectil (rotado hacia su dirección; apunta al norte en el PNG);
+    // si no hay sprite, cae al dibujo vectorial de siempre.
+    const pn = PROJ_BY_TYPE[type];
+    const psprite = pn ? getProjSprite(pn) : null;
+    if (psprite) {
+      const ph = s * PROJ_H;
+      const pw = (psprite.naturalWidth / psprite.naturalHeight) * ph;
+      g.save();
+      g.translate(x, y);
+      g.rotate(ang + Math.PI / 2);
+      g.drawImage(psprite, -pw / 2, -ph / 2, pw, ph);
+      g.restore();
+      continue;
+    }
 
     if (p.kindIdx === 2) {
       // bomba de mortero girando con estela de humo

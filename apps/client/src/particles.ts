@@ -1,8 +1,9 @@
 // Sistema de partículas. Las posiciones están en unidades de celda;
 // el renderer las convierte a píxeles con la transformación de la vista.
+import { getPartSprite } from './sprites.js';
 
 export interface Particle {
-  kind: 'dot' | 'ring' | 'text' | 'beam' | 'spark';
+  kind: 'dot' | 'ring' | 'text' | 'beam' | 'spark' | 'tex';
   x: number;
   y: number;
   vx: number;
@@ -10,10 +11,62 @@ export interface Particle {
   life: number; // segundos restantes
   maxLife: number;
   color: string;
-  size: number; // celdas (dot/spark) o radio final (ring) o px de fuente (text)
+  size: number; // celdas (dot/spark/tex) o radio final (ring) o px de fuente (text)
   text?: string;
   // beam: línea desde (x,y) hasta (x2,y2); puede tener quiebres
   pts?: [number, number][];
+  // tex: textura de partícula (part_<tex>), rotación y giro, blending aditivo
+  tex?: string;
+  rot?: number;
+  spin?: number;
+  add?: boolean;
+  grow?: number; // el tamaño crece con la vida (humo/anillos)
+}
+
+// caché de texturas tintadas (blanco → color) para no recolorear cada frame
+const tintCache = new Map<string, HTMLCanvasElement>();
+function tinted(img: HTMLImageElement, color: string): HTMLCanvasElement {
+  const key = img.src + '|' + color;
+  let c = tintCache.get(key);
+  if (c) return c;
+  c = document.createElement('canvas');
+  c.width = img.naturalWidth;
+  c.height = img.naturalHeight;
+  const cx = c.getContext('2d')!;
+  cx.drawImage(img, 0, 0);
+  cx.globalCompositeOperation = 'source-in'; // pinta el color respetando el alfa
+  cx.fillStyle = color;
+  cx.fillRect(0, 0, c.width, c.height);
+  tintCache.set(key, c);
+  return c;
+}
+
+// Partícula con TEXTURA (tintada, normalmente aditiva para dar glow).
+export function fx(
+  x: number,
+  y: number,
+  tex: string,
+  color: string,
+  size: number,
+  life: number,
+  o: { vx?: number; vy?: number; rot?: number; spin?: number; add?: boolean; grow?: number } = {},
+): void {
+  addParticle({
+    kind: 'tex',
+    x,
+    y,
+    vx: o.vx ?? 0,
+    vy: o.vy ?? 0,
+    life,
+    maxLife: life,
+    color,
+    size,
+    tex,
+    rot: o.rot ?? 0,
+    spin: o.spin ?? 0,
+    add: o.add ?? true,
+    grow: o.grow ?? 0,
+  });
 }
 
 const particles: Particle[] = [];
@@ -96,10 +149,11 @@ export function updateParticles(dt: number): void {
     }
     p.x += p.vx * dt;
     p.y += p.vy * dt;
-    if (p.kind === 'dot' || p.kind === 'spark') {
+    if (p.kind === 'dot' || p.kind === 'spark' || p.kind === 'tex') {
       p.vx *= 1 - 3 * dt;
       p.vy *= 1 - 3 * dt;
     }
+    if (p.kind === 'tex' && p.spin) p.rot = (p.rot ?? 0) + p.spin * dt;
   }
 }
 
@@ -113,6 +167,28 @@ export function drawParticles(
     const alpha = Math.max(0, p.life / p.maxLife);
     g.globalAlpha = alpha;
     switch (p.kind) {
+      case 'tex': {
+        const img = p.tex ? getPartSprite(p.tex) : null;
+        if (!img) {
+          // aún sin cargar: un punto tenue para no quedar en blanco
+          g.fillStyle = p.color;
+          g.beginPath();
+          g.arc(toX(p.x), toY(p.y), p.size * scale * 0.3, 0, Math.PI * 2);
+          g.fill();
+          break;
+        }
+        const t = 1 - p.life / p.maxLife;
+        const w = p.size * scale * (1 + (p.grow ?? 0) * t);
+        const h = w * (img.naturalHeight / img.naturalWidth);
+        g.save();
+        if (p.add) g.globalCompositeOperation = 'lighter';
+        g.globalAlpha = alpha * (p.add ? 0.85 : 1);
+        g.translate(toX(p.x), toY(p.y));
+        if (p.rot) g.rotate(p.rot);
+        g.drawImage(tinted(img, p.color), -w / 2, -h / 2, w, h);
+        g.restore();
+        break;
+      }
       case 'dot':
       case 'spark': {
         g.fillStyle = p.color;

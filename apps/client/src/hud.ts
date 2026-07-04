@@ -53,10 +53,19 @@ export function buildTowerBar(): void {
     card.title = `${def.name} — ${def.desc}`;
     card.innerHTML = `
       <span class="thk">${def.hotkey}</span>
+      <img class="tsprite" alt="" src="/sprites/tower_${type}_l1.png" />
       <span class="ticon">${TOWER_ICONS[type]}</span>
       <span class="tname">${def.name}</span>
       <span class="tcost">🪙${def.levels[0].cost}</span>
     `;
+    // usa el sprite real si existe; si el PNG falta (Mina/Alquimista) deja el emoji
+    const spr = card.querySelector<HTMLImageElement>('.tsprite')!;
+    const emo = card.querySelector<HTMLElement>('.ticon')!;
+    spr.addEventListener('load', () => {
+      spr.style.display = 'block';
+      emo.style.display = 'none';
+    });
+    spr.addEventListener('error', () => spr.remove());
     card.addEventListener('click', () => {
       // espectador: la barra funciona en "modo sugerencia" — no coloca; arma el
       // siguiente toque en el mapa como sugerencia de torre (map_ping + towerType)
