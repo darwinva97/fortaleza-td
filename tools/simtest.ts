@@ -1076,7 +1076,7 @@ console.log('— F4.2 · Trampa de púas: SOLO se coloca sobre el camino —');
   assert(placementError(map, ctx, [], off[0], off[1], 'archer') === null, 'una torre normal SÍ va fuera del camino');
 }
 
-console.log('— F4.4 · Barril explosivo: detona UNA vez en área al ser pisado y desaparece —');
+console.log('— F4.4 · Barril explosivo: ELIMINA a los no-jefes del área (jefes: solo daño) y desaparece —');
 {
   const map = getMap('sendero');
   const simCtx = makeSimContext(map, makePlacementContext(map));
@@ -1084,16 +1084,18 @@ console.log('— F4.4 · Barril explosivo: detona UNA vez en área al ser pisado
   st.nextId = 8000; st.wave = 1; st.waveState = 'active'; st.spawnQueue = []; st.pendingWave = [];
 
   // barril en una celda del camino (fila 2 de «sendero»); alrededor:
-  //  - un bruto INMUNE inmóvil PISANDO la celda (dispara la detonación; prueba que
-  //    el daño físico entra a inmunes y que la armadura sí descuenta)
-  //  - un goblin inmóvil DENTRO del radio (1.5 celdas) → debe morir
+  //  - un bruto INMUNE, tanque (100k hp) e inmóvil PISANDO la celda: dispara la
+  //    detonación y debe MORIR igualmente (la eliminación ignora vida/armadura/inmunidad)
+  //  - un goblin inmóvil DENTRO del radio (1.5 celdas) → eliminado
+  //  - un GÓLEM (jefe) DENTRO del radio → NO se elimina: recibe 240−6 de armadura
   //  - un goblin inmóvil FUERA del radio (4 celdas) → intacto
   const barrel = mkTower('boom', { id: 3400, cx: 8, cy: 2, level: 1, spec: -1, charges: 1, invested: 90 });
   st.towers.push(barrel);
   const brute = mkEnemy('brute', { id: 2500, hp: 100000, maxHp: 100000, spellImmune: true, speedMult: 0, x: 8.5, y: 2.5, wpIdx: 1 });
   const near = mkEnemy('goblin', { id: 2501, hp: 32, maxHp: 32, speedMult: 0, x: 10.0, y: 2.5, wpIdx: 1 });
+  const boss = mkEnemy('golem', { id: 2503, hp: 100000, maxHp: 100000, speedMult: 0, x: 9.5, y: 2.5, wpIdx: 1 });
   const far = mkEnemy('goblin', { id: 2502, hp: 32, maxHp: 32, speedMult: 0, x: 12.5, y: 2.5, wpIdx: 1 });
-  st.enemies.push(brute, near, far);
+  st.enemies.push(brute, near, boss, far);
 
   let sawSplash = false;
   let sawPoof = false;
@@ -1102,9 +1104,11 @@ console.log('— F4.4 · Barril explosivo: detona UNA vez en área al ser pisado
     if (ev.e === 'hit' && ev.kind === 'splash' && ev.r >= 1.5) sawSplash = true;
     if (ev.e === 'sell' && ev.refund === 0) sawPoof = true;
   }
-  // bruto: 240 de explosión − 2 de armadura = 238 (el daño físico SÍ entra a inmunes)
-  assert(brute.hp === 100000 - 238, `la explosión daña al inmune descontando armadura (${(100000 - brute.hp).toFixed(0)} de daño)`);
-  assert(!st.enemies.some((e) => e.id === 2501), 'el goblin DENTRO del radio muere por la explosión');
+  assert(!st.enemies.some((e) => e.id === 2500), 'la detonación ELIMINA a un tanque inmune de 100k hp (no-jefe)');
+  assert(!st.enemies.some((e) => e.id === 2501), 'el goblin DENTRO del radio queda eliminado');
+  // jefe: NO se elimina — recibe el daño físico del barril (240 − 6 de armadura del Gólem)
+  assert(st.enemies.some((e) => e.id === 2503), 'el JEFE dentro del radio SOBREVIVE a la detonación');
+  assert(boss.hp === 100000 - 234, `el jefe recibe el daño del barril con armadura (${(100000 - boss.hp).toFixed(0)} == 234)`);
   assert(st.enemies.some((e) => e.id === 2502) && far.hp === 32, 'el goblin FUERA del radio queda intacto');
   assert(!st.towers.some((t) => t.id === 3400), 'el barril se AUTODESTRUYE tras detonar (un solo uso)');
   assert(sawSplash, 'la detonación emite un evento de explosión en área');

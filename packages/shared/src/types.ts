@@ -138,7 +138,8 @@ export interface TowerDef {
   // El resto de torres siguen sin poder ir sobre el camino.
   onPathOnly?: boolean;
   // F4.4 · Barril explosivo: en cuanto un enemigo terrestre pisa su celda, DETONA
-  // (daño físico en radio `splash` a todos los terrestres) y se autodestruye.
+  // y se autodestruye: ELIMINA a los terrestres no-jefe en radio `splash`; a los
+  // jefes les hace `damage` físico.
   detonates?: boolean;
 }
 

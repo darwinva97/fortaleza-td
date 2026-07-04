@@ -612,7 +612,7 @@ export const TOWERS: Record<TowerTypeId, TowerDef> = {
   boom: {
     id: 'boom',
     name: 'Barril explosivo',
-    desc: 'Se coloca SOBRE el camino. Detona UNA vez cuando lo pisan: gran daño físico en área. Funciona contra inmunes.',
+    desc: 'Se coloca SOBRE el camino. Detona UNA vez cuando lo pisan: ELIMINA a los enemigos terrestres del área (los jefes solo reciben daño). Funciona contra inmunes.',
     color: '#ff7043',
     hotkey: 'w',
     targetsAir: false,
@@ -622,8 +622,9 @@ export const TOWERS: Record<TowerTypeId, TowerDef> = {
     detonates: true,
     levels: [
       // Un solo uso: `charges: 1` (la detonación la consume y el barril desaparece).
-      // `damage` es el daño de la explosión (físico, funciona vs inmunes) y `splash`
-      // su radio. No se mejora ni se especializa: es un botón de pánico barato.
+      // La detonación ELIMINA a todo no-jefe terrestre en radio `splash`; a los
+      // JEFES les hace `damage` físico (con armadura). No se mejora ni se
+      // especializa: es un botón de pánico barato.
       { cost: 90, damage: 240, range: 0, cooldown: 0, splash: 1.7, charges: 1 },
       { cost: 90, damage: 240, range: 0, cooldown: 0, splash: 1.7, charges: 1 },
       { cost: 90, damage: 240, range: 0, cooldown: 0, splash: 1.7, charges: 1 },

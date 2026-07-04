@@ -632,6 +632,9 @@ html, body {
 #hud-chat form { pointer-events: auto; }
 #hud-chat form input { background: rgba(14, 18, 28, 0.9); }
 #btn-chat-toggle { pointer-events: auto; margin-top: 6px; }
+/* durante la PAUSA, el chat sube por encima del velo de pausa (z 50) para que
+   se pueda seguir hablando mientras la partida está detenida */
+.paused #hud-chat { z-index: 60; }
 
 /* burbuja de confirmación de colocación (táctil) */
 #place-confirm {

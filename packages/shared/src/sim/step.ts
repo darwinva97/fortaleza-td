@@ -1000,8 +1000,9 @@ function stepTowers(state: GameState, ctx: SimContext, events: GameEvent[], aura
 // Torres de camino (F4.2/F4.4): NO disparan; reaccionan a los enemigos que pisan
 // su celda. Trampa de púas: cada tick con ≥1 enemigo encima golpea a TODOS los de
 // la celda (daño FÍSICO, funciona contra inmunes) y consume 1 carga. Barril
-// explosivo (`detonates`): en cuanto la pisan DETONA una única vez — daño físico
-// en radio `splash` a todos los terrestres — y desaparece. A 0 cargas se
+// explosivo (`detonates`): en cuanto la pisan DETONA una única vez — ELIMINA a
+// todos los terrestres no-jefe en radio `splash` (los jefes reciben `damage`
+// físico) — y desaparece. A 0 cargas se
 // auto-eliminan (poof discreto, SIN aviso de chat). Determinista: orden estable de
 // torres y enemigos, sin RNG. Se ejecuta tras el movimiento de enemigos.
 function stepTraps(state: GameState, ctx: SimContext, events: GameEvent[]): void {
@@ -1030,8 +1031,15 @@ function stepTraps(state: GameState, ctx: SimContext, events: GameEvent[]): void
           const e = state.enemies[i];
           if (e.hp <= 0 || ENEMIES[e.type].flying) continue; // explosión a ras de suelo
           if (dist(bx, by, e.x, e.y) <= splash + ENEMIES[e.type].radius * e.radiusMult) {
-            // daño físico directo (funciona contra inmunes; la armadura sí cuenta)
-            damageEnemy(state, ctx, e, lvl.damage, false, trap.id, events, 0, 0, 0);
+            if (ENEMIES[e.type].boss) {
+              // los JEFES no se eliminan: reciben el daño del barril (físico, con armadura)
+              damageEnemy(state, ctx, e, lvl.damage, false, trap.id, events, 0, 0, 0);
+            } else {
+              // ELIMINACIÓN: cualquier no-jefe dentro del radio muere, da igual su
+              // vida, armadura o inmunidad. El daño aplicado = su vida actual (con
+              // perforación) para que las estadísticas reflejen la vida retirada.
+              damageEnemy(state, ctx, e, Math.max(1, Math.ceil(e.hp)), true, trap.id, events, 0, 0, 0);
+            }
           }
         }
         trap.charges = 0;

@@ -560,14 +560,17 @@ export class RoomDO {
         this.pendingCmds.push({ playerId: player.id, cmd: msg.cmd });
         break;
 
+      // pausa/reanudar: CUALQUIER jugador de la sala (no solo el anfitrión) puede
+      // pausar y despausar — es co-op y cualquiera puede necesitar un descanso.
+      // Los espectadores no llegan aquí (su canal restringido se filtra antes).
       case 'pause':
-        if (!player.isHost || !this.game) break;
+        if (!this.game || this.paused) break;
         this.paused = true;
         this.broadcast({ type: 'paused', by: player.name });
         break;
 
       case 'resume':
-        if (!player.isHost || !this.game) break;
+        if (!this.game || !this.paused) break;
         this.paused = false;
         this.broadcast({ type: 'resumed' });
         break;

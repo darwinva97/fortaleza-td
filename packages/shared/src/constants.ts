@@ -99,5 +99,5 @@ export const PLAYER_COLORS = [
   '#e57373', // rojo
 ];
 
-export const BALANCE_VERSION = 7; // F4.4: Barril explosivo + zapadores coordinados (no re-aturden)
+export const BALANCE_VERSION = 8; // F4.4b: el Barril ELIMINA a los no-jefes del área (jefes: solo daño)
 export const PROTOCOL_VERSION = 1;

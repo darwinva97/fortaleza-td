@@ -218,10 +218,10 @@ function wireNet(): void {
       $('spectator-banner').hidden = true;
     }
     renderLobby();
-    $('btn-pause').hidden = !store.isHost;
+    // pausar/reanudar es de TODOS los jugadores (co-op); la velocidad, del anfitrión
+    $('btn-pause').hidden = store.spectator;
     $('btn-speed').hidden = !store.isHost;
-    // si migra el anfitrión durante una pausa, el nuevo debe poder reanudar
-    $('btn-resume').hidden = !store.isHost;
+    $('btn-resume').hidden = store.spectator;
   });
 
   net.on('game_started', (msg) => {
@@ -234,7 +234,7 @@ function wireNet(): void {
     if (store.screen === 'game' && gs && !gs.over) {
       gs.init = msg.init;
       $('overlay-reconnect').hidden = true;
-      $('btn-pause').hidden = !store.isHost;
+      $('btn-pause').hidden = store.spectator;
       $('btn-speed').hidden = !store.isHost;
       startMusic(); // no-op si ya sonaba; arranca si entramos a mitad de partida
       return;
@@ -250,13 +250,14 @@ function wireNet(): void {
     hidePanel();
     hideEnd();
     $('overlay-pause').hidden = true;
+    $('screen-game').classList.remove('paused');
     $('overlay-reconnect').hidden = true;
     switchScreen('game');
     // arranca la música procedural adaptativa (se difiere al primer gesto si el
     // audio aún no está desbloqueado; empieza en calma/interludio).
     startMusic();
     setMusicState('calm', false, msg.init.mode === 'horde');
-    $('btn-pause').hidden = !store.isHost;
+    $('btn-pause').hidden = store.spectator;
     $('btn-speed').hidden = !store.isHost;
     syncSpeedButton();
     // modo espectador de la UI (banner + ocultar controles de jugador). Para un
@@ -275,6 +276,8 @@ function wireNet(): void {
 
   net.on('game_over', (msg) => {
     if (store.game) store.game.over = msg.stats;
+    // si terminó estando en pausa, que el chat no quede flotando sobre el fin
+    $('screen-game').classList.remove('paused');
     stopMusic(); // fin de partida: detener la música (el sting de victoria/derrota es SFX)
     // guardar la repetición (localStorage, máx 10) y recordarla para el botón
     // "🎬 Ver repetición" de la pantalla de fin.
@@ -297,9 +300,12 @@ function wireNet(): void {
   net.on('paused', (msg) => {
     if (store.game) store.game.paused = true;
     $('pause-by').textContent = msg.by ? `${msg.by} pausó la partida` : 'La partida está en pausa';
-    $('btn-resume').hidden = !store.isHost;
+    // cualquier jugador puede reanudar (los espectadores no)
+    $('btn-resume').hidden = store.spectator;
     $('overlay-pause').hidden = false;
     $('btn-pause').textContent = '▶';
+    // .paused sube el chat POR ENCIMA del velo de pausa: se puede hablar en pausa
+    $('screen-game').classList.add('paused');
     pauseMusic(); // la música se atenúa/detiene en pausa
   });
 
@@ -307,6 +313,7 @@ function wireNet(): void {
     if (store.game) store.game.paused = false;
     $('overlay-pause').hidden = true;
     $('btn-pause').textContent = '⏸';
+    $('screen-game').classList.remove('paused');
     resumeMusic();
   });
 

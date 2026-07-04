@@ -106,7 +106,7 @@ function syncPlacingInfo(): void {
   const parts: string[] = [`${TOWER_ICONS[type]} <b>${def.name}</b> 🪙${lvl.cost}`];
   const isAura = lvl.auraDamage !== undefined || lvl.auraHaste !== undefined || lvl.auraBounty !== undefined;
   if (lvl.damage > 0 && !def.onPathOnly) parts.push(`Daño <b>${lvl.damage}</b>`);
-  if (def.onPathOnly) parts.push(def.detonates ? `💥 Detona al pisarlo: <b>${lvl.damage}</b> en área (un solo uso)` : `Daño por golpe <b>${lvl.damage}</b>`);
+  if (def.onPathOnly) parts.push(def.detonates ? `💥 Detona al pisarlo: <b>ELIMINA</b> a los terrestres del área (jefes: ${lvl.damage} de daño)` : `Daño por golpe <b>${lvl.damage}</b>`);
   if (lvl.auraDamage !== undefined && lvl.auraDamage > 0) parts.push(`Aura de daño <b>+${Math.round(lvl.auraDamage * 100)}%</b>`);
   if (lvl.auraHaste !== undefined && lvl.auraHaste > 0) parts.push(`Aura de cadencia <b>+${Math.round(lvl.auraHaste * 100)}%</b>`);
   if (lvl.auraBounty !== undefined && lvl.auraBounty > 0) parts.push(`Aura de oro <b>+${Math.round(lvl.auraBounty * 100)}%</b>`);
@@ -331,7 +331,7 @@ export function refreshPanel(): void {
   } else if (def.onPathOnly) {
     if (def.detonates) {
       // Barril explosivo: se consume al detonar (no tiene cargas que contar)
-      statLines.push('💥 Detona <b>una sola vez</b> cuando un enemigo terrestre lo pisa');
+      statLines.push('💥 Detona <b>una sola vez</b> al ser pisado: <b>ELIMINA</b> a los terrestres del área (los jefes solo reciben daño)');
     } else {
       // Trampa de púas: cargas restantes (no acumula kills/daño clásicos)
       statLines.push(`Cargas: <b>${charges}</b>`);
