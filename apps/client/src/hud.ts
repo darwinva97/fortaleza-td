@@ -925,8 +925,9 @@ function syncMarket(snap: Snap): void {
   const gain = Math.floor(price * WOOD_SELL_SPREAD * WOOD_LOT);
   const buy = $<HTMLButtonElement>('market-buy');
   const sell = $<HTMLButtonElement>('market-sell');
-  setText(buy, `Comprar ${WOOD_LOT} 🪵 — 🪙${cost}`);
-  setText(sell, `Vender ${WOOD_LOT} 🪵 — +🪙${gain}`);
+  // el atajo va en el propio botón (C/V): es donde el jugador mira al operar
+  setText(buy, `[C] Comprar ${WOOD_LOT} 🪵 — 🪙${cost}`);
+  setText(sell, `[V] Vender ${WOOD_LOT} 🪵 — +🪙${gain}`);
   buy.disabled = myGold(gs) < cost;
   sell.disabled = myWood(gs) < WOOD_LOT;
 
