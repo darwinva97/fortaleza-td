@@ -36,6 +36,9 @@ function showCountdown(kind: 'start' | 'resume', seconds: number): void {
   const overlay = $('overlay-countdown');
   const num = $('countdown-num');
   $('countdown-label').textContent = kind === 'start' ? '¡La partida empieza en…!' : '¡Reanudando en…!';
+  // reanudación: el overlay tapa el botón de pausa, así que ofrece cancelar aquí
+  // mismo (manda `pause`, que en el servidor aborta la reanudación en curso)
+  $('countdown-cancel').hidden = kind !== 'resume' || store.spectator;
   overlay.hidden = false;
   let n = Math.max(1, Math.round(seconds));
   const tick = () => {
@@ -304,7 +307,12 @@ function wireNet(): void {
 
   // cuenta regresiva de inicio ('start', en el lobby) o de reanudación ('resume',
   // sobre la pausa). unlockAudio para que suene el tic aunque no se haya tocado nada.
+  // seconds=0 = el servidor la canceló (alguien desmarcó «Listo», entró alguien…).
   net.on('countdown', (msg) => {
+    if (msg.seconds <= 0) {
+      hideCountdown();
+      return;
+    }
     unlockAudio();
     showCountdown(msg.kind, msg.seconds);
   });
@@ -501,6 +509,9 @@ function wireHudButtons(): void {
     else net.send({ type: 'pause' });
   });
   $('btn-resume').addEventListener('click', () => net.send({ type: 'resume' }));
+  // cancela la cuenta atrás de reanudación desde el propio overlay (que tapa el
+  // resto de botones): `pause` aborta la reanudación y nos deja en pausa firme
+  $('countdown-cancel').addEventListener('click', () => net.send({ type: 'pause' }));
 
   // velocidad de juego: el anfitrión cicla x1 → x2 → x3
   $('btn-speed').addEventListener('click', () => {

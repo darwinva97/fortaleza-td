@@ -269,7 +269,9 @@ export type ServerMsg =
   | { type: 'room_joined'; code: string; playerId: string; isHost: boolean; spectator?: boolean }
   | { type: 'lobby_state'; players: LobbyPlayer[]; settings: RoomSettings; inGame: boolean }
   // cuenta regresiva antes de iniciar ('start') o reanudar ('resume') la partida.
-  // El cliente muestra `seconds`..1 en pantalla; el servidor arranca/reanuda al llegar a 0.
+  // El cliente muestra `seconds`..1 en pantalla; el servidor arranca/reanuda al
+  // llegar a 0. seconds=0 significa CANCELADA (alguien desmarcó «Listo», entró
+  // un jugador nuevo…): el cliente solo oculta el número.
   | { type: 'countdown'; kind: 'start' | 'resume'; seconds: number }
   | { type: 'game_started'; init: GameInit }
   | { type: 'tick'; t: number; snap: Snap; events: GameEvent[] }

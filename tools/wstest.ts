@@ -108,6 +108,23 @@ async function main(): Promise<void> {
   const readyLobby = await ana.waitFor('lobby_state');
   assert(readyLobby.players.find((p) => !p.isHost)?.ready === true, 'el jugador aparece como «listo»');
 
+  // 3c. Desmarcar «Listo» durante la cuenta atrás la CANCELA (countdown con seconds=0)
+  ana.send({ type: 'start_game' });
+  const cdCancelable = await ana.waitFor('countdown');
+  assert(cdCancelable.seconds === 3, 'la cuenta atrás arranca con 3s');
+  beto.send({ type: 'set_ready', ready: false });
+  const cdCancel = await ana.waitFor('countdown');
+  assert(cdCancel.kind === 'start' && cdCancel.seconds === 0, 'desmarcar «Listo» cancela la cuenta atrás');
+  // consumir el aviso de sistema (deja limpio el buffer de chat para los tests siguientes)
+  const cancelMsg = await ana.waitFor('chat');
+  assert(cancelMsg.from === '' && /cancelado/i.test(cancelMsg.text), 'todos ven el aviso de cancelación');
+  beto.send({ type: 'set_ready', ready: true });
+  // consumir lobby_state hasta VER a Beto listo (el del desmarcado llega antes)
+  for (;;) {
+    const lb = await ana.waitFor('lobby_state');
+    if (lb.players.find((p) => !p.isHost)?.ready === true) break;
+  }
+
   // 4. Empieza la partida (con cuenta regresiva de 3s antes de arrancar)
   ana.send({ type: 'start_game' });
   const cd = await ana.waitFor('countdown');

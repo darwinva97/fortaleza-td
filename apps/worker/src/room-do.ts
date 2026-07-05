@@ -96,6 +96,10 @@ export class RoomDO {
   // cuentas regresivas de inicio y de reanudación (3 s); no-null = en marcha
   private startTimer: ReturnType<typeof setTimeout> | null = null;
   private resumeTimer: ReturnType<typeof setTimeout> | null = null;
+  // tokens expulsados por el anfitrión: no pueden volver a entrar a ESTA sala
+  // (el token vive en el storage del navegador; limpiarlo lo evade, pero cubre
+  // el caso real: el expulsado reintentando con el mismo código)
+  private banned = new Set<string>();
   private paused = false;
   private speed = 1;
   // ---- grabación de la repetición (replay) de la partida en curso ----
@@ -194,6 +198,11 @@ export class RoomDO {
   // ---------- gestión de jugadores ----------
 
   private addPlayer(name: string, token: string, ws: WebSocket, prevToken?: string): JoinResult {
+    // prevToken también: un expulsado con sessionStorage limpio aún presenta su
+    // respaldo de localStorage — sin esto evadiría el ban sin querer
+    if (this.banned.has(token) || (prevToken && this.banned.has(prevToken))) {
+      return { kind: 'error', msg: 'El anfitrión te expulsó de esta sala' };
+    }
     const existing = this.players.find((p) => p.token === token);
     if (existing) {
       // reconexión de un jugador que ya jugaba (por token): sigue siendo jugador
@@ -268,7 +277,20 @@ export class RoomDO {
       ready: isHost, // el anfitrión ya cuenta como listo
     };
     this.players.push(player);
+    // un jugador nuevo entra sin estar listo: si había cuenta atrás de inicio,
+    // se cancela (si no, la partida le arrancaría de golpe saltándose el gate)
+    this.cancelStartCountdown(`entró ${player.name}`);
     return { kind: 'player', player };
+  }
+
+  // cancela la cuenta atrás de INICIO (si está en marcha) avisando a todos:
+  // countdown con seconds=0 oculta el número en los clientes
+  private cancelStartCountdown(reason: string): void {
+    if (!this.startTimer) return;
+    clearTimeout(this.startTimer);
+    this.startTimer = null;
+    this.broadcast({ type: 'countdown', kind: 'start', seconds: 0 });
+    this.systemMsg(`⏹ Inicio cancelado: ${reason}`);
   }
 
   private sendGameStateTo(player: RoomPlayer): void {
@@ -577,6 +599,9 @@ export class RoomDO {
       this.game = null;
       this.simCtx = null;
       this.broadcast({ type: 'game_over', stats, ...(replay ? { replay } : {}) });
+      // los «Listo» caducan con la partida: la revancha exige reconfirmar
+      // (igual que cambiar la configuración; los promovidos ya entran no-listos)
+      for (const p of this.players) p.ready = p.isHost;
       this.promoteSpectators();
       this.broadcastLobby();
     }, 1200);
@@ -739,6 +764,7 @@ export class RoomDO {
         if (!target || target.id === player.id) break;
         this.systemMsg(`${target.name} fue expulsado por el anfitrión`);
         this.players = this.players.filter((p) => p !== target);
+        this.banned.add(target.token); // expulsado = no puede volver a esta sala
         try {
           target.ws?.close(KICK_CODE, 'kicked');
         } catch {
@@ -751,6 +777,9 @@ export class RoomDO {
       case 'set_ready':
         if (this.game) break;
         player.ready = msg.ready === true;
+        // desmarcar «Listo» durante la cuenta atrás de inicio la cancela (si no,
+        // la partida arrancaría igual 3 s después de que alguien se arrepintiera)
+        if (!player.ready) this.cancelStartCountdown(`${player.name} ya no está listo`);
         this.broadcastLobby();
         break;
 

@@ -909,6 +909,7 @@ html, body {
   text-shadow: 0 0 40px var(--accent2), 0 6px 24px rgba(0, 0, 0, 0.7);
 }
 #countdown-num.pop { animation: countdown-pop 0.9s ease-out; }
+#countdown-cancel { margin-top: 18px; }
 @keyframes countdown-pop {
   0% { transform: scale(0.4); opacity: 0.2; }
   30% { transform: scale(1.15); opacity: 1; }
