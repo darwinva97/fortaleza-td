@@ -25,6 +25,7 @@
       <header class="home-hero">
         <h1 class="logo"><span class="logo-icon">🏰</span> <span class="logo-text">Fortaleza</span></h1>
         <p class="tagline">Tower defense cooperativo — defiendan juntos, en tiempo real</p>
+        <p class="hero-meta"><span>🤝 Co-op en vivo</span><span>🗺 9 mapas</span><span>🏰 3 modos</span><span>👁 modo espectador</span></p>
       </header>
 
       <div class="home-cols">
@@ -39,11 +40,17 @@
           <button id="tab-join" class="tab">Unirse</button>
         </div>
 
-        <!-- Crear es UN botón: el mapa, el modo, la dificultad y la visibilidad
-             se eligen DENTRO de la sala (lobby), con los amigos ya entrando. -->
+        <!-- Crear pide DOS decisiones: nombre y visibilidad (sin valor por defecto
+             a propósito — que sea una elección consciente). El mapa, el modo y la
+             dificultad se eligen DENTRO de la sala, con los amigos ya entrando. -->
         <div id="home-create" class="home-tabpanel">
-          <p class="hint create-hint">Crea la sala y elige dentro el mapa, el modo, la dificultad y si es pública — mientras tu equipo va entrando.</p>
-          <button id="btn-create" class="btn primary big">⚔️ Crear sala</button>
+          <span class="field-label">Visibilidad de la sala</span>
+          <div id="home-visibility" class="seg">
+            <button data-value="private" type="button">🔒 Privada<small>solo con el código</small></button>
+            <button data-value="public" type="button">🌐 Pública<small>abierta en la lista</small></button>
+          </div>
+          <button id="btn-create" class="btn primary big" disabled>⚔️ Crear sala</button>
+          <p id="create-hint" class="hint create-hint">Ponte un nombre y elige la visibilidad para crear la sala.</p>
         </div>
 
         <div id="home-join" class="home-tabpanel" hidden>
@@ -60,7 +67,7 @@
         <div id="home-rooms" class="rooms">
           <h3><span class="live-dot" aria-hidden="true"></span> 🌐 Salas públicas</h3>
           <ul id="home-rooms-list" class="room-list"></ul>
-          <p id="home-rooms-empty" class="hint">No hay salas públicas ahora mismo.<br>Sé el primero: crea una sala y márcala «🌐 Pública» — aparecerá aquí para que otros entren a jugar o a mirar.</p>
+          <p id="home-rooms-empty" class="hint rooms-empty">No hay salas públicas ahora mismo.<br>Crea la primera: elige «🌐 Pública» al crear tu sala y aparecerá aquí para que otros entren a jugar o a mirar.</p>
         </div>
 
         <div id="home-scores" class="scores" hidden>
@@ -72,38 +79,47 @@
           <h3>🎬 Repeticiones</h3>
           <ul id="home-replays-list" class="replay-list"></ul>
         </div>
-        <button id="btn-load-replay" class="btn ghost small">📂 Cargar repetición (.json)</button>
+        <!-- acciones secundarias: lado a lado y ancladas abajo para que la
+             columna derecha no quede con aire muerto bajo la lista de salas -->
+        <div class="home-side-actions">
+          <button id="btn-load-replay" class="btn ghost small">📂 Cargar repetición</button>
+          <button id="btn-bestiary" class="btn ghost small">📖 Guía del juego</button>
+        </div>
         <input id="replay-file" type="file" accept="application/json,.json" hidden />
-        <button id="btn-bestiary" class="btn ghost small">📖 Guía — enemigos, élites y fusiones</button>
       </aside>
       </div>
       </div>
     </section>
 
     <!-- ============ PANTALLA: LOBBY ============ -->
+    <!-- Tres zonas en escritorio (equipo+chat · mapa · ajustes+CTA) repartidas
+         con grid-areas para que TODO quepa sin scroll a 1366×768; en pantallas
+         medianas y en móvil las áreas se reapilan (ver style.css). -->
     <section id="screen-lobby" class="screen" hidden>
       <div class="lobby-card panel">
-        <h2>Sala <button id="lobby-code" class="code-chip" title="Copiar enlace">----</button></h2>
-        <p class="hint">Comparte el código o el enlace para que entren los demás</p>
+        <header class="lobby-head">
+          <h2>Sala <button id="lobby-code" class="code-chip" title="Copiar enlace">----</button></h2>
+          <p class="hint">Comparte el código o el enlace para que entren los demás</p>
+        </header>
 
         <div class="lobby-cols">
-          <div class="lobby-left">
+          <div class="lobby-box lobby-players-box">
             <h3>Jugadores</h3>
             <ul id="lobby-players" class="player-list"></ul>
+          </div>
 
+          <div class="lobby-box lobby-maps-box">
             <h3>Mapa</h3>
             <div id="lobby-maps" class="map-grid"></div>
             <p id="lobby-map-desc" class="hint map-desc"></p>
+          </div>
 
-            <div class="row">
-              <div class="grow">
-                <h3>Modo</h3>
-                <div id="lobby-mode" class="seg">
-                  <button data-value="classic">Clásico<small>36 oleadas</small></button>
-                  <button data-value="endless">Infinito<small>récords</small></button>
-                  <button data-value="horde">Horda 🌀<small>récords</small></button>
-                </div>
-              </div>
+          <div class="lobby-box lobby-settings-box">
+            <h3>Modo</h3>
+            <div id="lobby-mode" class="seg">
+              <button data-value="classic">Clásico<small>36 oleadas</small></button>
+              <button data-value="endless">Infinito<small>récords</small></button>
+              <button data-value="horde">Horda 🌀<small>récords</small></button>
             </div>
             <h3>Dificultad</h3>
             <div id="lobby-diff" class="seg">
@@ -124,7 +140,7 @@
             <button id="btn-leave" class="btn ghost">Salir de la sala</button>
           </div>
 
-          <div class="lobby-right">
+          <div class="lobby-box lobby-chat-box">
             <h3>Chat</h3>
             <div id="lobby-chat" class="chat-log"></div>
             <form id="lobby-chat-form" class="chat-form">

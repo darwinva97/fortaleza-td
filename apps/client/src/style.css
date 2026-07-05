@@ -137,17 +137,18 @@ html, body {
 }
 .seg button:disabled { opacity: 0.55; cursor: default; }
 
-/* tarjetas de mapa con miniatura (compactas: el selector no debe comerse la página) */
+/* tarjetas de mapa con miniatura (DENSAS: son 9 y deben caber en 3×3 sin
+   generar scroll en el lobby de escritorio) */
 .map-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 7px;
 }
 .map-card {
   background: rgba(10, 14, 24, 0.6);
   border: 2px solid var(--border);
   border-radius: 12px;
-  padding: 6px;
+  padding: 5px;
   cursor: pointer;
   text-align: center;
   color: var(--fg);
@@ -156,37 +157,57 @@ html, body {
 .map-card:hover { transform: translateY(-2px); }
 .map-card.selected { border-color: var(--accent); background: rgba(255, 179, 0, 0.08); }
 .map-card:disabled { cursor: default; opacity: 0.7; }
-.map-card canvas { width: 100%; border-radius: 7px; display: block; }
-.map-card .map-name { display: block; font-size: 0.78rem; font-weight: 700; margin-top: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.map-card .map-meta { display: block; font-size: 0.65rem; color: var(--fg-dim); }
-.map-desc { min-height: 1.2em; margin-top: 6px; }
+/* la miniatura tiene ALTURA FIJA (object-fit recorta): los mapas apaisados y
+   los verticales («La Torre», 14×24) ocupan la MISMA celda — sin esto, una
+   sola tarjeta alta desbarataba la cuadrícula y provocaba el scroll */
+.map-card canvas { width: 100%; height: 58px; object-fit: cover; border-radius: 7px; display: block; }
+.map-card .map-name { display: block; font-size: 0.74rem; font-weight: 700; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.map-card .map-meta { display: block; font-size: 0.62rem; color: var(--fg-dim); }
+.map-desc { min-height: 2.4em; margin-top: 6px; font-size: 0.78rem; line-height: 1.3; }
 
 /* ---------- inicio ---------- */
 
 /* Portada en DOS columnas (escritorio): a la izquierda el flujo de jugar
    (crear/unirse), a la derecha las salas públicas ARRIBA (lo primero que ves),
    récords y repeticiones. En móvil se apilan (jugar primero). */
-#screen-home { display: flex; flex-direction: column; align-items: center; padding: 20px 16px; }
-.home-wrap { width: min(1020px, 100%); }
-.home-hero { text-align: center; margin: 6px 0 18px; }
+#screen-home { display: flex; flex-direction: column; align-items: center; padding: 18px 16px; }
+.home-wrap { width: min(1060px, 100%); }
+.home-hero { text-align: center; margin: 2px 0 16px; }
+/* datos reales del juego bajo el eslogan: dan sustancia al hero sin altura */
+.hero-meta {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 5px 22px;
+  margin-top: 8px;
+  color: var(--fg-dim);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
 .home-cols {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
   gap: 18px;
-  align-items: start;
+  /* stretch: ambas tarjetas miden lo mismo — la columna corta no deja un
+     hueco muerto al lado de la larga (queja #1) */
+  align-items: stretch;
 }
 @media (max-width: 900px) {
   .home-cols { grid-template-columns: 1fr; }
 }
 .home-card {
-  padding: 22px 24px;
+  padding: 20px 24px;
   margin: 0;
 }
-.home-side { padding: 20px 22px; }
-.home-side > .btn { width: 100%; margin-top: 8px; }
+.home-side { padding: 18px 20px; display: flex; flex-direction: column; }
 /* dentro de su propia tarjeta, la sección de salas no necesita separador */
 .home-side .rooms { margin-top: 0; border-top: none; padding-top: 0; }
+/* acciones secundarias lado a lado, ancladas al fondo de la tarjeta */
+.home-side-actions { display: flex; gap: 8px; margin-top: auto; padding-top: 14px; }
+.home-side-actions .btn { flex: 1; }
 .create-hint { margin: 12px 0 2px; line-height: 1.45; }
+/* mientras falte nombre o visibilidad, el hint explica el bloqueo en dorado */
+.create-hint.blocked { color: var(--accent-hi); }
 /* puntito "en vivo": la lista se refresca sola */
 .live-dot {
   display: inline-block;
@@ -233,34 +254,58 @@ html, body {
 
 /* ---------- salas públicas (portada) ---------- */
 .rooms { margin-top: 20px; border-top: 1px solid var(--border); padding-top: 14px; }
-.rooms h3 { font-size: 1rem; margin-bottom: 8px; }
-.room-list { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.rooms h3 { font-size: 1rem; margin-bottom: 10px; }
+/* con muchas salas la lista hace scroll INTERNO: la portada nunca crece */
+.room-list { list-style: none; display: flex; flex-direction: column; gap: 8px; max-height: min(48vh, 430px); overflow-y: auto; padding-right: 2px; }
+/* fila escaneable: miniatura · quién/estado + etiquetas · acción */
 .room-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
   background: var(--bg2);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 8px 12px;
+  border-radius: 12px;
+  padding: 8px 10px;
 }
-.room-info { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.room-meta {
-  font-size: 0.82rem;
-  color: var(--fg-dim);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+/* miniatura REAL del mapa (mismo dibujado que las tarjetas del lobby):
+   se reconoce la sala de un vistazo */
+.room-thumb {
+  width: 62px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  flex-shrink: 0;
 }
-.room-meta b { color: var(--fg); }
-.room-state { font-size: 0.72rem; font-weight: 800; letter-spacing: 0.03em; }
+.room-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
+.room-top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.room-host { font-size: 0.92rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.room-state { font-size: 0.7rem; font-weight: 800; letter-spacing: 0.03em; white-space: nowrap; }
 .room-state.lobby { color: var(--ok); }
 .room-state.ingame { color: var(--accent-hi); }
+.room-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+.room-tag {
+  font-size: 0.68rem;
+  color: var(--fg-dim);
+  background: rgba(10, 14, 24, 0.55);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
 .room-row .btn { flex-shrink: 0; }
+/* estado vacío: invita a crear la primera sala pública */
+.rooms-empty {
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  padding: 18px 14px;
+  text-align: center;
+  line-height: 1.5;
+}
 @media (max-width: 700px) {
   .room-row { flex-wrap: wrap; }
-  .room-meta { white-space: normal; }
+  .room-thumb { width: 52px; height: 34px; }
 }
 
 .scores { margin-top: 22px; border-top: 1px solid var(--border); padding-top: 14px; }
@@ -271,37 +316,63 @@ html, body {
 
 /* ---------- lobby ---------- */
 
-#screen-lobby { display: grid; place-items: center; padding: 16px; }
+/* El lobby debe caber SIN scroll a 1366×768: tarjeta ancha (aprovecha el
+   escritorio) y TRES zonas en grid-areas — equipo+chat · mapa · ajustes+CTA.
+   El chat estira bajo los jugadores y absorbe la altura sobrante. */
+#screen-lobby { display: grid; place-items: center; padding: 12px 16px; }
 .lobby-card {
-  width: min(860px, 100%);
-  padding: 24px 26px;
-  margin: 12px 0;
+  width: min(1150px, 100%);
+  padding: 18px 22px 20px;
+  margin: 0;
 }
-.lobby-card h2 { display: flex; align-items: center; gap: 12px; }
+/* cabecera en UNA línea: título + código + cómo invitar */
+.lobby-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.lobby-head h2 { display: flex; align-items: center; gap: 10px; font-size: 1.35rem; }
 .code-chip {
   background: var(--bg3);
   border: 1px dashed var(--accent);
   color: var(--accent);
-  font-size: 1.3rem;
+  font-size: 1.15rem;
   font-weight: 800;
   letter-spacing: 0.25em;
-  padding: 4px 14px;
+  padding: 3px 12px;
   border-radius: 10px;
   cursor: pointer;
 }
-.lobby-cols { display: grid; grid-template-columns: 1.2fr 1fr; gap: 24px; margin-top: 14px; }
-.lobby-card h3 { font-size: 0.75rem; text-transform: uppercase; color: var(--fg-dim); margin: 14px 0 6px; letter-spacing: 0.09em; }
+.lobby-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.24fr) minmax(0, 0.92fr);
+  grid-template-rows: auto 1fr;
+  grid-template-areas:
+    'players maps settings'
+    'chat    maps settings';
+  gap: 14px 22px;
+  margin-top: 14px;
+}
+.lobby-players-box { grid-area: players; }
+.lobby-maps-box { grid-area: maps; }
+.lobby-settings-box { grid-area: settings; }
+.lobby-chat-box { grid-area: chat; display: flex; flex-direction: column; min-height: 0; }
+.lobby-card h3 { font-size: 0.72rem; text-transform: uppercase; color: var(--fg-dim); margin: 12px 0 6px; letter-spacing: 0.09em; }
+/* el primer título de cada zona no arrastra el margen de separación */
+.lobby-box > h3:first-child { margin-top: 0; }
+/* CTA y hints de la columna de ajustes */
+.lobby-settings-box .btn.big { margin-top: 12px; padding: 12px; font-size: 1.02rem; }
+.lobby-settings-box .btn.ghost { width: 100%; margin-top: 8px; padding: 9px; }
+.lobby-settings-box .hint { margin-top: 8px; text-align: center; }
+/* chat: llena la altura que dejen libres las otras columnas */
+.lobby-chat-box .chat-log { flex: 1; height: auto; min-height: 140px; }
 
 .player-list { list-style: none; }
 .player-list li {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 7px 10px;
+  padding: 6px 10px;
   background: rgba(10, 14, 24, 0.55);
   border: 1px solid var(--border);
   border-radius: 9px;
-  margin: 5px 0;
+  margin: 4px 0;
 }
 .player-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; box-shadow: 0 0 6px currentColor; }
 .player-list .player-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -360,6 +431,21 @@ html, body {
   color: var(--fg);
   padding: 9px 12px;
   outline: none;
+}
+
+/* lobby en pantallas medianas: tres columnas ya no caben — jugadores y
+   ajustes lado a lado, mapa y chat a lo ancho debajo */
+@media (max-width: 1080px) {
+  .lobby-cols {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-rows: auto;
+    grid-template-areas:
+      'players settings'
+      'maps    maps'
+      'chat    chat';
+  }
+  /* sin columna que llenar, el chat vuelve a una altura fija contenida */
+  .lobby-chat-box .chat-log { flex: none; height: 180px; min-height: 0; }
 }
 
 /* ---------- juego ---------- */
@@ -735,6 +821,8 @@ html, body {
 #hud-panel .pstats .up { color: var(--ok); font-weight: 700; }
 /* valor EFECTIVO bajo un aura de Estandarte (⚑ dorado, como su anillo) */
 #hud-panel .pstats .aura { color: var(--accent-hi); font-weight: 700; }
+/* F6.2 · contador de próximo ataque de la torre (baja en cada tick) */
+#hud-panel .pstats .pcd { color: var(--accent-hi); font-weight: 700; }
 #hud-panel .prow { display: flex; gap: 8px; margin-top: 8px; }
 #hud-panel .prow .btn { flex: 1; font-size: 0.85rem; padding: 9px 6px; }
 .tmodes { display: flex; gap: 4px; margin-top: 8px; flex-wrap: wrap; }
@@ -1081,11 +1169,24 @@ html, body {
 /* ---------- móvil ---------- */
 
 @media (max-width: 700px) {
-  .lobby-cols { grid-template-columns: 1fr; }
-  .chat-log { height: 160px; }
-  .home-card, .lobby-card { padding: 18px; }
+  /* lobby apilado: equipo → mapa → ajustes/CTA → chat */
+  .lobby-cols {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      'players'
+      'maps'
+      'settings'
+      'chat';
+    gap: 12px;
+  }
+  .lobby-chat-box .chat-log { height: 150px; }
+  .home-card, .lobby-card { padding: 16px; }
   .logo { font-size: 2.1rem; }
-  .map-grid { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); }
+  .tagline { font-size: 0.9rem; }
+  .hero-meta { font-size: 0.72rem; gap: 4px 14px; }
+  /* miniaturas de mapa aún más bajas: 3 por fila también a 390px */
+  .map-grid { gap: 6px; }
+  .map-card canvas { height: 44px; }
 
   /* Panel de torre: HOJA INFERIOR real. Ancla abajo del todo, sustituye a la
      barra de torres mientras está abierto (.panel-open la oculta) y se cierra

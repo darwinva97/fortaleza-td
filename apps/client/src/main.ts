@@ -627,12 +627,9 @@ function wireHudButtons(): void {
     const text = chatInput.value.trim();
     if (text) net.send({ type: 'chat', text });
     chatInput.value = '';
-    // en pausa se queda abierto y con el foco para seguir charlando
-    if (!isPaused()) {
-      chatInput.blur();
-      chatForm.hidden = true;
-      syncChatOpen();
-    }
+    // mantener el formulario abierto con el input enfocado para escribir el siguiente mensaje
+    // (tanto en juego normal como en pausa)
+    chatInput.focus();
   });
   window.addEventListener('keydown', (e) => {
     if (store.screen !== 'game') return;
