@@ -69,10 +69,28 @@ export const GROWTH_PER_SHOT = 8; // +8 de daño base por cada disparo, para sie
 // sin construir nada (como el peón de Green TD). El oro compra torres; la madera
 // compra PODER: las ★especializaciones y el ★★Rango II cuestan madera además de
 // oro. (Un edificio que acelere la tala puede venir en una iteración futura.)
-export const WOOD_PER_SEC = 0.4; // tala del orco (madera/segundo, por jugador)
+export const WOOD_PER_SEC = 0.4; // tala BASE del orco nivel 1 (= ORC_RATES[0])
 export const START_WOOD = 30; // madera inicial
 export const WOOD_COST_SPEC = 45; // coste en madera de una especialización (★)
 export const WOOD_COST_RANK2 = 60; // coste en madera del Rango II (★★)
+// F5.5 · el ORCO se MEJORA con oro (nivel 1..5): tala por segundo según nivel y
+// coste de subir AL SIGUIENTE nivel (índice = nivel actual − 1). Es el motor de
+// madera a largo plazo; el mercado es la conversión instantánea.
+export const ORC_RATES = [0.4, 0.6, 0.8, 1.0, 1.25]; // 🪵/s por nivel de orco
+export const ORC_UPGRADE_COSTS = [140, 260, 420, 620]; // 🪙 para pasar a nv 2..5
+
+// ---------- F5.4 · mercado global de madera ----------
+// Un único mercado POR SALA (el precio vive en GameState → determinista, viaja
+// en snapshots y replays). Comprar SUBE el precio y vender lo BAJA — para todos
+// los jugadores. La venta paga con descuento (spread) para que el ping-pong no
+// sea gratis, y el precio revierte suave hacia la base al final de cada oleada.
+export const WOOD_LOT = 10; // madera por operación
+export const WOOD_PRICE_BASE = 2; // oro por madera (precio inicial)
+export const WOOD_PRICE_MIN = 0.5;
+export const WOOD_PRICE_MAX = 8;
+export const WOOD_PRICE_STEP = 1.08; // cada compra ×1.08; cada venta ÷1.08
+export const WOOD_SELL_SPREAD = 0.85; // la venta paga el 85% del precio
+export const WOOD_PRICE_REVERT = 0.05; // reversión hacia la base al fin de oleada
 
 // oro de entrada para quien se une con la partida ya empezada
 export const midJoinGold = (wave: number) => 180 + wave * 22;
@@ -109,5 +127,5 @@ export const PLAYER_COLORS = [
   '#e57373', // rojo
 ];
 
-export const BALANCE_VERSION = 9; // F5.2: madera (specs/Rango II cuestan 🪵) + clásico a 36 oleadas
+export const BALANCE_VERSION = 11; // F5.5: el orco leñador se mejora (nv 1..5, más tala)
 export const PROTOCOL_VERSION = 1;

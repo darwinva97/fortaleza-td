@@ -27,10 +27,14 @@ import {
   TICK_RATE,
   TOWERS,
   TOWER_ORDER,
+  ORC_RATES,
+  ORC_UPGRADE_COSTS,
   START_WOOD,
   WOOD_COST_RANK2,
   WOOD_COST_SPEC,
+  WOOD_LOT,
   WOOD_PER_SEC,
+  WOOD_SELL_SPREAD,
   type EnemyState,
   type EnemyTypeId,
   type FusionId,
@@ -108,6 +112,7 @@ function botCommands(
   for (const player of state.players) {
     let budget = player.gold; // oro disponible tras las órdenes de este tick
     let woodBudget = player.wood; // madera disponible (F5.2: specs y Rango II la cuestan)
+    let orcLvl = player.orcLevel; // nivel local del orco (para no sobre-pedir mejoras)
 
     // F4.3 · FUSIONAR (máx. una por tick): dos torres propias ESPECIALIZADAS,
     // adyacentes (Chebyshev 1) y con receta → fuse (se queda en la celda de la 1ª).
@@ -183,6 +188,13 @@ function botCommands(
           continue;
         }
       }
+
+      // NOTA F5.5: los bots NO mejoran el orco a propósito. La victoria del
+      // clásico va justa y cualquier oro desviado de la defensa la vuelca
+      // (probado: con mejoras de orco pierden en la 30-36). La mecánica se
+      // cubre con su prueba dirigida y en tools/balance-probe.ts, donde el bot
+      // SÍ la usa (ahí perder es dato, no fallo).
+      void orcLvl;
 
       // 1c) PROYECTO DE FUSIÓN (F4.3), UNA VEZ por partida y jugador: con una
       // base de ≥6 torres y oro de sobra, planta el par hielo+veneno en dos
@@ -1175,6 +1187,75 @@ console.log('— F5.2 · Madera: el orco leñador tala solo; especializar cuesta
   events = stepGame(st, simCtx, [{ playerId: 'p1', cmd: { kind: 'specialize', towerId: 4000, spec: 0 } }]);
   assert(archer.spec === 0, 'con madera suficiente, la especialización procede');
   assert(p.wood < 50 - WOOD_COST_SPEC + 1, `descontó 🪵${WOOD_COST_SPEC} de madera (quedan ${p.wood.toFixed(1)})`);
+}
+
+console.log('— F5.5 · Orco mejorable: más tala por nivel, coste en oro, tope —');
+{
+  const map = getMap('sendero');
+  const simCtx = makeSimContext(map, makePlacementContext(map));
+  const st = createGame('sendero', 'endless', 'normal', 901, [{ id: 'p1', name: 'A', color: '#fff' }]);
+  st.nextId = 8000; st.wave = 1; st.waveState = 'active'; st.spawnQueue = []; st.pendingWave = [];
+  st.enemies.push(mkEnemy('brute', { id: 9200, hp: 100000, maxHp: 100000, speedMult: 0, x: 15.5, y: 2.5, wpIdx: 1 }));
+  const p = st.players[0];
+  p.gold = 10000;
+  assert(p.orcLevel === 1, 'el orco empieza en nivel 1');
+
+  // mejorar: cobra el coste y sube el nivel
+  const cost1 = ORC_UPGRADE_COSTS[0];
+  let events = stepGame(st, simCtx, [{ playerId: 'p1', cmd: { kind: 'upgrade_orc' } }]);
+  assert(p.orcLevel === 2 && p.gold === 10000 - cost1, `mejorar el orco cuesta 🪙${cost1} y sube a nv 2`);
+  assert(events.some((e) => e.e === 'orc' && e.level === 2), 'la mejora emite su evento (toast del cliente)');
+
+  // la tala nueva es la del nivel 2: medir 5 s exactos DESPUÉS de la mejora
+  const w0 = p.wood;
+  for (let i = 0; i < TICK_RATE * 5; i++) stepGame(st, simCtx, []);
+  const gained = p.wood - w0;
+  assert(Math.abs(gained - ORC_RATES[1] * 5) < 0.01, `a nv 2 tala +${ORC_RATES[1]}/s (ganó ${gained.toFixed(2)} en 5 s)`);
+
+  // al máximo: se rechaza con mensaje claro
+  p.orcLevel = ORC_RATES.length;
+  events = stepGame(st, simCtx, [{ playerId: 'p1', cmd: { kind: 'upgrade_orc' } }]);
+  const rej = events.find((e) => e.e === 'reject');
+  assert(rej !== undefined && rej.e === 'reject' && rej.reason.includes('máximo'), 'mejorar un orco al máximo se RECHAZA');
+}
+
+console.log('— F5.4 · Mercado de madera: global, con spread, y el precio se mueve —');
+{
+  const map = getMap('sendero');
+  const simCtx = makeSimContext(map, makePlacementContext(map));
+  const st = createGame('sendero', 'endless', 'normal', 900, [
+    { id: 'p1', name: 'Ana', color: '#fff' },
+    { id: 'p2', name: 'Beto', color: '#000' },
+  ]);
+  st.nextId = 8000; st.wave = 1; st.waveState = 'active'; st.spawnQueue = []; st.pendingWave = [];
+  // un enemigo inmóvil mantiene la oleada VIVA (si no, el fin de oleada reparte
+  // su bono en el mismo tick y ensucia la aritmética del oro)
+  st.enemies.push(mkEnemy('brute', { id: 9100, hp: 100000, maxHp: 100000, speedMult: 0, x: 15.5, y: 2.5, wpIdx: 1 }));
+  const p1 = st.players[0];
+  const p2 = st.players[1];
+  p1.gold = 1000; p1.wood = 0;
+  p2.gold = 1000; p2.wood = 50;
+
+  // COMPRA de p1: paga ceil(precio × lote), recibe el lote y el precio SUBE
+  const price0 = st.woodPrice;
+  const cost = Math.ceil(price0 * WOOD_LOT);
+  let events = stepGame(st, simCtx, [{ playerId: 'p1', cmd: { kind: 'buy_wood' } }]);
+  assert(p1.gold === 1000 - cost, `la compra cuesta ceil(precio×${WOOD_LOT}) (🪙${cost})`);
+  assert(p1.wood >= WOOD_LOT, `la compra entrega ${WOOD_LOT} de madera (${p1.wood.toFixed(1)})`);
+  assert(st.woodPrice > price0, `comprar SUBE el precio (${price0} → ${st.woodPrice.toFixed(2)})`);
+  assert(events.some((e) => e.e === 'trade' && e.buy && e.playerId === 'p1'), 'la compra emite su evento trade');
+
+  // VENTA de p2 al precio YA SUBIDO por p1: el mercado es GLOBAL
+  const priceAfterBuy = st.woodPrice;
+  const gain = Math.floor(priceAfterBuy * WOOD_SELL_SPREAD * WOOD_LOT);
+  events = stepGame(st, simCtx, [{ playerId: 'p2', cmd: { kind: 'sell_wood' } }]);
+  assert(p2.gold === 1000 + gain, `la venta de p2 usa el precio movido por p1 y paga el ${Math.round(WOOD_SELL_SPREAD * 100)}% (+🪙${gain})`);
+  assert(st.woodPrice < priceAfterBuy, `vender BAJA el precio (${priceAfterBuy.toFixed(2)} → ${st.woodPrice.toFixed(2)})`);
+
+  // sin madera suficiente: rechazo claro
+  p1.wood = 3;
+  events = stepGame(st, simCtx, [{ playerId: 'p1', cmd: { kind: 'sell_wood' } }]);
+  assert(events.some((e) => e.e === 'reject'), 'vender sin madera suficiente se RECHAZA');
 }
 
 console.log('— F4.2 · Alquimista: +30% de bounty en su radio, sin apilar —');

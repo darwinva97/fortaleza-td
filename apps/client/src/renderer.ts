@@ -22,7 +22,7 @@ import {
   type TowerTypeId,
 } from '@td/shared';
 import { store, type GameStore, type SnapFrame } from './store.js';
-import { drawParticles, updateParticles, fx } from './particles.js';
+import { drawParticles, floatText, updateParticles, fx } from './particles.js';
 import { getTowerSprite, getProjSprite } from './sprites.js';
 
 // ancho del sprite de torre en celdas (la base ≈ este valor; la estructura sube).
@@ -284,6 +284,8 @@ export function resetRenderer(): void {
   towerAnim.clear();
   projSeen.clear();
   projPrev.clear();
+  orcCampsKey = ''; // los campamentos dependen del mapa y del nº de jugadores
+  orcWoodSeen.clear();
 }
 
 export function addShake(mag: number): void {
@@ -295,6 +297,142 @@ export function addShake(mag: number): void {
 export function addPing(x: number, y: number, color: string, name: string, towerType?: TowerTypeId): void {
   pings.push({ x, y, color, name, life: towerType ? SUGGEST_LIFE : PING_LIFE, towerType });
   if (pings.length > 12) pings.shift();
+}
+
+// ---------- orcos leñadores (F5.4, cosmético) ----------
+// La madera la tala "tu orco" (en la sim es un goteo pasivo); esto lo hace
+// VISIBLE: cada jugador tiene un orco hacheando junto a una decoración del mapa
+// (celdas `blocked`, no construibles — nunca chocan con torres). Puro cliente.
+interface OrcCamp { x: number; y: number }
+let orcCampsKey = '';
+let orcCamps: OrcCamp[] = [];
+// último 🪵 entero visto por jugador, para el "+🪵" flotante del orco propio
+const orcWoodSeen = new Map<string, number>();
+
+function campsFor(map: MapDef, players: number): OrcCamp[] {
+  const key = `${map.id}:${players}`;
+  if (key === orcCampsKey) return orcCamps;
+  orcCampsKey = key;
+  orcCamps = [];
+  const n = map.blocked.length;
+  for (let i = 0; i < players && n > 0; i++) {
+    // repartidos por las decoraciones del mapa (espaciados entre sí)
+    const [c, r] = map.blocked[Math.floor((i * n) / Math.max(1, players)) % n];
+    orcCamps.push({ x: c + 0.5, y: r + 0.5 });
+  }
+  return orcCamps;
+}
+
+// filo del hacha por nivel del orco (F5.5): piedra → cobre → dorado → gélido → arcano
+const ORC_BLADE_COLORS = ['#cfd8dc', '#ffcc80', '#ffd54f', '#80deea', '#ce93d8'];
+
+function drawOrcs(gs: GameStore, now: number): void {
+  const players = gs.init.players;
+  const camps = campsFor(gs.map, players.length);
+  const s = view.scale;
+  const t = now / 1000;
+  for (let i = 0; i < camps.length && i < players.length; i++) {
+    const p = players[i];
+    const camp = camps[i];
+    const x = toX(camp.x - 0.62);
+    const y = toY(camp.y + 0.12);
+    // nivel del orco (del snapshot): hacha mejor y hachazos más rápidos
+    const orcLvl = gs.latest?.players.find((sp) => sp.id === p.id)?.orcLevel ?? 1;
+    // cada orco hachea con su propia fase (más nivel = más cadencia)
+    const ph = (t * (2.4 + (orcLvl - 1) * 0.35) + i * 1.9) % (Math.PI * 2);
+    const swing = Math.sin(ph);
+    const hit = swing > 0.92; // instante del hachazo
+
+    g.save();
+    g.translate(x, y);
+    const os = s * 0.52; // orco de ~media celda
+    // sombra
+    g.fillStyle = 'rgba(0,0,0,0.25)';
+    g.beginPath();
+    g.ellipse(0, os * 0.44, os * 0.32, os * 0.09, 0, 0, Math.PI * 2);
+    g.fill();
+    // cuerpo
+    g.fillStyle = '#4a7c3f';
+    roundRect(g, -os * 0.22, -os * 0.08, os * 0.44, os * 0.5, os * 0.12);
+    g.fill();
+    // faja con el color del dueño (para saber de quién es cada orco)
+    g.fillStyle = p.color;
+    roundRect(g, -os * 0.22, os * 0.2, os * 0.44, os * 0.13, os * 0.05);
+    g.fill();
+    // cabeza con orejas puntiagudas y colmillos
+    g.fillStyle = '#5d9950';
+    g.beginPath();
+    g.arc(0, -os * 0.26, os * 0.2, 0, Math.PI * 2);
+    g.fill();
+    g.beginPath();
+    g.moveTo(-os * 0.18, -os * 0.34);
+    g.lineTo(-os * 0.34, -os * 0.44);
+    g.lineTo(-os * 0.14, -os * 0.46);
+    g.closePath();
+    g.moveTo(os * 0.18, -os * 0.34);
+    g.lineTo(os * 0.34, -os * 0.44);
+    g.lineTo(os * 0.14, -os * 0.46);
+    g.closePath();
+    g.fill();
+    g.fillStyle = '#f5f5f5';
+    g.fillRect(-os * 0.09, -os * 0.19, os * 0.05, os * 0.07); // colmillo izq
+    g.fillRect(os * 0.05, -os * 0.19, os * 0.05, os * 0.07); // colmillo der
+    // brazo + hacha (pivote en el hombro; balancea hacia la decoración)
+    g.save();
+    g.translate(os * 0.16, -os * 0.04);
+    g.rotate(-0.95 + swing * 0.85);
+    g.strokeStyle = '#3c6634';
+    g.lineWidth = Math.max(1.5, os * 0.09);
+    g.beginPath();
+    g.moveTo(0, 0);
+    g.lineTo(os * 0.34, 0);
+    g.stroke();
+    g.strokeStyle = '#8d6e63';
+    g.lineWidth = Math.max(1.2, os * 0.06);
+    g.beginPath();
+    g.moveTo(os * 0.26, 0);
+    g.lineTo(os * 0.62, 0);
+    g.stroke();
+    // filo según nivel; al máximo, brilla
+    g.fillStyle = ORC_BLADE_COLORS[Math.min(orcLvl, ORC_BLADE_COLORS.length) - 1];
+    if (orcLvl >= ORC_BLADE_COLORS.length) {
+      g.shadowColor = ORC_BLADE_COLORS[ORC_BLADE_COLORS.length - 1];
+      g.shadowBlur = os * 0.25;
+    }
+    g.beginPath();
+    g.moveTo(os * 0.62, -os * 0.14);
+    g.lineTo(os * 0.8, 0);
+    g.lineTo(os * 0.62, os * 0.14);
+    g.closePath();
+    g.fill();
+    g.shadowBlur = 0;
+    g.restore();
+    // astillas al impactar
+    if (hit) {
+      g.strokeStyle = '#d7ccc8';
+      g.lineWidth = Math.max(1, os * 0.045);
+      for (let k = 0; k < 3; k++) {
+        const a = -0.7 + k * 0.55;
+        g.beginPath();
+        g.moveTo(os * 0.66, -os * 0.06);
+        g.lineTo(os * (0.66 + 0.24 * Math.cos(a)), -os * 0.06 + os * 0.24 * Math.sin(a));
+        g.stroke();
+      }
+    }
+    g.restore();
+
+    // "+🪵" flotante SOLO del orco propio (con 8 jugadores sería ruido)
+    if (p.id === store.playerId && gs.latest) {
+      const me = gs.latest.players.find((sp) => sp.id === p.id);
+      if (me) {
+        const seen = orcWoodSeen.get(p.id);
+        if (seen !== undefined && me.wood > seen) {
+          floatText(camp.x - 0.62, camp.y - 0.55, `+🪵${me.wood - seen}`, p.color, 11);
+        }
+        if (me.wood !== seen) orcWoodSeen.set(p.id, me.wood);
+      }
+    }
+  }
 }
 
 // fogonazo + retroceso de la torre más cercana a (x, y) en celdas
@@ -3483,6 +3621,7 @@ function loop(): void {
   g.strokeRect(view.ox, view.oy, gs.map.gridW * view.scale, gs.map.gridH * view.scale);
 
   drawMapAnimations(gs.map, now);
+  drawOrcs(gs, now);
 
   const interp = interpolate(gs, now - INTERP_DELAY_MS);
   drawTowers(gs, interp, now, dt);

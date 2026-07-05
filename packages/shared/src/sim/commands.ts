@@ -1,7 +1,20 @@
 import type { GameEvent, GameState, MapDef, PlayerCommand } from '../types.js';
 import { TOWERS, towerLevel, hasRank2, rank2Cost } from '../balance/towers.js';
 import { FUSION_ORDER, findFusion } from '../balance/fusions.js';
-import { CALL_WAVE_GOLD_PER_SEC, SELL_REFUND, TICK_RATE, WOOD_COST_RANK2, WOOD_COST_SPEC } from '../constants.js';
+import {
+  CALL_WAVE_GOLD_PER_SEC,
+  ORC_RATES,
+  ORC_UPGRADE_COSTS,
+  SELL_REFUND,
+  TICK_RATE,
+  WOOD_COST_RANK2,
+  WOOD_COST_SPEC,
+  WOOD_LOT,
+  WOOD_PRICE_MAX,
+  WOOD_PRICE_MIN,
+  WOOD_PRICE_STEP,
+  WOOD_SELL_SPREAD,
+} from '../constants.js';
 import { placementError, type PlacementContext } from './grid.js';
 
 function reject(events: GameEvent[], playerId: string, reason: string) {
@@ -254,6 +267,53 @@ export function applyCommands(
         keep.growthBonus = 0;
         state.towers = state.towers.filter((t) => t.id !== other.id);
         events.push({ e: 'fuse', x: keep.cx + 0.5, y: keep.cy + 0.5, fusion: recipe.id, name: recipe.name });
+        break;
+      }
+
+      // F5.4 · Mercado GLOBAL de madera: cada operación mueve el precio para toda
+      // la sala. Vive en GameState y viaja como cualquier comando → determinista
+      // y grabado en los replays sin trabajo extra.
+      case 'buy_wood': {
+        const cost = Math.ceil(state.woodPrice * WOOD_LOT);
+        if (player.gold < cost) {
+          reject(events, playerId, 'No te alcanza el oro');
+          break;
+        }
+        player.gold -= cost;
+        player.wood += WOOD_LOT;
+        state.woodPrice = Math.min(WOOD_PRICE_MAX, state.woodPrice * WOOD_PRICE_STEP);
+        events.push({ e: 'trade', playerId, buy: true, wood: WOOD_LOT, gold: cost, price: Math.round(state.woodPrice * 100) / 100 });
+        break;
+      }
+
+      case 'sell_wood': {
+        if (player.wood < WOOD_LOT) {
+          reject(events, playerId, `Necesitas 🪵${WOOD_LOT} para vender`);
+          break;
+        }
+        const gain = Math.floor(state.woodPrice * WOOD_SELL_SPREAD * WOOD_LOT);
+        player.wood -= WOOD_LOT;
+        player.gold += gain;
+        state.woodPrice = Math.max(WOOD_PRICE_MIN, state.woodPrice / WOOD_PRICE_STEP);
+        events.push({ e: 'trade', playerId, buy: false, wood: WOOD_LOT, gold: gain, price: Math.round(state.woodPrice * 100) / 100 });
+        break;
+      }
+
+      // F5.5 · mejora del orco leñador: oro → más tala/s, para siempre
+      case 'upgrade_orc': {
+        if (player.orcLevel >= ORC_RATES.length) {
+          reject(events, playerId, 'Tu orco ya está al máximo');
+          break;
+        }
+        const cost = ORC_UPGRADE_COSTS[player.orcLevel - 1];
+        if (player.gold < cost) {
+          reject(events, playerId, 'No te alcanza el oro');
+          break;
+        }
+        player.gold -= cost;
+        player.stats.goldSpent += cost;
+        player.orcLevel += 1;
+        events.push({ e: 'orc', playerId, level: player.orcLevel, rate: ORC_RATES[player.orcLevel - 1] });
         break;
       }
 

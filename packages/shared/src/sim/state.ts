@@ -6,6 +6,7 @@ import {
   START_LIVES,
   START_WOOD,
   TICK_RATE,
+  WOOD_PRICE_BASE,
 } from '../constants.js';
 
 export interface NewPlayerInput {
@@ -21,6 +22,7 @@ export function makePlayer(input: NewPlayerInput, gold: number, wood = START_WOO
     color: input.color,
     gold,
     wood,
+    orcLevel: 1,
     connected: true,
     stats: { kills: 0, damage: 0, goldEarned: 0, goldSpent: 0, towersBuilt: 0 },
   };
@@ -61,6 +63,7 @@ export function createGame(
     towers: [],
     projectiles: [],
     players: players.map((p) => makePlayer(p, START_GOLD[difficulty])),
+    woodPrice: WOOD_PRICE_BASE,
     nextId: 1,
     over: null,
   };

@@ -137,11 +137,11 @@ html, body {
 }
 .seg button:disabled { opacity: 0.55; cursor: default; }
 
-/* tarjetas de mapa con miniatura */
+/* tarjetas de mapa con miniatura (compactas: el selector no debe comerse la página) */
 .map-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 7px;
 }
 .map-card {
   background: rgba(10, 14, 24, 0.6);
@@ -163,11 +163,41 @@ html, body {
 
 /* ---------- inicio ---------- */
 
-#screen-home { display: grid; place-items: center; padding: 16px; }
+/* Portada en DOS columnas (escritorio): a la izquierda el flujo de jugar
+   (crear/unirse), a la derecha las salas públicas ARRIBA (lo primero que ves),
+   récords y repeticiones. En móvil se apilan (jugar primero). */
+#screen-home { display: flex; flex-direction: column; align-items: center; padding: 20px 16px; }
+.home-wrap { width: min(1020px, 100%); }
+.home-hero { text-align: center; margin: 6px 0 18px; }
+.home-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+  gap: 18px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .home-cols { grid-template-columns: 1fr; }
+}
 .home-card {
-  width: min(500px, 100%);
-  padding: 26px 28px;
-  margin: 12px 0;
+  padding: 22px 24px;
+  margin: 0;
+}
+.home-side { padding: 20px 22px; }
+.home-side > .btn { width: 100%; margin-top: 8px; }
+/* dentro de su propia tarjeta, la sección de salas no necesita separador */
+.home-side .rooms { margin-top: 0; border-top: none; padding-top: 0; }
+.create-hint { margin: 12px 0 2px; line-height: 1.45; }
+/* puntito "en vivo": la lista se refresca sola */
+.live-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 8px var(--ok);
+  animation: pulse 1.6s infinite;
+  vertical-align: 2px;
+  margin-right: 2px;
 }
 .logo {
   font-size: 2.6rem;
@@ -336,7 +366,62 @@ html, body {
 /* botones de la barra superior: misma altura y radio que los stats (pills a juego) */
 #hud-top .btn.small { padding: 7px 11px; border-radius: 11px; border-color: rgba(44, 56, 84, 0.85); }
 .stat.gold { color: var(--accent-hi); }
-.stat.wood { color: #bcaaa4; }
+/* el chip de madera es un BOTÓN: abre el mercado (el resto de stats no se tocan) */
+.stat.wood {
+  color: #bcaaa4;
+  pointer-events: auto;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+.stat.wood:active { transform: scale(0.96); }
+/* flechita: señala que el chip se abre (los demás stats no se tocan) */
+.stat.wood::after { content: '▾'; margin-left: 4px; color: var(--fg-dim); font-size: 0.8em; }
+/* llamada de atención hasta que el jugador abre el mercado por PRIMERA vez */
+.stat.wood.attn { animation: wood-attn 1.8s infinite; }
+@keyframes wood-attn {
+  50% { box-shadow: 0 0 12px rgba(255, 213, 79, 0.5); border-color: rgba(255, 213, 79, 0.7); }
+}
+
+/* ---------- mercado global de madera ---------- */
+#market-panel {
+  position: absolute;
+  top: 52px;
+  left: 12px;
+  z-index: 30;
+  width: 280px;
+  max-width: calc(100vw - 24px);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  padding: 12px 14px;
+  pointer-events: auto;
+}
+#market-panel h4 { margin: 0 0 8px; font-size: 0.95rem; }
+#market-panel .mkt-tag { color: var(--fg-dim); font-size: 0.72rem; font-weight: 600; }
+#market-panel .mkt-price { font-size: 0.95rem; margin-bottom: 8px; font-variant-numeric: tabular-nums; }
+#market-panel .mkt-row { display: flex; gap: 8px; }
+#market-panel .mkt-row .btn { flex: 1; font-size: 0.8rem; padding: 8px 4px; }
+/* mejora del orco leñador (F5.5) */
+#market-panel .mkt-orc {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+#market-panel .mkt-orc-info { font-size: 0.85rem; }
+#market-panel .mkt-orc-info b { color: var(--accent-hi); }
+#market-panel .mkt-orc .btn { flex-shrink: 0; font-size: 0.78rem; padding: 7px 10px; }
+@media (max-height: 500px) {
+  #market-panel { top: 40px; padding: 8px 10px; }
+}
 .stat.danger { color: var(--danger); border-color: rgba(239, 83, 80, 0.5); animation: pulse 0.8s infinite; }
 /* horda: aviso ámbar cuando la saturación pasa del 70% (rojo con .danger al 90%) */
 .stat.warn { color: var(--accent-hi); border-color: rgba(255, 213, 79, 0.5); }

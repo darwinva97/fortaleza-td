@@ -78,6 +78,7 @@ export interface SnapPlayer {
   id: string;
   gold: number;
   wood: number; // F5.2 · madera talada por su orco leñador
+  orcLevel: number; // F5.5 · nivel del orco (1..5): más nivel = más tala/s
   connected: boolean;
   kills: number;
   damage: number;
@@ -100,6 +101,7 @@ export interface Snap {
   enemies: SnapEnemy[];
   towers: SnapTower[];
   projs: SnapProj[];
+  woodPrice: number; // F5.4 · precio actual del mercado de madera (oro por 1 🪵)
   over: 0 | 1 | 2; // 0 nada, 1 derrota, 2 victoria
 }
 
@@ -129,6 +131,7 @@ export function buildSnap(state: GameState): Snap {
       id: p.id,
       gold: Math.floor(p.gold),
       wood: Math.floor(p.wood),
+      orcLevel: p.orcLevel,
       connected: p.connected,
       kills: p.stats.kills,
       damage: Math.round(p.stats.damage),
@@ -183,6 +186,7 @@ export function buildSnap(state: GameState): Snap {
         tower ? (towerTypeIdx.get(tower.type) ?? 0) : 0,
       ] as SnapProj;
     }),
+    woodPrice: Math.round(state.woodPrice * 100) / 100,
     over: state.over === null ? 0 : state.over.victory ? 2 : 1,
   };
 }

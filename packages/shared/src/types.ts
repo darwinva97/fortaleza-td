@@ -289,6 +289,9 @@ export interface PlayerState {
   // F5.2 · madera: la tala el orco leñador implícito de cada jugador (+WOOD_PER_SEC
   // por segundo, automática); paga especializaciones (★) y Rango II (★★).
   wood: number;
+  // F5.5 · nivel del orco leñador (1..ORC_RATES.length): más nivel = más tala/s.
+  // Se mejora con oro (comando upgrade_orc, costes en ORC_UPGRADE_COSTS).
+  orcLevel: number;
   connected: boolean;
   stats: PlayerStats;
 }
@@ -338,6 +341,9 @@ export interface GameState {
   towers: TowerState[];
   projectiles: ProjectileState[];
   players: PlayerState[];
+  // F5.4 · mercado global de madera: oro que cuesta 1 madera AHORA (compartido
+  // por toda la sala; comprar lo sube, vender lo baja, revierte al fin de oleada)
+  woodPrice: number;
   nextId: number;
   over: null | { victory: boolean };
 }
@@ -351,6 +357,12 @@ export type Command =
   | { kind: 'sell'; towerId: number }
   | { kind: 'target'; towerId: number; mode: TargetMode }
   | { kind: 'call_wave' }
+  // F5.4 · mercado global de madera: compra/vende WOOD_LOT madera al precio
+  // actual de la sala (mueve el precio para todos)
+  | { kind: 'buy_wood' }
+  | { kind: 'sell_wood' }
+  // F5.5 · mejora el orco leñador del jugador (oro → más tala/s, nivel 1..5)
+  | { kind: 'upgrade_orc' }
   // F4.3 · fusionar dos torres especializadas adyacentes con receta. `keepId` es la
   // torre cuya CELDA se conserva (debe ser towerId u otherId); la otra queda libre.
   | { kind: 'fuse'; towerId: number; otherId: number; keepId: number };
@@ -412,6 +424,11 @@ export type GameEvent =
   | { e: 'wave_start'; wave: number; comp: WaveComp[] }
   | { e: 'wave_end'; wave: number; bonus: number }
   | { e: 'income'; playerId: string; amount: number; x: number; y: number }
+  // F5.4 · operación del mercado de madera: `gold` = oro pagado (compra) o
+  // recibido (venta); `price` = precio DESPUÉS de la operación (2 decimales)
+  | { e: 'trade'; playerId: string; buy: boolean; wood: number; gold: number; price: number }
+  // F5.5 · el orco de un jugador subió de nivel (rate = nueva tala/s)
+  | { e: 'orc'; playerId: string; level: number; rate: number }
   | { e: 'place'; x: number; y: number; towerType: TowerTypeId }
   | { e: 'upgrade'; x: number; y: number; level: number }
   | { e: 'specialize'; x: number; y: number; towerType: TowerTypeId; spec: number; name: string }

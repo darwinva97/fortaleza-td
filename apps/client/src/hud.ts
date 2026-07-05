@@ -15,8 +15,12 @@ import {
   TOWERS,
   TOWER_ORDER,
   towerTotalCost,
+  ORC_RATES,
+  ORC_UPGRADE_COSTS,
   WOOD_COST_RANK2,
   WOOD_COST_SPEC,
+  WOOD_LOT,
+  WOOD_SELL_SPREAD,
   type Snap,
   type TargetMode,
   type TowerLevelDef,
@@ -463,8 +467,13 @@ export function refreshPanel(): void {
       actions = `<div class="prow"><button id="panel-sell" class="btn ghost">💸 Vender ${sellValue}</button></div>`;
     } else if (canSpecialize) {
       const wood = myWood(gs);
+      // descubrimiento contextual: si lo que te frena es la madera, el panel te
+      // manda directo al mercado (el mejor momento para aprender que existe)
+      const woodHint = wood < WOOD_COST_SPEC
+        ? '<p class="hint" style="padding:2px 4px 0">💡 Te falta madera: toca el chip 🪵 de arriba para comprarla o mejorar a tu orco</p>'
+        : '';
       actions = `
-        <div class="spec-title">Elige especialización <span class="spec-woodreq">(cuesta 🪵${WOOD_COST_SPEC} de madera)</span></div>
+        <div class="spec-title">Elige especialización <span class="spec-woodreq">(cuesta 🪵${WOOD_COST_SPEC} de madera)</span></div>${woodHint}
         <div class="spec-choices">
           ${def.specs
             .map(
@@ -648,6 +657,7 @@ export function onTick(snap: Snap): void {
   }
 
   syncTowerBar();
+  syncMarket(snap);
 
   // refrescar el panel de torre (máx 4 veces por segundo para no perder clicks)
   const now = performance.now();
@@ -655,6 +665,65 @@ export function onTick(snap: Snap): void {
     lastPanelSync = now;
     refreshPanel();
   }
+}
+
+// ---------- mercado global de madera (F5.4) ----------
+
+// Refresca el panel del mercado con el precio del snapshot y el estado propio
+// (costes exactos de la próxima operación; botones desactivados si no alcanza).
+function syncMarket(snap: Snap): void {
+  const panel = $('market-panel');
+  if (panel.hidden) return;
+  const gs = store.game;
+  if (!gs) return;
+  const price = snap.woodPrice;
+  $('market-price').textContent = price.toFixed(2);
+  const cost = Math.ceil(price * WOOD_LOT);
+  const gain = Math.floor(price * WOOD_SELL_SPREAD * WOOD_LOT);
+  const buy = $<HTMLButtonElement>('market-buy');
+  const sell = $<HTMLButtonElement>('market-sell');
+  buy.textContent = `Comprar ${WOOD_LOT} 🪵 — 🪙${cost}`;
+  sell.textContent = `Vender ${WOOD_LOT} 🪵 — +🪙${gain}`;
+  buy.disabled = myGold(gs) < cost;
+  sell.disabled = myWood(gs) < WOOD_LOT;
+
+  // mejora del orco (F5.5): nivel/tala propios + coste del siguiente nivel
+  const me = snap.players.find((p) => p.id === store.playerId);
+  const lvl = me?.orcLevel ?? 1;
+  $('orc-level').textContent = `nv ${lvl}`;
+  $('orc-rate').textContent = `+${ORC_RATES[Math.min(lvl, ORC_RATES.length) - 1]}🪵/s`;
+  const orcBtn = $<HTMLButtonElement>('orc-upgrade');
+  if (lvl >= ORC_RATES.length) {
+    orcBtn.textContent = 'Al máximo 🏆';
+    orcBtn.disabled = true;
+  } else {
+    const upCost = ORC_UPGRADE_COSTS[lvl - 1];
+    orcBtn.textContent = `Mejorar (+${ORC_RATES[lvl]}🪵/s) — 🪙${upCost}`;
+    orcBtn.disabled = myGold(gs) < upCost;
+  }
+}
+
+// Cablea el mercado: el chip 🪵 lo abre/cierra; clic fuera lo cierra.
+export function initMarket(): void {
+  const panel = $('market-panel');
+  $('hud-wood').addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (store.spectator || store.replay) return; // mirones: sin trading
+    panel.hidden = !panel.hidden;
+    if (!panel.hidden) {
+      // descubierto: apagar la llamada de atención para siempre
+      localStorage.setItem('td_market_seen', '1');
+      $('hud-wood').classList.remove('attn');
+      if (store.game?.latest) syncMarket(store.game.latest);
+    }
+  });
+  panel.addEventListener('click', (e) => e.stopPropagation());
+  document.addEventListener('click', () => {
+    if (!panel.hidden) panel.hidden = true;
+  });
+  $('market-buy').addEventListener('click', () => net.send({ type: 'cmd', cmd: { kind: 'buy_wood' } }));
+  $('market-sell').addEventListener('click', () => net.send({ type: 'cmd', cmd: { kind: 'sell_wood' } }));
+  $('orc-upgrade').addEventListener('click', () => net.send({ type: 'cmd', cmd: { kind: 'upgrade_orc' } }));
 }
 
 // ---------- velocidad ----------

@@ -5,7 +5,7 @@ import { pushFrame, roomPrevToken, saveName, saveRoomToken, startGameStore, stor
 import { addPing, addShake, initRenderer, isMinimapOn, resetRenderer, toggleMinimap, towerFired } from './renderer.js';
 import { initInput } from './input.js';
 import { initBestiary } from './bestiary.js';
-import { applySpectatorUI, buildTowerBar, hidePanel, onTick, toast, addChat, refreshPanel, syncSpeedButton, syncTowerBar } from './hud.js';
+import { applySpectatorUI, buildTowerBar, hidePanel, initMarket, onTick, toast, addChat, refreshPanel, syncSpeedButton, syncTowerBar } from './hud.js';
 import { hideEnd, homeError, initHome, initLobby, renderLobby, showEnd, switchScreen } from './screens.js';
 import { beam, burst, clearParticles, floatText, fx, line, ring } from './particles.js';
 import { sfx, setSfxVolume, setMusicVolume, unlockAudio } from './audio.js';
@@ -120,6 +120,24 @@ function processEvents(events: GameEvent[]): void {
         floatText(ev.x, ev.y - 0.4, `+🪙${ev.amount}`, '#ffd54f', 13);
         // el ingreso de la mina es de oleada (sin foco espacial): pan neutro.
         sfx.coin();
+        break;
+      case 'orc':
+        if (ev.playerId === store.playerId) {
+          toast(`🪓 ¡Orco leñador nivel ${ev.level}! Ahora tala +${ev.rate}🪵/s`, 'info');
+          sfx.upgrade(0);
+        }
+        break;
+      case 'trade':
+        // solo la operación PROPIA hace ruido (las ajenas ya mueven el precio del panel)
+        if (ev.playerId === store.playerId) {
+          toast(
+            ev.buy
+              ? `🪵 +${ev.wood} por 🪙${ev.gold} · el precio sube a ${ev.price.toFixed(2)}`
+              : `🪵 −${ev.wood} → +🪙${ev.gold} · el precio baja a ${ev.price.toFixed(2)}`,
+            'info',
+          );
+          sfx.coin();
+        }
         break;
       case 'place':
         burst(ev.x, ev.y, TOWERS[ev.towerType].color, 8, 1.8);
@@ -280,6 +298,18 @@ function wireNet(): void {
     $('btn-pause').hidden = store.spectator;
     $('btn-speed').hidden = !store.isHost;
     syncSpeedButton();
+    // Descubrimiento del mercado 🪵: hasta que el jugador lo abra por primera
+    // vez, el chip palpita y (una vez por partida, a los 8 s) un toast le dice
+    // dónde está — el aviso del chat no se ve en móvil (log colapsado).
+    const marketSeen = localStorage.getItem('td_market_seen') === '1';
+    $('hud-wood').classList.toggle('attn', !marketSeen && !store.spectator);
+    if (!marketSeen && !store.spectator) {
+      setTimeout(() => {
+        if (store.screen === 'game' && store.game && !store.game.over && localStorage.getItem('td_market_seen') !== '1') {
+          toast('🪵 Toca el chip de madera (arriba) para COMERCIAR y mejorar a tu orco leñador', 'info');
+        }
+      }, 8000);
+    }
     // modo espectador de la UI (banner + ocultar controles de jugador). Para un
     // jugador normal esto lo desactiva (deja la UI completa).
     applySpectatorUI();
@@ -539,6 +569,7 @@ initInput(canvas);
 initHome();
 initLobby();
 initBestiary();
+initMarket();
 wireHudButtons();
 wireNet();
 // el reproductor de repeticiones reusa el MISMO pipeline de eventos que la red

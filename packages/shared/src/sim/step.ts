@@ -33,9 +33,12 @@ import {
   TICK_RATE,
   WAVE_BONUS_BASE,
   WAVE_BONUS_PER_WAVE,
+  ORC_RATES,
   WOOD_COST_RANK2,
   WOOD_COST_SPEC,
   WOOD_PER_SEC,
+  WOOD_PRICE_BASE,
+  WOOD_PRICE_REVERT,
 } from '../constants.js';
 import { rand } from '../rng.js';
 import { dist, pathLength, pathWaypoints, type PlacementContext } from './grid.js';
@@ -995,6 +998,10 @@ function stepWaves(state: GameState, ctx: SimContext, events: GameEvent[]): void
     }
     events.push({ e: 'wave_end', wave: state.wave, bonus });
 
+    // el mercado de madera "respira": el precio revierte suave hacia la base
+    // al final de cada oleada (aritmética pura, determinista)
+    state.woodPrice += (WOOD_PRICE_BASE - state.woodPrice) * WOOD_PRICE_REVERT;
+
     if (state.totalWaves > 0 && state.wave >= state.totalWaves) {
       state.over = { victory: true };
       events.push({ e: 'gameover', victory: true });
@@ -1143,13 +1150,15 @@ export function stepGame(
   if (state.tick === 0) {
     events.push({
       e: 'sys',
-      msg: `🪵 Tu orco leñador tala madera sin parar (+${WOOD_PER_SEC}/s). La necesitas para ★especializar (${WOOD_COST_SPEC}) y el ★★Rango II (${WOOD_COST_RANK2}).`,
+      msg: `🪵 Tu orco leñador tala madera sin parar (+${WOOD_PER_SEC}/s). La necesitas para ★especializar (${WOOD_COST_SPEC}) y el ★★Rango II (${WOOD_COST_RANK2}). Toca el chip 🪵 para COMERCIAR madera y MEJORAR a tu orco.`,
     });
   }
-  // F5.2 · madera: el orco leñador de cada jugador tala automáticamente. Aritmética
-  // pura por tick (determinista); también para desconectados, como el ingreso de
-  // las minas — su economía no se congela por un F5.
-  for (const p of state.players) p.wood += WOOD_PER_SEC / TICK_RATE;
+  // F5.2 · madera: el orco leñador de cada jugador tala automáticamente (más
+  // rápido a más nivel, F5.5). Aritmética pura por tick (determinista); también
+  // para desconectados, como el ingreso de las minas.
+  for (const p of state.players) {
+    p.wood += ORC_RATES[Math.min(p.orcLevel, ORC_RATES.length) - 1] / TICK_RATE;
+  }
   applyCommands(state, ctx.map, ctx.placement, commands, events);
   stepWaves(state, ctx, events);
   stepTowerAuras(state);

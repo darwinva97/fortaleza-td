@@ -13,10 +13,14 @@
 
     <!-- ============ PANTALLA: INICIO ============ -->
     <section id="screen-home" class="screen">
-      <div class="home-card panel">
+      <div class="home-wrap">
+      <header class="home-hero">
         <h1 class="logo"><span class="logo-icon">🏰</span> <span class="logo-text">Fortaleza</span></h1>
         <p class="tagline">Tower defense cooperativo — defiendan juntos, en tiempo real</p>
+      </header>
 
+      <div class="home-cols">
+      <div class="home-card panel">
         <label class="field">
           <span>Tu nombre</span>
           <input id="home-name" type="text" maxlength="16" placeholder="Ej: Vicente" autocomplete="off" />
@@ -27,34 +31,10 @@
           <button id="tab-join" class="tab">Unirse</button>
         </div>
 
+        <!-- Crear es UN botón: el mapa, el modo, la dificultad y la visibilidad
+             se eligen DENTRO de la sala (lobby), con los amigos ya entrando. -->
         <div id="home-create" class="home-tabpanel">
-          <p class="field-label">Mapa</p>
-          <div id="home-maps" class="map-grid"></div>
-          <p id="home-map-desc" class="hint map-desc"></p>
-
-          <div class="row">
-            <div class="grow">
-              <p class="field-label">Modo</p>
-              <div id="home-mode" class="seg">
-                <button data-value="classic" class="active">Clásico<small>36 oleadas</small></button>
-                <button data-value="endless">Infinito<small>récords</small></button>
-                <button data-value="horde">Horda 🌀<small>récords</small></button>
-              </div>
-            </div>
-          </div>
-          <p class="field-label">Dificultad</p>
-          <div id="home-diff" class="seg">
-            <button data-value="easy">😊 Fácil</button>
-            <button data-value="normal" class="active">🙂 Normal</button>
-            <button data-value="hard">😈 Difícil</button>
-          </div>
-
-          <p class="field-label">Visibilidad</p>
-          <div id="home-visibility" class="seg">
-            <button data-value="private" class="active">🔒 Privada<small>solo con el código</small></button>
-            <button data-value="public">🌐 Pública<small>aparece en la lista</small></button>
-          </div>
-
+          <p class="hint create-hint">Crea la sala y elige dentro el mapa, el modo, la dificultad y si es pública — mientras tu equipo va entrando.</p>
           <button id="btn-create" class="btn primary big">⚔️ Crear sala</button>
         </div>
 
@@ -66,11 +46,13 @@
         </div>
 
         <p id="home-error" class="error" hidden></p>
+      </div>
 
+      <aside class="home-side panel">
         <div id="home-rooms" class="rooms">
-          <h3>🌐 Salas públicas</h3>
+          <h3><span class="live-dot" aria-hidden="true"></span> 🌐 Salas públicas</h3>
           <ul id="home-rooms-list" class="room-list"></ul>
-          <p id="home-rooms-empty" class="hint">No hay salas públicas ahora mismo — crea una y márcala «🌐 Pública».</p>
+          <p id="home-rooms-empty" class="hint">No hay salas públicas ahora mismo.<br>Sé el primero: crea una sala y márcala «🌐 Pública» — aparecerá aquí para que otros entren a jugar o a mirar.</p>
         </div>
 
         <div id="home-scores" class="scores" hidden>
@@ -85,6 +67,8 @@
         <button id="btn-load-replay" class="btn ghost small">📂 Cargar repetición (.json)</button>
         <input id="replay-file" type="file" accept="application/json,.json" hidden />
         <button id="btn-bestiary" class="btn ghost small">📖 Guía — enemigos, élites y fusiones</button>
+      </aside>
+      </div>
       </div>
     </section>
 
@@ -151,7 +135,7 @@
           <span id="hud-lives" class="stat">❤️ 20</span>
           <span id="hud-wave" class="stat">Oleada 0</span>
           <span id="hud-gold" class="stat gold">🪙 0</span>
-          <span id="hud-wood" class="stat wood" title="Madera: tu orco leñador la tala sin parar. Especializar (★) cuesta 🪵45 y el Rango II (★★) 🪵60.">🪵 0</span>
+          <button id="hud-wood" class="stat wood" title="Madera: tu orco leñador la tala sin parar. Especializar (★) cuesta 🪵45 y el Rango II (★★) 🪵60. Toca para abrir el MERCADO.">🪵 0</button>
           <span id="hud-alive" class="stat" hidden>👾 0</span>
         </div>
         <div class="hud-group">
@@ -178,6 +162,21 @@
           <input id="set-music" type="range" min="0" max="100" step="1" />
           <span id="set-music-val" class="set-val">60%</span>
         </label>
+      </div>
+
+      <!-- mercado global de madera (se abre tocando el chip 🪵 de la barra) -->
+      <div id="market-panel" hidden role="dialog" aria-label="Mercado de madera">
+        <h4>🪵 Mercado de madera <span class="mkt-tag">global de la sala</span></h4>
+        <div class="mkt-price">1 🪵 = <b id="market-price">2.00</b> 🪙</div>
+        <div class="mkt-row">
+          <button id="market-buy" class="btn small primary">Comprar</button>
+          <button id="market-sell" class="btn small ghost">Vender</button>
+        </div>
+        <p class="set-hint hint">Cada compra SUBE el precio y cada venta lo BAJA — para todos los jugadores. La venta paga el 85% del precio.</p>
+        <div class="mkt-orc">
+          <div class="mkt-orc-info">🪓 Tu orco: <b id="orc-level">nv 1</b> · <span id="orc-rate">+0.4🪵/s</span></div>
+          <button id="orc-upgrade" class="btn small ghost">Mejorar</button>
+        </div>
       </div>
 
       <div id="spectator-banner" hidden>👁 Estás mirando — entrarás en la próxima partida</div>

@@ -131,36 +131,13 @@ function setSeg(id: string, value: string, disabled = false): void {
 
 // ---------- inicio ----------
 
+// Ajustes POR DEFECTO de una sala nueva: la portada ya no elige nada (mapa,
+// modo, dificultad y visibilidad se cambian DENTRO de la sala, en el lobby).
 const homeSel: RoomSettings = { mapId: MAPS[0].id, mode: 'classic', difficulty: 'normal', public: false };
 
 export function initHome(): void {
   const nameInput = $<HTMLInputElement>('home-name');
   nameInput.value = store.name;
-
-  const refreshMaps = () => {
-    renderMapCards('home-maps', homeSel.mapId, false, (id) => {
-      homeSel.mapId = id;
-      refreshMaps();
-    });
-    $('home-map-desc').textContent = mapDesc(homeSel.mapId);
-  };
-  refreshMaps();
-
-  wireSeg('home-mode', (v) => {
-    homeSel.mode = v as RoomSettings['mode'];
-    setSeg('home-mode', v);
-  });
-  wireSeg('home-diff', (v) => {
-    homeSel.difficulty = v as RoomSettings['difficulty'];
-    setSeg('home-diff', v);
-  });
-  wireSeg('home-visibility', (v) => {
-    homeSel.public = v === 'public';
-    setSeg('home-visibility', v);
-  });
-  setSeg('home-mode', homeSel.mode);
-  setSeg('home-diff', homeSel.difficulty);
-  setSeg('home-visibility', homeSel.public ? 'public' : 'private');
 
   $('tab-create').addEventListener('click', () => {
     $('tab-create').classList.add('active');
