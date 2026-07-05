@@ -302,6 +302,12 @@ export function initInput(canvas: HTMLCanvasElement): void {
     // solo el botón principal genera acciones (el derecho cancela vía contextmenu)
     if (e.pointerType === 'mouse' && e.button !== 0) return;
 
+    // ALT+clic izquierdo (ratón): ping cooperativo directo, sin armar el botón 📍
+    if (e.altKey && e.pointerType === 'mouse') {
+      sendPing(canvas, e.clientX, e.clientY);
+      return;
+    }
+
     // fue un tap limpio
     const gs = store.game;
     const now = performance.now();
@@ -368,6 +374,16 @@ export function initInput(canvas: HTMLCanvasElement): void {
         return;
       }
       clearSelection();
+      return;
+    }
+    // mercado por teclado (sin abrir el panel): C compra un lote, V lo vende.
+    // El toast de la operación (o el rechazo) da el feedback.
+    if (!store.spectator && (e.key === 'c' || e.key === 'C')) {
+      net.send({ type: 'cmd', cmd: { kind: 'buy_wood' } });
+      return;
+    }
+    if (!store.spectator && (e.key === 'v' || e.key === 'V')) {
+      net.send({ type: 'cmd', cmd: { kind: 'sell_wood' } });
       return;
     }
     const type = TOWER_ORDER.find((t) => TOWERS[t].hotkey === e.key);

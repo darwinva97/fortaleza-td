@@ -211,10 +211,22 @@ export function hidePanel(): void {
 // pointerdown y el pointerup de un toque lento.
 let panelWired = false;
 let lastPanelHtml = '';
+// ¿Hay un dedo/botón PRESIONADO sobre el panel ahora mismo? Mientras dure, JAMÁS
+// se reescribe el innerHTML: reescribir destruye el botón bajo el dedo y el
+// click se pierde (bug real: "tengo que tocar Mejorar muchas veces").
+let panelHeld = false;
 
 function wirePanel(): void {
   if (panelWired) return;
   panelWired = true;
+  $('hud-panel').addEventListener('pointerdown', () => {
+    panelHeld = true;
+  });
+  const releasePanel = () => {
+    panelHeld = false;
+  };
+  window.addEventListener('pointerup', releasePanel);
+  window.addEventListener('pointercancel', releasePanel);
   $('hud-panel').addEventListener('click', (e) => {
     const gs = store.game;
     if (!gs || gs.selection?.kind !== 'tower') return;
@@ -371,17 +383,27 @@ export function refreshPanel(): void {
   // aura de Estandarte activa SOBRE esta torre → el panel muestra stats efectivos
   const auraBuff = computeBannerAuras(gs.latest).get(id);
   const statLines = statBlock(lvl, next, auraBuff);
+  // Valores VOLÁTILES (cambian cada tick en combate: bajas/daño/cargas/oro…):
+  // van en spans estables `data-lv` y se actualizan por textContent, FUERA del
+  // dirty-check estructural. Si entraran al innerHTML, el panel se reescribiría
+  // 4 veces por segundo en pleno combate y se tragaría los toques.
+  const live: Record<string, string> = {};
+  const combatLine = 'Bajas: <b data-lv="kills"></b> · Daño total: <b data-lv="damage"></b>';
+  live.kills = String(kills);
+  live.damage = damage.toLocaleString();
   // Estandarte (y fusiones con aura): cuántas torres está reforzando ahora mismo
   if (lvl.auraDamage !== undefined || lvl.auraHaste !== undefined) {
     const n = countBannerTargets(gs.latest, id);
-    statLines.push(`Reforzando <b>${n}</b> ${n === 1 ? 'torre' : 'torres'}`);
+    live.targets = `${n} ${n === 1 ? 'torre' : 'torres'}`;
+    statLines.push('Reforzando <b data-lv="targets"></b>');
     // el Señor de la Guerra además dispara: muestra también su historial de combate
-    if (lvl.alsoFires) statLines.push(`Bajas: <b>${kills}</b> · Daño total: <b>${damage.toLocaleString()}</b>`);
+    if (lvl.alsoFires) statLines.push(combatLine);
   } else if (lvl.auraBounty !== undefined && lvl.auraBounty > 0) {
     // Alquimista: el oro EXTRA acumulado demuestra si su posición está pagando
     // (las bajas deben MORIR dentro de su anillo verde)
     const goldGen = data[15] ?? 0;
-    statLines.push(`Oro extra generado: <b>🪙${goldGen.toLocaleString()}</b>`);
+    live.goldgen = `🪙${goldGen.toLocaleString()}`;
+    statLines.push('Oro extra generado: <b data-lv="goldgen"></b>');
     if (goldGen === 0) statLines.push('<span class="hint">Aún nada: los enemigos deben MORIR dentro de su anillo</span>');
   } else if (def.onPathOnly) {
     if (def.detonates) {
@@ -389,11 +411,12 @@ export function refreshPanel(): void {
       statLines.push('💥 Detona <b>una sola vez</b> al ser pisado: <b>ELIMINA</b> a los terrestres del área (los jefes solo reciben daño)');
     } else {
       // Trampa de púas: cargas restantes (no acumula kills/daño clásicos)
-      statLines.push(`Cargas: <b>${charges}</b>`);
+      live.charges = String(charges);
+      statLines.push('Cargas: <b data-lv="charges"></b>');
     }
-    statLines.push(`Bajas: <b>${kills}</b> · Daño total: <b>${damage.toLocaleString()}</b>`);
+    statLines.push(combatLine);
   } else {
-    statLines.push(`Bajas: <b>${kills}</b> · Daño total: <b>${damage.toLocaleString()}</b>`);
+    statLines.push(combatLine);
   }
   // F4.4 · descubribilidad de las fusiones: toda torre con receta muestra con qué
   // se combina (y qué sale), aunque aún no haya vecina candidata.
@@ -525,11 +548,20 @@ export function refreshPanel(): void {
     ${actions}
   `;
   wirePanel();
-  // solo tocar el DOM si algo cambió: reescribir innerHTML destruye los botones
-  // y puede tragarse un click a mitad de pulsación
-  if (html !== lastPanelHtml) {
+  // ESTRUCTURA: solo reescribir si cambió de verdad (los contadores volátiles ya
+  // no entran aquí) y NUNCA con un dedo presionando el panel — reescribir
+  // destruye el botón bajo el dedo y el click se pierde.
+  const structuralChanged = html !== lastPanelHtml;
+  if (structuralChanged && !panelHeld) {
     lastPanelHtml = html;
     panel.innerHTML = html;
+  }
+  // VOLÁTILES: actualizar por textContent (no destruye nada, no roba clicks)
+  if (!structuralChanged || !panelHeld) {
+    for (const [k, v] of Object.entries(live)) {
+      const el = panel.querySelector<HTMLElement>(`[data-lv="${k}"]`);
+      if (el && el.textContent !== v) el.textContent = v;
+    }
   }
   panel.hidden = false;
   // en móvil el panel es una hoja inferior que SUSTITUYE a la barra de torres
@@ -677,28 +709,32 @@ function syncMarket(snap: Snap): void {
   const gs = store.game;
   if (!gs) return;
   const price = snap.woodPrice;
-  $('market-price').textContent = price.toFixed(2);
+  // no tocar el DOM si el texto no cambió (se llama en cada tick con el panel abierto)
+  const setText = (el: HTMLElement, v: string) => {
+    if (el.textContent !== v) el.textContent = v;
+  };
+  setText($('market-price'), price.toFixed(2));
   const cost = Math.ceil(price * WOOD_LOT);
   const gain = Math.floor(price * WOOD_SELL_SPREAD * WOOD_LOT);
   const buy = $<HTMLButtonElement>('market-buy');
   const sell = $<HTMLButtonElement>('market-sell');
-  buy.textContent = `Comprar ${WOOD_LOT} 🪵 — 🪙${cost}`;
-  sell.textContent = `Vender ${WOOD_LOT} 🪵 — +🪙${gain}`;
+  setText(buy, `Comprar ${WOOD_LOT} 🪵 — 🪙${cost}`);
+  setText(sell, `Vender ${WOOD_LOT} 🪵 — +🪙${gain}`);
   buy.disabled = myGold(gs) < cost;
   sell.disabled = myWood(gs) < WOOD_LOT;
 
   // mejora del orco (F5.5): nivel/tala propios + coste del siguiente nivel
   const me = snap.players.find((p) => p.id === store.playerId);
   const lvl = me?.orcLevel ?? 1;
-  $('orc-level').textContent = `nv ${lvl}`;
-  $('orc-rate').textContent = `+${ORC_RATES[Math.min(lvl, ORC_RATES.length) - 1]}🪵/s`;
+  setText($('orc-level'), `nv ${lvl}`);
+  setText($('orc-rate'), `+${ORC_RATES[Math.min(lvl, ORC_RATES.length) - 1]}🪵/s`);
   const orcBtn = $<HTMLButtonElement>('orc-upgrade');
   if (lvl >= ORC_RATES.length) {
-    orcBtn.textContent = 'Al máximo 🏆';
+    setText(orcBtn, 'Al máximo 🏆');
     orcBtn.disabled = true;
   } else {
     const upCost = ORC_UPGRADE_COSTS[lvl - 1];
-    orcBtn.textContent = `Mejorar (+${ORC_RATES[lvl]}🪵/s) — 🪙${upCost}`;
+    setText(orcBtn, `Mejorar (+${ORC_RATES[lvl]}🪵/s) — 🪙${upCost}`);
     orcBtn.disabled = myGold(gs) < upCost;
   }
 }
@@ -721,9 +757,30 @@ export function initMarket(): void {
   document.addEventListener('click', () => {
     if (!panel.hidden) panel.hidden = true;
   });
-  $('market-buy').addEventListener('click', () => net.send({ type: 'cmd', cmd: { kind: 'buy_wood' } }));
-  $('market-sell').addEventListener('click', () => net.send({ type: 'cmd', cmd: { kind: 'sell_wood' } }));
-  $('orc-upgrade').addEventListener('click', () => net.send({ type: 'cmd', cmd: { kind: 'upgrade_orc' } }));
+  // MANTENER PULSADO repite la operación (~4/s): comprar 50 de madera ya no son
+  // 5 toques — dejas el dedo puesto. El primer disparo es inmediato (= un click).
+  const repeatOnHold = (btn: HTMLButtonElement, fire: () => void): void => {
+    let t: ReturnType<typeof setInterval> | null = null;
+    const stop = () => {
+      if (t) {
+        clearInterval(t);
+        t = null;
+      }
+    };
+    btn.addEventListener('pointerdown', () => {
+      fire();
+      stop();
+      t = setInterval(() => {
+        if (!btn.disabled) fire(); // syncMarket lo desactiva si ya no alcanza
+      }, 230);
+    });
+    for (const ev of ['pointerup', 'pointerleave', 'pointercancel'] as const) {
+      btn.addEventListener(ev, stop);
+    }
+  };
+  repeatOnHold($<HTMLButtonElement>('market-buy'), () => net.send({ type: 'cmd', cmd: { kind: 'buy_wood' } }));
+  repeatOnHold($<HTMLButtonElement>('market-sell'), () => net.send({ type: 'cmd', cmd: { kind: 'sell_wood' } }));
+  repeatOnHold($<HTMLButtonElement>('orc-upgrade'), () => net.send({ type: 'cmd', cmd: { kind: 'upgrade_orc' } }));
 }
 
 // ---------- velocidad ----------
@@ -761,5 +818,10 @@ export function addChat(from: string, color: string, text: string): void {
     log.appendChild(el);
     while (log.children.length > 60) log.firstChild?.remove();
     log.scrollTop = log.scrollHeight;
+    // feed del juego: el mensaje se desvanece solo (killfeed); con el chat
+    // abierto el CSS los mantiene visibles para leer el historial
+    if (logId === 'game-chat-log') {
+      setTimeout(() => el.classList.add('faded'), 7000);
+    }
   }
 }

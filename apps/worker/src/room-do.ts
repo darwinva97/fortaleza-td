@@ -61,6 +61,15 @@ type JoinResult =
 const CHAT_MAX = 200;
 const MAX_SPECTATORS = 8;
 
+// F6.1 · Cierre por INACTIVIDAD (control de costes): si en 30 min nadie hace
+// NADA humano (los pings de keepalive NO cuentan), la sala avisa a los 28 y al
+// cumplirse cierra todos los sockets con el código 4001 — el cliente lo respeta
+// y NO se reconecta (sin esto, la auto-reconexión revivía la sala al instante).
+// Sin sockets, el Durable Object se desaloja solo y deja de facturar duración.
+const IDLE_CLOSE_MS = 30 * 60_000;
+const IDLE_WARN_MS = IDLE_CLOSE_MS - 2 * 60_000;
+const IDLE_CLOSE_CODE = 4001;
+
 // Una sala = un Durable Object. Reutiliza toda la simulación de @td/shared;
 // solo el transporte (WebSocket) y la orquestación son específicos de Cloudflare.
 // Mientras haya un WebSocket abierto, el DO permanece en memoria (sin hibernar),
@@ -86,6 +95,8 @@ export class RoomDO {
   private replayLog: ReplayEntry[] = [];
   private lastPingAt = new Map<string, number>();
   private lastDirReport = 0; // último latido enviado al directorio de salas públicas
+  private lastActivity = Date.now(); // última acción HUMANA (para el cierre por inactividad)
+  private idleWarned = false;
   private nextPlayerNum = 1;
   private nextSpectatorNum = 1;
 
@@ -446,6 +457,9 @@ export class RoomDO {
   }
 
   private tick(): void {
+    // el chequeo de inactividad corre también con la partida EN PAUSA (una pausa
+    // eterna con la pestaña abierta era justo el caso que facturaba sin fin)
+    this.checkIdle();
     if (!this.game || !this.simCtx || this.paused) return;
     const cmds = this.pendingCmds;
     this.pendingCmds = [];
@@ -561,7 +575,46 @@ export class RoomDO {
 
   // ---------- entrada de mensajes ----------
 
+  // ---------- cierre por inactividad ----------
+
+  // Cualquier mensaje que NO sea el ping de keepalive cuenta como vida humana.
+  private touchActivity(): void {
+    this.lastActivity = Date.now();
+    this.idleWarned = false;
+  }
+
+  // Se evalúa desde el tick de sim (partidas, incluso en pausa) y desde los pings
+  // de keepalive (lobby sin loop). Barato: una resta de Date.now().
+  private checkIdle(): void {
+    if (this.connectedCount() === 0) return;
+    const idle = Date.now() - this.lastActivity;
+    if (idle >= IDLE_CLOSE_MS) {
+      this.systemMsg('⏰ Sala cerrada por 30 minutos de inactividad.');
+      this.lastActivity = Date.now(); // no re-disparar si algún cierre tarda
+      this.idleWarned = false;
+      for (const p of this.players) {
+        try {
+          p.ws?.close(IDLE_CLOSE_CODE, 'idle');
+        } catch {
+          /* nada */
+        }
+      }
+      for (const s of this.spectators) {
+        try {
+          s.ws.close(IDLE_CLOSE_CODE, 'idle');
+        } catch {
+          /* nada */
+        }
+      }
+    } else if (idle >= IDLE_WARN_MS && !this.idleWarned) {
+      this.idleWarned = true;
+      this.systemMsg('⏰ Sala inactiva: se cerrará en 2 minutos si nadie hace nada (cualquier acción la mantiene viva).');
+    }
+  }
+
   private handleMessage(ws: WebSocket, msg: ClientMsg): void {
+    // toda acción humana (no el keepalive) mantiene viva la sala
+    if (msg.type !== 'ping') this.touchActivity();
     // crear / unirse crean el vínculo socket↔jugador; el resto exige jugador ya ligado
     if (msg.type === 'create_room') {
       if (this.initialized) {
@@ -693,6 +746,8 @@ export class RoomDO {
         // los pings de keepalive (cada 5 s por cliente) hacen de latido del
         // directorio también con la sala en el LOBBY (sin loop de sim corriendo)
         this.reportPublic();
+        // …y de reloj del cierre por inactividad (en el lobby no hay tick de sim)
+        this.checkIdle();
         break;
     }
   }
@@ -712,6 +767,7 @@ export class RoomDO {
         break;
       case 'ping':
         this.sendTo(spec.ws, { type: 'pong', t: msg.t });
+        this.checkIdle();
         break;
       // cmd, start_game, pause, resume, set_speed, set_settings, leave_room: ignorados
     }
