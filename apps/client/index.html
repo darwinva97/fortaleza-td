@@ -6,6 +6,14 @@
   <meta name="theme-color" content="#0c101a" />
   <title>Fortaleza — Tower Defense Cooperativo</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏰</text></svg>" />
+  <!-- PWA: instalable ("Añadir a pantalla de inicio") → se juega A PANTALLA
+       COMPLETA, sin la barra del navegador que se come ~15% en móvil -->
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Fortaleza" />
 </head>
 <body>
   <div id="app">
@@ -140,7 +148,7 @@
         </div>
         <div class="hud-group">
           <button id="btn-callwave" class="btn small primary" hidden>⚔️ ¡Ya! <span id="callwave-timer"></span></button>
-          <button id="btn-ping" class="btn small ghost" title="Marcar un punto para tu equipo (o mantén pulsado el mapa)">📍</button>
+          <button id="btn-ping" class="btn small ghost" title="Marcar un punto para tu equipo (ALT+clic, mantener pulsado el mapa, o arma este botón)">📍</button>
           <button id="btn-guide" class="btn small ghost" title="Guía: enemigos, élites y fusiones">📖</button>
           <button id="btn-minimap" class="btn small ghost" title="Mostrar/ocultar el minimapa">🗺</button>
           <button id="btn-speed" class="btn small ghost" hidden>▶ x1</button>
@@ -172,7 +180,7 @@
           <button id="market-buy" class="btn small primary">Comprar</button>
           <button id="market-sell" class="btn small ghost">Vender</button>
         </div>
-        <p class="set-hint hint">Cada compra SUBE el precio y cada venta lo BAJA — para todos los jugadores. La venta paga el 85% del precio.</p>
+        <p class="set-hint hint">Cada compra SUBE el precio y cada venta lo BAJA — para todos. La venta paga el 85%. Mantén PULSADO para repetir · atajos: <b>C</b> compra, <b>V</b> vende.</p>
         <div class="mkt-orc">
           <div class="mkt-orc-info">🪓 Tu orco: <b id="orc-level">nv 1</b> · <span id="orc-rate">+0.4🪵/s</span></div>
           <button id="orc-upgrade" class="btn small ghost">Mejorar</button>

@@ -403,6 +403,20 @@ function wireNet(): void {
     $('overlay-reconnect').hidden = true;
   };
 
+  // la sala se cerró por inactividad (código 4001): volver a la portada limpio,
+  // SIN reintentos de conexión
+  net.onKicked = () => {
+    store.roomCode = '';
+    store.game = null;
+    stopMusic();
+    $('overlay-reconnect').hidden = true;
+    $('overlay-pause').hidden = true;
+    $('screen-game').classList.remove('paused');
+    history.replaceState(null, '', location.pathname);
+    switchScreen('home');
+    homeError('⏰ La sala se cerró por inactividad (30 min sin actividad). Crea otra cuando quieran — es un toque.');
+  };
+
   net.onDrop = () => {
     if (store.roomCode) $('overlay-reconnect').hidden = false;
   };

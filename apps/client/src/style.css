@@ -782,6 +782,20 @@ html, body {
   overflow: hidden;
   justify-content: flex-end;
 }
+/* Feed estilo "killfeed": cada mensaje lleva su propia píldora oscura (legible
+   sobre nieve/lava) y se DESVANECE solo a los segundos (clase .faded desde
+   hud.ts). Con el chat abierto (💬) reaparecen todos para leer el historial. */
+#hud-chat .chat-log.compact .msg {
+  background: rgba(8, 11, 19, 0.68);
+  border-radius: 9px;
+  padding: 2px 9px;
+  width: fit-content;
+  max-width: 100%;
+  opacity: 1;
+  transition: opacity 1s;
+}
+#hud-chat .chat-log.compact .msg.faded { opacity: 0; }
+#hud-chat.open .chat-log.compact .msg { opacity: 1; }
 #hud-chat form { pointer-events: auto; }
 #hud-chat form input { background: rgba(14, 18, 28, 0.9); }
 #btn-chat-toggle { pointer-events: auto; margin-top: 6px; }
@@ -1032,10 +1046,11 @@ html, body {
   .panel-open #hud-placing,
   .panel-open #hud-preview,
   .panel-open #hud-chat { display: none; }
-  /* chat compacto: solo el botón 💬; el log aparece al abrirlo */
+  /* chat en móvil: el feed SÍ se ve (los mensajes se desvanecen solos y llevan
+     su píldora de fondo — antes o estaba oculto o flotaba ilegible), solo que
+     más corto para no tapar el tablero */
   #hud-chat { bottom: 86px; width: min(260px, 64vw); }
-  #hud-chat .chat-log.compact { display: none; }
-  #hud-chat.open .chat-log.compact { display: flex; }
+  #hud-chat .chat-log.compact { max-height: 96px; font-size: 0.76rem; }
   #hud-preview { top: auto; bottom: 132px; left: auto; right: 8px; transform: none; text-align: left; max-width: 46vw; font-size: 0.75rem; }
   .tcard.group-start { margin-left: 12px; }
   .tcard.group-start::before { left: -7px; }
