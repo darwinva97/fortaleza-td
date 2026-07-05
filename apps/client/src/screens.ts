@@ -357,12 +357,12 @@ export function renderLobby(): void {
         : p.ready
           ? '<span class="ready-tag on">✅ listo</span>'
           : '<span class="ready-tag off">⏳ esperando</span>';
-      // el anfitrión puede expulsar y ceder la sala a cualquier otro jugador conectado
-      const canManage = store.isHost && !isMe && p.connected;
-      const cede = canManage
+      // el anfitrión puede ceder la sala a otro jugador CONECTADO, y expulsar a
+      // cualquiera, incluso desconectado (limpia los huecos fantasma del lobby)
+      const cede = store.isHost && !isMe && p.connected
         ? `<button class="cede-btn" data-cede="${p.id}" title="Ceder anfitrión a ${escapeHtml(p.name)}" aria-label="Ceder anfitrión">👑</button>`
         : '';
-      const kick = canManage
+      const kick = store.isHost && !isMe
         ? `<button class="kick-btn" data-kick="${p.id}" title="Expulsar a ${escapeHtml(p.name)}" aria-label="Expulsar">✕</button>`
         : '';
       return `
