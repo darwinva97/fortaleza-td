@@ -1021,7 +1021,11 @@ export function toast(text: string, kind: 'error' | 'info' = 'error'): void {
 }
 
 export function addChat(from: string, color: string, text: string): void {
-  for (const logId of ['lobby-chat', 'game-chat-log']) {
+  // Los avisos de SISTEMA (sin autor: "llamó la oleada", tala del orco, jefes…)
+  // son feedback EFÍMERO del juego: van solo al killfeed in-game (donde se
+  // desvanecen) y NUNCA al chat de la sala, que queda reservado a mensajes
+  // reales de jugadores. Sin esto, el lobby-chat se llenaba de spam de partida.
+  for (const logId of from ? ['lobby-chat', 'game-chat-log'] : ['game-chat-log']) {
     const log = document.getElementById(logId);
     if (!log) continue;
     const el = document.createElement('div');

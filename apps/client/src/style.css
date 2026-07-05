@@ -360,8 +360,9 @@ html, body {
 .lobby-settings-box .btn.big { margin-top: 12px; padding: 12px; font-size: 1.02rem; }
 .lobby-settings-box .btn.ghost { width: 100%; margin-top: 8px; padding: 9px; }
 .lobby-settings-box .hint { margin-top: 8px; text-align: center; }
-/* chat: llena la altura que dejen libres las otras columnas */
-.lobby-chat-box .chat-log { flex: 1; height: auto; min-height: 140px; }
+/* chat: llena la altura que dejen libres las otras columnas, pero con un TOPE
+   para que muchos mensajes hagan scroll interno en vez de estirar la tarjeta */
+.lobby-chat-box .chat-log { flex: 1; height: auto; min-height: 140px; max-height: 340px; }
 
 .player-list { list-style: none; }
 .player-list li {
