@@ -388,17 +388,24 @@ export function initInput(canvas: HTMLCanvasElement): void {
       clearSelection();
       return;
     }
+    // combinaciones del navegador (Ctrl+C copiar, Ctrl+V pegar, Alt+…): NO son
+    // atajos de juego — sin esto, copiar texto compraba madera.
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    // los atajos no distinguen mayúsculas: con Bloq Mayús puesto, la W de la
+    // bomba llegaba como 'W' y no coincidía con la hotkey 'w'.
+    const key = e.key.toLowerCase();
+
     // mercado por teclado (sin abrir el panel): C compra un lote, V lo vende.
     // El toast de la operación (o el rechazo) da el feedback.
-    if (!store.spectator && (e.key === 'c' || e.key === 'C')) {
+    if (!store.spectator && key === 'c') {
       net.send({ type: 'cmd', cmd: { kind: 'buy_wood' } });
       return;
     }
-    if (!store.spectator && (e.key === 'v' || e.key === 'V')) {
+    if (!store.spectator && key === 'v') {
       net.send({ type: 'cmd', cmd: { kind: 'sell_wood' } });
       return;
     }
-    const type = TOWER_ORDER.find((t) => TOWERS[t].hotkey === e.key);
+    const type = TOWER_ORDER.find((t) => TOWERS[t].hotkey === key);
     if (type) {
       // espectador: la hotkey arma/desarma el "modo sugerencia" de esa torre
       if (store.spectator) {
