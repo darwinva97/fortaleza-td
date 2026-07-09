@@ -2,6 +2,7 @@
 // avanza miles de ticks. Verifica oleadas, economía, muertes y determinismo.
 import {
   activeStats,
+  applyCommands,
   computeAuras,
   createGame,
   ENEMIES,
@@ -1707,6 +1708,90 @@ console.log('— F4.3 · Corazón de Invierno: aura DOBLE (congela enemigos + ac
   assert(archer.cooldownLeft === fastCd && fastCd < baseCd, `la torre vecina dispara MÁS RÁPIDO (cooldown ${archer.cooldownLeft} == ${fastCd} < ${baseCd})`);
   // el propio Corazón no dispara (es torre de aura)
   assert(st.projectiles.every((p) => p.towerId !== 4700), 'el Corazón de Invierno no dispara');
+}
+
+console.log('— F7.1 · Transferencia de recursos a un aliado: fondos exactos, rechazos y determinismo —');
+{
+  const map = getMap('sendero');
+  const pctx = makePlacementContext(map);
+  // Se prueba applyCommands DIRECTAMENTE (el mismo código que corre stepGame): así
+  // el oro y la madera son EXACTOS, sin la tala del orco que añade cada tick.
+  function freshDuo(): GameState {
+    const s = createGame('sendero', 'endless', 'normal', 4242, [
+      { id: 'p1', name: 'Ana', color: '#fff' },
+      { id: 'p2', name: 'Beto', color: '#000' },
+    ]);
+    s.players[0].gold = 500; s.players[0].wood = 30;
+    s.players[1].gold = 100; s.players[1].wood = 5;
+    return s;
+  }
+  const give = (s: GameState, cmd: PlayerCommand['cmd']): GameEvent[] => {
+    const ev: GameEvent[] = [];
+    applyCommands(s, map, pctx, [{ playerId: 'p1', cmd }], ev);
+    return ev;
+  };
+
+  // (1) transferencia válida: mueve oro y madera EXACTOS + evento + stats coherentes
+  {
+    const s = freshDuo();
+    const p1 = s.players[0], p2 = s.players[1];
+    const spent0 = p1.stats.goldSpent, earned0 = p2.stats.goldEarned;
+    const ev = give(s, { kind: 'give', to: 'p2', gold: 120, wood: 10 });
+    assert(p1.gold === 380 && p1.wood === 20, `el emisor pierde lo enviado EXACTO (🪙${p1.gold} 🪵${p1.wood})`);
+    assert(p2.gold === 220 && p2.wood === 15, `el receptor recibe lo enviado EXACTO (🪙${p2.gold} 🪵${p2.wood})`);
+    assert(
+      ev.some((e) => e.e === 'give' && e.from === 'p1' && e.to === 'p2' && e.gold === 120 && e.wood === 10),
+      'la transferencia emite su evento give',
+    );
+    assert(p1.stats.goldSpent === spent0 + 120, 'el oro enviado cuenta como GASTADO por el emisor');
+    assert(p2.stats.goldEarned === earned0 + 120, 'el oro recibido cuenta como GANADO por el receptor');
+  }
+
+  // (2) fondos insuficientes: se RECHAZA y no mueve nada
+  {
+    const s = freshDuo();
+    const before = [s.players[0].gold, s.players[0].wood, s.players[1].gold, s.players[1].wood];
+    const ev = give(s, { kind: 'give', to: 'p2', gold: 999999, wood: 0 });
+    assert(ev.some((e) => e.e === 'reject'), 'enviar más oro del que tienes se RECHAZA');
+    assert(
+      JSON.stringify([s.players[0].gold, s.players[0].wood, s.players[1].gold, s.players[1].wood]) === JSON.stringify(before),
+      'un envío rechazado por fondos NO mueve recursos',
+    );
+  }
+
+  // (3) cantidades inválidas (negativa, no entera, ambas cero): RECHAZADAS, sin mover oro
+  {
+    const s = freshDuo();
+    const g0 = s.players[0].gold;
+    for (const bad of [{ gold: -10, wood: 0 }, { gold: 5.5, wood: 0 }, { gold: 0, wood: 0 }]) {
+      const ev = give(s, { kind: 'give', to: 'p2', gold: bad.gold, wood: bad.wood });
+      assert(ev.some((e) => e.e === 'reject'), `rechaza cantidad inválida (🪙${bad.gold} 🪵${bad.wood})`);
+    }
+    assert(s.players[0].gold === g0, 'ningún envío inválido movió oro');
+  }
+
+  // (4) destinatario inexistente y a-uno-mismo: RECHAZADOS
+  {
+    const s = freshDuo();
+    assert(give(s, { kind: 'give', to: 'fantasma', gold: 10, wood: 0 }).some((e) => e.e === 'reject'), 'enviar a un destinatario inexistente se RECHAZA');
+    assert(give(s, { kind: 'give', to: 'p1', gold: 10, wood: 0 }).some((e) => e.e === 'reject'), 'enviarse a UNO MISMO se RECHAZA');
+    assert(s.players[0].gold === 500 && s.players[1].gold === 100, 'los rechazos de destinatario no mueven oro');
+  }
+
+  // (5) determinismo: dos corridas idénticas con el mismo give por stepGame → mismo estado
+  function giveRun(): string {
+    const s = createGame('sendero', 'endless', 'normal', 4242, [
+      { id: 'p1', name: 'Ana', color: '#fff' },
+      { id: 'p2', name: 'Beto', color: '#000' },
+    ]);
+    s.players[0].gold = 500;
+    const ctx = makeSimContext(map, makePlacementContext(map));
+    for (let i = 0; i < 20; i++) {
+      stepGame(s, ctx, i === 3 ? [{ playerId: 'p1', cmd: { kind: 'give', to: 'p2', gold: 77, wood: 0 } }] : []);
+    }
+    return JSON.stringify([s.tick, s.rng, s.nextId, s.players.map((p) => [Math.round(p.gold * 1000), Math.round(p.wood * 1000)])]);
+  }
+  assert(giveRun() === giveRun(), 'la transferencia es DETERMINISTA (misma semilla + mismo give → mismo estado)');
 }
 
 console.log('— Determinismo: misma semilla + mismos comandos → mismo estado —');

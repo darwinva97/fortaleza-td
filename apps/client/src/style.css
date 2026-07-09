@@ -577,6 +577,59 @@ html, body {
 }
 .pchip.live-chip .live-bad { color: var(--danger); font-weight: 800; }
 
+/* ---------- tabla de jugadores en vivo (F7.1) ---------- */
+/* panel flotante compacto (se abre con 📊); NO tapa el mapa y se cierra al tocar
+   fuera o con ✕. Centrado arriba para no pisar ni los chips (izq) ni los botones (der). */
+#scoreboard-panel {
+  position: absolute;
+  top: 52px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 31;
+  width: 340px;
+  max-width: calc(100vw - 24px);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  padding: 10px 12px;
+  pointer-events: auto;
+}
+.sb-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.sb-head h4 { margin: 0; font-size: 0.95rem; }
+.sb-head .btn { padding: 2px 9px; }
+#scoreboard-body table { width: 100%; border-collapse: collapse; font-size: 0.82rem; font-variant-numeric: tabular-nums; }
+#scoreboard-body th { color: var(--fg-dim); font-weight: 600; font-size: 0.72rem; text-align: right; padding: 2px 5px; }
+#scoreboard-body th.sb-name { text-align: left; }
+#scoreboard-body td { padding: 3px 5px; text-align: right; white-space: nowrap; }
+#scoreboard-body td.sb-name { text-align: left; max-width: 100px; overflow: hidden; text-overflow: ellipsis; }
+#scoreboard-body tr.sb-me td { background: rgba(255, 213, 79, 0.08); }
+#scoreboard-body tr.offline td { opacity: 0.45; }
+#scoreboard-body .sb-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; box-shadow: 0 0 5px currentColor; vertical-align: middle; }
+#scoreboard-body .sb-dmg { color: var(--accent-hi); }
+#scoreboard-body .sb-kills { color: #f48fb1; }
+#scoreboard-body .btn.sb-give { padding: 1px 8px; font-size: 0.9rem; line-height: 1.4; }
+
+/* mini-formulario de regalo (🎁): aparece bajo la tabla al elegir un aliado */
+#scoreboard-give:not(:empty) { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.sb-give-title { font-size: 0.85rem; margin-bottom: 7px; }
+.sb-give-title b { color: var(--accent-hi); }
+.sb-give-row { display: flex; align-items: center; gap: 5px; margin-bottom: 6px; }
+.sb-give-row .sb-give-lbl { width: 20px; text-align: center; flex-shrink: 0; }
+.sb-give-row input {
+  width: 64px; flex-shrink: 0; padding: 6px; background: var(--bg);
+  border: 1px solid var(--border); border-radius: 8px; color: var(--fg);
+  font-size: 0.85rem; font-variant-numeric: tabular-nums;
+}
+.sb-give-row .btn.sb-quick { padding: 5px 7px; font-size: 0.72rem; flex: 1; min-width: 0; }
+.sb-give-actions { display: flex; gap: 6px; margin-top: 8px; }
+.sb-give-actions .btn { flex: 1; font-size: 0.82rem; padding: 8px 4px; }
+@media (max-height: 500px) {
+  #scoreboard-panel { top: 40px; padding: 8px 10px; }
+}
+
 /* ---------- panel de ajustes de sonido (⚙) ---------- */
 #settings-panel {
   position: absolute;

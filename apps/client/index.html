@@ -167,6 +167,7 @@
         <div class="hud-group">
           <button id="btn-callwave" class="btn small primary" hidden>⚔️ ¡Ya! <span id="callwave-timer"></span></button>
           <button id="btn-ping" class="btn small ghost" title="Marcar un punto para tu equipo (ALT+clic, mantener pulsado el mapa, o arma este botón)">📍</button>
+          <button id="btn-scoreboard" class="btn small ghost" title="Tabla de jugadores: oro, madera, daño y bajas de la partida" aria-haspopup="true" aria-expanded="false">📊</button>
           <button id="btn-guide" class="btn small ghost" title="Guía: enemigos, élites y fusiones">📖</button>
           <button id="btn-minimap" class="btn small ghost" title="Mostrar/ocultar el minimapa">🗺</button>
           <button id="btn-speed" class="btn small ghost" hidden>▶ x1</button>
@@ -203,6 +204,17 @@
           <div class="mkt-orc-info">🪓 Tu orco: <b id="orc-level">nv 1</b> · <span id="orc-rate">+0.4🪵/s</span></div>
           <button id="orc-upgrade" class="btn small ghost">Mejorar</button>
         </div>
+      </div>
+
+      <!-- tabla de jugadores en vivo (F7.1): daño/bajas de la partida + regalar (🎁).
+           Panel flotante compacto que NO tapa el mapa; se abre con 📊. -->
+      <div id="scoreboard-panel" hidden role="dialog" aria-label="Tabla de jugadores">
+        <div class="sb-head">
+          <h4>📊 Jugadores</h4>
+          <button id="scoreboard-close" class="btn small ghost" aria-label="Cerrar tabla">✕</button>
+        </div>
+        <div id="scoreboard-body"></div>
+        <div id="scoreboard-give"></div>
       </div>
 
       <div id="spectator-banner" hidden>👁 Estás mirando — entrarás en la próxima partida</div>

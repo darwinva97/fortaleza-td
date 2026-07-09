@@ -317,6 +317,49 @@ export function applyCommands(
         break;
       }
 
+      // F7.1 · TRANSFERENCIA de recursos a un aliado (estilo Green TD). El comando
+      // llega del cliente SIN validar → aquí se comprueba todo: cantidades enteras
+      // ≥0 (al menos una >0), destinatario existente y distinto de uno mismo, y
+      // fondos suficientes. Mueve oro/madera y ajusta la telemetría con el MISMO
+      // criterio que el resto de comandos (oro que sale = goldSpent; oro que entra
+      // = goldEarned). Determinista: sin RNG ni reloj.
+      case 'give': {
+        const { to, gold, wood } = cmd;
+        if (
+          !Number.isInteger(gold) ||
+          !Number.isInteger(wood) ||
+          gold < 0 ||
+          wood < 0 ||
+          (gold === 0 && wood === 0)
+        ) {
+          reject(events, playerId, 'Cantidad inválida para enviar');
+          break;
+        }
+        if (to === playerId) {
+          reject(events, playerId, 'No puedes enviarte recursos a ti mismo');
+          break;
+        }
+        const receiver = state.players.find((p) => p.id === to);
+        if (!receiver) {
+          reject(events, playerId, 'Ese jugador no está en la partida');
+          break;
+        }
+        if (player.gold < gold || player.wood < wood) {
+          reject(events, playerId, 'No te alcanzan los recursos para enviar');
+          break;
+        }
+        player.gold -= gold;
+        player.wood -= wood;
+        receiver.gold += gold;
+        receiver.wood += wood;
+        // el oro donado cuenta como gastado por el emisor y ganado por el receptor
+        // (la madera no tiene stat propio). Coherente con sell/call_wave/place.
+        player.stats.goldSpent += gold;
+        receiver.stats.goldEarned += gold;
+        events.push({ e: 'give', from: playerId, to, gold, wood });
+        break;
+      }
+
       case 'call_wave': {
         if (state.waveState !== 'interlude') break;
         const secsLeft = state.interludeLeft / TICK_RATE;

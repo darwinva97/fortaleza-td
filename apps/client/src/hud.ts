@@ -888,6 +888,9 @@ export function onTick(snap: Snap): void {
     refreshPanel();
   }
 
+  // tabla de jugadores en vivo (F7.1): refresca daño/bajas mientras esté abierta
+  syncScoreboard(now);
+
   // F6.2 · el contador de próximo ataque baja FLUIDO: se refresca en CADA tick
   // (15/s), no solo cuando el panel se rehace (4/s). Solo tocamos el span si
   // existe —refreshPanel lo crea únicamente para torres que disparan— y por
@@ -989,6 +992,211 @@ export function initMarket(): void {
   repeatOnHold($<HTMLButtonElement>('market-buy'), () => net.send({ type: 'cmd', cmd: { kind: 'buy_wood' } }));
   repeatOnHold($<HTMLButtonElement>('market-sell'), () => net.send({ type: 'cmd', cmd: { kind: 'sell_wood' } }));
   repeatOnHold($<HTMLButtonElement>('orc-upgrade'), () => net.send({ type: 'cmd', cmd: { kind: 'upgrade_orc' } }));
+}
+
+// ---------- tabla de jugadores en vivo (F7.1) ----------
+// Los chips de arriba quedan compactos (nombre · oro); el botón 📊 expande esta
+// tabla flotante con oro/madera + DAÑO y BAJAS de la partida (reutiliza los stats
+// por jugador del snapshot), y el botón 🎁 para REGALAR recursos a un aliado.
+
+let lastScoreboardSync = 0;
+let giveTarget: string | null = null; // playerId al que se va a regalar (null = sin formulario)
+
+// daño compacto: 12345 → "12.3k", 999 → "999"
+function fmtDmg(n: number): string {
+  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+}
+
+// entero ≥0 y acotado a partir de un valor de input (defensa; el server revalida)
+function clampInt(v: string): number {
+  const n = Math.floor(Number(v));
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(n, 99999);
+}
+
+// (re)construye la tabla; se llama en cada snapshot con el panel abierto (throttle
+// en onTick). El mini-formulario de regalo vive en otro contenedor, así que
+// refrescar la tabla NO pisa lo que el jugador está escribiendo.
+export function renderScoreboard(): void {
+  const gs = store.game;
+  const snap = gs?.latest;
+  if (!gs || !snap) return;
+  const meId = store.playerId;
+  const canGive = !store.spectator && !store.replay && snap.players.some((p) => p.id === meId);
+  const rows = snap.players
+    .map((p) => {
+      const info = gs.init.players.find((ip) => ip.id === p.id);
+      const isMe = p.id === meId;
+      const name = escapeHtml(info?.name ?? p.id); // nombre de usuario: SIEMPRE escapado
+      const give =
+        canGive && !isMe
+          ? `<button class="btn small ghost sb-give" data-give="${escapeHtml(p.id)}" aria-label="Enviar recursos a ${name}" title="Enviar oro/madera a ${name}">🎁</button>`
+          : '';
+      return `<tr class="${isMe ? 'sb-me' : ''}${p.connected ? '' : ' offline'}">
+        <td class="sb-name"><span class="sb-dot" style="background:${info?.color};color:${info?.color}"></span>${name}</td>
+        <td>🪙${p.gold}</td>
+        <td>🪵${p.wood}</td>
+        <td class="sb-dmg">${fmtDmg(p.damage)}</td>
+        <td class="sb-kills">${p.kills}</td>
+        <td>${give}</td>
+      </tr>`;
+    })
+    .join('');
+  $('scoreboard-body').innerHTML = `<table>
+    <thead><tr>
+      <th class="sb-name">Jugador</th><th>🪙</th><th>🪵</th>
+      <th title="Daño total de la partida">⚔️</th><th title="Bajas totales">💀</th><th></th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+// dibuja (o limpia) el mini-formulario de regalo según `giveTarget`. Solo se llama
+// al elegir/cambiar de aliado o al enviar/cancelar — nunca en el refresco de la
+// tabla, para no perder el foco ni los valores mientras se escribe.
+function renderGiveForm(): void {
+  const box = $('scoreboard-give');
+  const gs = store.game;
+  if (!giveTarget || !gs) {
+    box.innerHTML = '';
+    return;
+  }
+  const info = gs.init.players.find((ip) => ip.id === giveTarget);
+  const name = escapeHtml(info?.name ?? giveTarget);
+  box.innerHTML = `
+    <div class="sb-give-title">🎁 Enviar a <b>${name}</b></div>
+    <div class="sb-give-row">
+      <span class="sb-give-lbl">🪙</span>
+      <input id="give-gold" type="number" inputmode="numeric" min="0" step="10" value="0" aria-label="Oro a enviar" />
+      <button class="btn small ghost sb-quick" data-add-gold="10">+10</button>
+      <button class="btn small ghost sb-quick" data-add-gold="50">+50</button>
+      <button class="btn small ghost sb-quick" data-add-gold="100">+100</button>
+      <button class="btn small ghost sb-quick" data-max-gold="1">Máx</button>
+    </div>
+    <div class="sb-give-row">
+      <span class="sb-give-lbl">🪵</span>
+      <input id="give-wood" type="number" inputmode="numeric" min="0" step="5" value="0" aria-label="Madera a enviar" />
+      <button class="btn small ghost sb-quick" data-add-wood="5">+5</button>
+      <button class="btn small ghost sb-quick" data-add-wood="25">+25</button>
+      <button class="btn small ghost sb-quick" data-max-wood="1">Máx</button>
+    </div>
+    <div class="sb-give-actions">
+      <button id="give-send" class="btn small primary">Enviar</button>
+      <button id="give-cancel" class="btn small ghost">Cancelar</button>
+    </div>`;
+}
+
+// valida en cliente (feedback inmediato) y manda el comando; el server revalida.
+function submitGive(): void {
+  const gs = store.game;
+  if (!gs || !giveTarget) return;
+  const gEl = document.getElementById('give-gold') as HTMLInputElement | null;
+  const wEl = document.getElementById('give-wood') as HTMLInputElement | null;
+  const gold = clampInt(gEl?.value ?? '0');
+  const wood = clampInt(wEl?.value ?? '0');
+  if (gold <= 0 && wood <= 0) {
+    toast('Pon una cantidad de 🪙 o 🪵 para enviar');
+    return;
+  }
+  if (gold > myGold(gs) || wood > myWood(gs)) {
+    toast('No te alcanzan los recursos para enviar');
+    return;
+  }
+  net.send({ type: 'cmd', cmd: { kind: 'give', to: giveTarget, gold, wood } });
+  giveTarget = null;
+  renderGiveForm();
+}
+
+// Cablea el panel: el botón 📊 lo abre/cierra (estado recordado en localStorage);
+// ✕ o un toque fuera lo cierran; delegación para 🎁, atajos rápidos y enviar.
+export function initScoreboard(): void {
+  const panel = $('scoreboard-panel');
+  const btn = $('btn-scoreboard');
+  const open = localStorage.getItem('td_scoreboard') === '1';
+  panel.hidden = !open; // colapsada por defecto
+  btn.setAttribute('aria-expanded', String(open));
+
+  const setOpen = (v: boolean): void => {
+    panel.hidden = !v;
+    btn.setAttribute('aria-expanded', String(v));
+    localStorage.setItem('td_scoreboard', v ? '1' : '0');
+    if (v) {
+      $('market-panel').hidden = true; // ambos viven arriba: abrir uno cierra el otro
+      if (store.game?.latest) renderScoreboard();
+    } else {
+      giveTarget = null;
+      renderGiveForm();
+    }
+  };
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setOpen(panel.hidden);
+  });
+  $('scoreboard-close').addEventListener('click', (e) => {
+    e.stopPropagation();
+    setOpen(false);
+  });
+  // clic dentro no cierra; un toque fuera sí (mismo patrón que el mercado)
+  panel.addEventListener('click', (e) => e.stopPropagation());
+  document.addEventListener('click', () => {
+    if (!panel.hidden) setOpen(false);
+  });
+
+  // delegación de acciones dentro del panel (la tabla se re-renderiza a menudo)
+  panel.addEventListener('click', (e) => {
+    const t = e.target as HTMLElement;
+    const giveEl = t.closest<HTMLElement>('[data-give]');
+    if (giveEl) {
+      giveTarget = giveEl.dataset.give ?? null;
+      renderGiveForm();
+      (document.getElementById('give-gold') as HTMLInputElement | null)?.focus();
+      return;
+    }
+    const gEl = document.getElementById('give-gold') as HTMLInputElement | null;
+    const wEl = document.getElementById('give-wood') as HTMLInputElement | null;
+    const gs = store.game;
+    const addGold = t.closest<HTMLElement>('[data-add-gold]');
+    if (addGold && gEl) {
+      gEl.value = String(clampInt(gEl.value) + Number(addGold.dataset.addGold));
+      return;
+    }
+    const addWood = t.closest<HTMLElement>('[data-add-wood]');
+    if (addWood && wEl) {
+      wEl.value = String(clampInt(wEl.value) + Number(addWood.dataset.addWood));
+      return;
+    }
+    if (t.closest('[data-max-gold]') && gEl && gs) {
+      gEl.value = String(myGold(gs));
+      return;
+    }
+    if (t.closest('[data-max-wood]') && wEl && gs) {
+      wEl.value = String(myWood(gs));
+      return;
+    }
+    if (t.closest('#give-cancel')) {
+      giveTarget = null;
+      renderGiveForm();
+      return;
+    }
+    if (t.closest('#give-send')) submitGive();
+  });
+
+  // Enter dentro del formulario = enviar
+  panel.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.target as HTMLElement).closest('#scoreboard-give')) {
+      e.preventDefault();
+      submitGive();
+    }
+  });
+}
+
+// llamado desde onTick (throttle) para mantener la tabla viva mientras está abierta
+function syncScoreboard(now: number): void {
+  if ($('scoreboard-panel').hidden) return;
+  if (now - lastScoreboardSync < 250) return;
+  lastScoreboardSync = now;
+  renderScoreboard();
 }
 
 // ---------- velocidad ----------

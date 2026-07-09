@@ -5,7 +5,7 @@ import { pushFrame, roomPrevToken, saveName, saveRoomToken, startGameStore, stor
 import { addPing, addShake, initRenderer, isMinimapOn, resetRenderer, toggleMinimap, towerFired } from './renderer.js';
 import { initInput } from './input.js';
 import { initBestiary } from './bestiary.js';
-import { applySpectatorUI, buildTowerBar, hidePanel, initMarket, onTick, toast, addChat, refreshPanel, syncSpeedButton, syncTowerBar } from './hud.js';
+import { applySpectatorUI, buildTowerBar, hidePanel, initMarket, initScoreboard, onTick, toast, addChat, refreshPanel, syncSpeedButton, syncTowerBar } from './hud.js';
 import { hideEnd, homeError, initHome, initLobby, renderLobby, showEnd, switchScreen } from './screens.js';
 import { beam, burst, clearParticles, floatText, fx, line, ring } from './particles.js';
 import { sfx, setSfxVolume, setMusicVolume, unlockAudio } from './audio.js';
@@ -182,6 +182,24 @@ function processEvents(events: GameEvent[]): void {
           sfx.coin();
         }
         break;
+      case 'give': {
+        // F7.1 · regalo de recursos: toast al EMISOR y al RECEPTOR (los nombres van
+        // por textContent → sin riesgo de XSS), y una línea de killfeed para todos.
+        const fromName = gs.init.players.find((p) => p.id === ev.from)?.name ?? '?';
+        const toName = gs.init.players.find((p) => p.id === ev.to)?.name ?? '?';
+        const amount = [ev.gold > 0 ? `🪙${ev.gold}` : '', ev.wood > 0 ? `🪵${ev.wood}` : '']
+          .filter(Boolean)
+          .join(' ');
+        if (ev.to === store.playerId) {
+          toast(`🎁 ${fromName} te envió ${amount}`, 'info');
+          sfx.coin();
+        } else if (ev.from === store.playerId) {
+          toast(`🎁 Enviaste ${amount} a ${toName}`, 'info');
+          sfx.coin();
+        }
+        addChat('', '#9e9e9e', `🎁 ${fromName} envió ${amount} a ${toName}`);
+        break;
+      }
       case 'place':
         burst(ev.x, ev.y, TOWERS[ev.towerType].color, 8, 1.8);
         sfx.place(panOf(ev.x));
@@ -668,6 +686,7 @@ initHome();
 initLobby();
 initBestiary();
 initMarket();
+initScoreboard();
 wireHudButtons();
 wireNet();
 // el reproductor de repeticiones reusa el MISMO pipeline de eventos que la red

@@ -9,3 +9,6 @@ data/
 # hojas fuente de sprites (24 MB): se re-recortan con tools/slice-*; los PNG
 # optimizados de public/sprites SI se versionan
 apps/client/assets/sprites/
+
+# worktrees temporales de agentes
+.claude/worktrees/

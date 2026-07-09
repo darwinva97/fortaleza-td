@@ -368,6 +368,10 @@ export type Command =
   | { kind: 'sell_wood' }
   // F5.5 · mejora el orco leñador del jugador (oro → más tala/s, nivel 1..5)
   | { kind: 'upgrade_orc' }
+  // F7.1 · TRANSFERENCIA a un aliado (estilo Green TD): envía `gold`/`wood` (enteros
+  // ≥0, al menos uno >0) al jugador `to`. La sim valida destinatario, no-a-uno-mismo
+  // y fondos; comando NO confiable → toda validación vive en applyCommands.
+  | { kind: 'give'; to: string; gold: number; wood: number }
   // F4.3 · fusionar dos torres especializadas adyacentes con receta. `keepId` es la
   // torre cuya CELDA se conserva (debe ser towerId u otherId); la otra queda libre.
   | { kind: 'fuse'; towerId: number; otherId: number; keepId: number };
@@ -434,6 +438,9 @@ export type GameEvent =
   | { e: 'trade'; playerId: string; buy: boolean; wood: number; gold: number; price: number }
   // F5.5 · el orco de un jugador subió de nivel (rate = nueva tala/s)
   | { e: 'orc'; playerId: string; level: number; rate: number }
+  // F7.1 · un jugador REGALÓ recursos a otro: el cliente lo convierte en toasts
+  // (emisor y receptor) y una línea de killfeed para toda la sala
+  | { e: 'give'; from: string; to: string; gold: number; wood: number }
   | { e: 'place'; x: number; y: number; towerType: TowerTypeId }
   | { e: 'upgrade'; x: number; y: number; level: number }
   | { e: 'specialize'; x: number; y: number; towerType: TowerTypeId; spec: number; name: string }
