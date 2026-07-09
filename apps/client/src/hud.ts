@@ -693,7 +693,7 @@ export function refreshPanel(): void {
       const affordR2 = gold >= r2cost && wood >= WOOD_COST_RANK2;
       const r2btn = affordR2
         ? `<button id="panel-upgrade" class="btn primary">★★ Rango II 🪙${r2cost} · 🪵${WOOD_COST_RANK2}</button>`
-        : premoveUpgradeBtn(id, `⏳ Premover Rango II ★★`);
+        : premoveUpgradeBtn(id, `⏳ Premover Rango II ★★ 🪙${r2cost} · 🪵${WOOD_COST_RANK2}`);
       actions = `
         <div class="spec-title">Rango II</div>
         <p class="spec-desc" style="padding:0 4px 6px">${escapeHtml(r2desc)}</p>
