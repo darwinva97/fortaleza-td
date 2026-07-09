@@ -136,6 +136,19 @@ export function roomPrevToken(code: string): string | undefined {
   }
 }
 
+// Continuar en otro dispositivo (issue #6): siembra el token de reconexión de
+// una sala con un token que NO es el propio de esta pestaña — viene de un
+// enlace `?rt=TOKEN#CODIGO` generado por OTRO dispositivo (ver btn-continue-device
+// en main.ts). Misma clave que saveRoomToken, para que roomPrevToken lo recoja
+// igual que si lo hubiéramos jugado nosotros en este navegador.
+export function seedRoomPrevToken(code: string, token: string): void {
+  try {
+    localStorage.setItem(`td_rt_${code.toUpperCase()}`, token);
+  } catch {
+    // localStorage lleno o bloqueado: el respaldo es best-effort
+  }
+}
+
 export function startGameStore(init: GameInit): GameStore {
   store.game = {
     init,

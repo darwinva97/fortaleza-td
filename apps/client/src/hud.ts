@@ -313,15 +313,38 @@ export function syncTowerBar(): void {
 
 // ---------- modo espectador ----------
 
+// issue #5: en móvil, la barra de torres del espectador (modo sugerencia) roba
+// media pantalla y no sirve para construir — empieza ESCONDIDA en cada partida
+// (nunca persistida) y un botón flotante 🏗 la muestra/esconde. Solo aplica por
+// debajo del breakpoint móvil (CSS); en escritorio la barra sigue como siempre.
+let specTowersOpen = false;
+
+function syncSpecTowersToggle(): void {
+  const spec = store.spectator;
+  $('screen-game').classList.toggle('spectating', spec);
+  $('screen-game').classList.toggle('spec-towers-open', spec && specTowersOpen);
+  $('btn-towers-toggle').hidden = !spec;
+}
+
+// alterna la barra de torres del espectador móvil (botón 🏗)
+export function toggleSpectatorTowers(): void {
+  specTowersOpen = !specTowersOpen;
+  syncSpecTowersToggle();
+}
+
 // Aplica (o revierte) el modo espectador de la UI del juego: banner persistente,
 // oculta el oro propio, los botones de acción de jugador (llamar oleada, pausa,
 // velocidad) y el panel de mejora/venta. La barra de torres se mantiene (en modo
-// sugerencia). Se llama al entrar a la partida (jugador o espectador).
+// sugerencia; en móvil, escondida por defecto tras el botón 🏗 — issue #5). Se
+// llama al entrar a la partida (jugador o espectador): por eso también es donde
+// se reinicia specTowersOpen, para que nunca sobreviva de una partida a otra.
 export function applySpectatorUI(): void {
   const spec = store.spectator;
   $('spectator-banner').hidden = !spec;
   $('hud-gold').hidden = spec;
   $('hud-wood').hidden = spec;
+  specTowersOpen = false;
+  syncSpecTowersToggle();
   if (spec) {
     // un espectador nunca ve estos controles (ya se ocultan por !isHost, pero por
     // si acaso: un espectador jamás es anfitrión)

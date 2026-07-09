@@ -1032,6 +1032,21 @@ html, body {
    se pueda seguir hablando mientras la partida está detenida */
 .paused #hud-chat { z-index: 60; }
 
+/* espectador en móvil (issue #5): botón flotante 🏗 que muestra/esconde la
+   barra de torres (que en el espectador es "modo sugerencia"). Solo hud.ts lo
+   destapa (quita `hidden`) siendo espectador; por encima del breakpoint móvil
+   se fuerza oculto SIEMPRE, pase lo que pase con el estado de JS. */
+#btn-towers-toggle {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 21;
+  pointer-events: auto;
+}
+@media (min-width: 701px) {
+  #btn-towers-toggle { display: none !important; }
+}
+
 /* burbuja de confirmación de colocación (táctil) */
 #place-confirm {
   position: absolute;
@@ -1361,6 +1376,14 @@ html, body {
   .tcard .tname { display: none; }
   .tcard .thk { display: none; }
   .tcard .tcost { font-size: 0.72rem; }
+  /* espectador en móvil (issue #5): la barra de torres empieza ESCONDIDA (roba
+     media pantalla en "modo sugerencia" y el espectador ni construye); el 🏗
+     la destapa. Se reinicia a escondida en cada partida — ver applySpectatorUI
+     en hud.ts, que NO persiste el estado. */
+  #screen-game.spectating #hud-towers { display: none; }
+  #screen-game.spectating.spec-towers-open #hud-towers { display: flex; }
+  /* con la barra destapada, el botón sube por encima de ella en vez de quedar tapado */
+  #screen-game.spectating.spec-towers-open #btn-towers-toggle { bottom: 92px; }
   /* botones de confirmación de colocación más grandes para el pulgar */
   .place-btn { width: 52px; height: 52px; font-size: 1.45rem; }
   /* barra superior: compacta y SIN solapes. Los stats (❤/oleada/🪙) van en UNA sola

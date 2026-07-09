@@ -1,11 +1,11 @@
 import './style.css';
 import { ENEMIES, ENEMY_ORDER, FUSIONS, GAME_SPEEDS, START_LIVES, TOWERS, type GameEvent, type Snap } from '@td/shared';
 import { net, wsPathJoin } from './net.js';
-import { pushFrame, roomPrevToken, saveName, saveRoomToken, startGameStore, store } from './store.js';
+import { pushFrame, roomPrevToken, saveName, saveRoomToken, seedRoomPrevToken, startGameStore, store } from './store.js';
 import { addPing, addShake, initRenderer, isMinimapOn, resetRenderer, toggleMinimap, towerFired } from './renderer.js';
 import { initInput } from './input.js';
 import { initBestiary } from './bestiary.js';
-import { applySpectatorUI, buildTowerBar, hidePanel, initMarket, initScoreboard, initShop, onTick, toast, addChat, refreshPanel, syncSpeedButton, syncTowerBar } from './hud.js';
+import { applySpectatorUI, buildTowerBar, hidePanel, initMarket, initScoreboard, initShop, onTick, toast, addChat, refreshPanel, syncSpeedButton, syncTowerBar, toggleSpectatorTowers } from './hud.js';
 import { hideEnd, homeError, initHome, initLobby, renderLobby, showEnd, switchScreen } from './screens.js';
 import { beam, burst, clearParticles, floatText, fx, line, ring } from './particles.js';
 import { sfx, setSfxVolume, setMusicVolume, unlockAudio } from './audio.js';
@@ -571,6 +571,9 @@ function wireHudButtons(): void {
     }
   });
 
+  // espectador en móvil (issue #5): 🏗 muestra/esconde la barra de torres
+  $('btn-towers-toggle').addEventListener('click', () => toggleSpectatorTowers());
+
   // minimapa: mostrar/ocultar (persistido en localStorage vía el renderer)
   const miniBtn = $('btn-minimap');
   const syncMini = () => miniBtn.classList.toggle('off', !isMinimapOn());
@@ -615,12 +618,36 @@ function wireHudButtons(): void {
     const open = panel.hidden;
     panel.hidden = !open;
     settingsBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
-    if (open) syncSliders();
+    if (open) {
+      syncSliders();
+      // «Continuar en otro dispositivo» (issue #6): solo jugadores reales, nunca
+      // espectadores ni el reproductor de repeticiones (store.replay también
+      // marca store.spectator=true, pero por claridad se comprueban ambos).
+      $('btn-continue-device').hidden = store.spectator || !!store.replay;
+    }
   });
   // clic fuera cierra el panel; clic dentro no.
   panel.addEventListener('click', (e) => e.stopPropagation());
   document.addEventListener('click', () => {
     if (!panel.hidden) closePanel();
+  });
+
+  // 📱 Continuar en otro dispositivo (issue #6): enlace con el código de sala +
+  // el token de reconexión de ESTA pestaña, para retomar la partida en otro
+  // navegador/dispositivo sin cuentas. Mismo patrón que copiar el código del
+  // lobby (screens.ts), con fallback a prompt si el portapapeles falla o no existe.
+  $('btn-continue-device').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const url = `${location.origin}${location.pathname}?rt=${encodeURIComponent(store.token)}#${store.roomCode}`;
+    const showFallback = () => window.prompt('Copia este enlace y ábrelo en el otro dispositivo:', url);
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(url).then(
+        () => toast('📱 Enlace copiado — ábrelo en el otro dispositivo', 'info'),
+        showFallback,
+      );
+    } else {
+      showFallback();
+    }
   });
 
   // 🚪 Abandonar partida: desde la pausa Y desde ⚙ (para los que no pueden abrir
@@ -712,6 +739,23 @@ function wireHudButtons(): void {
 }
 
 // ---------- arranque ----------
+
+// Continuar en otro dispositivo (issue #6): un enlace `?rt=TOKEN#CODIGO`
+// (generado por btn-continue-device en otro dispositivo) trae el token de
+// reconexión ANTES del hash, para no romper el parseo de `#CODIGO` de abajo
+// (que exige longitud exacta 4). Se siembra en localStorage con la MISMA clave
+// que usa roomPrevToken/saveRoomToken — así el join de más abajo (o el que
+// dispare el usuario a mano desde el formulario) lo recoge sin más cambios.
+// Corre ANTES de initHome()/el auto-join de abajo, y limpia el `rt` de la URL
+// visible aunque el código no fuera válido (nunca dejarlo a la vista).
+{
+  const rt = new URLSearchParams(location.search).get('rt');
+  if (rt) {
+    const hashCode = location.hash.replace('#', '').trim().toUpperCase();
+    if (hashCode.length === 4) seedRoomPrevToken(hashCode, rt);
+    history.replaceState(null, '', location.pathname + location.hash);
+  }
+}
 
 const canvas = $('game-canvas') as HTMLCanvasElement;
 initRenderer(canvas);

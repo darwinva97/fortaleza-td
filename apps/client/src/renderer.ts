@@ -237,19 +237,26 @@ export function panBy(dx: number, dy: number): void {
   view.oy += dy;
 }
 
-// Cámara inicial estilo Green TD: NO se muestra todo el mapa de golpe — se
-// arranca ACERCADO (×1.6) sobre la entrada de los enemigos, que es donde se
+// Cámara inicial estilo Green TD: en TÁCTIL no se muestra todo el mapa de golpe
+// — se arranca ACERCADO (×1.6) sobre la entrada de los enemigos, que es donde se
 // construye al principio. El resto del mapa se explora paneando, con pellizco/
 // rueda (el zoom mínimo sigue mostrando el mapa entero) o con el minimapa, que
 // así recupera su razón de ser. El doble tap vuelve a ESTA vista.
+//
+// En ESCRITORIO (ratón con hover fino) este arranque acercado resultó ser mala
+// UX real (issue: "siempre que entro por desktop hay que hacer antizoom"): el
+// jugador tenía que alejar el zoom a mano en CADA partida para ver el tablero
+// completo. Ahí el reset muestra el mapa entero de una vez (zoom 1 = el fit
+// calculado en computeView), que es exactamente lo que el jugador quería.
 const START_ZOOM = 1.6;
+const HAS_HOVER = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
 // centro pendiente de aplicar: computeView lo consume cuando ya conoce el
 // baseScale real del frame (aplicarlo aquí usaría una escala desfasada)
 let pendingCenter: { x: number; y: number } | null = null;
 
 export function resetCamera(): void {
   const gs = store.game;
-  if (!gs) {
+  if (!gs || HAS_HOVER) {
     zoom = 1;
     panX = 0;
     panY = 0;

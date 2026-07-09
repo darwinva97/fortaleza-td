@@ -190,6 +190,10 @@
           <input id="set-music" type="range" min="0" max="100" step="1" />
           <span id="set-music-val" class="set-val">60%</span>
         </label>
+        <!-- continuar en otro dispositivo (issue #6): copia un enlace con el
+             código de sala + el token de reconexión. Solo jugadores (no
+             espectadores/replay: main.ts lo oculta al abrir el panel). -->
+        <button id="btn-continue-device" class="btn ghost small">📱 Continuar en otro dispositivo</button>
         <!-- abandonar la partida: accesible a TODOS (jugadores no-anfitriones y
              espectadores) desde ⚙ durante la partida, no solo desde la pausa -->
         <button id="btn-abandon-settings" class="btn danger small">🚪 Abandonar partida</button>
@@ -242,6 +246,11 @@
 
       <div id="hud-placing" hidden></div>
       <div id="hud-towers"></div>
+      <!-- espectador en móvil (issue #5): la barra de torres (modo sugerencia) se
+           esconde por defecto para no robar media pantalla; este botón flotante
+           la muestra/esconde. Solo existe (vía CSS) por debajo del breakpoint
+           móvil y solo se ve siendo espectador (hud.ts lo controla). -->
+      <button id="btn-towers-toggle" class="btn small ghost" hidden title="Mostrar/ocultar la barra de construcción">🏗</button>
 
       <div id="hud-panel" hidden></div>
 
