@@ -1389,8 +1389,9 @@ function drawTowers(gs: GameStore, interp: InterpResult | null, now: number, dt:
     anim.recoil = Math.max(0, anim.recoil - dt * 5);
     anim.flash = Math.max(0, anim.flash - dt * 8);
 
-    // aura pasiva (Escarcha Eterna): siempre visible en el suelo
-    if (lvl.slowAura) {
+    // aura pasiva (Escarcha Eterna): solo visible con la torre SELECCIONADA
+    // (como el círculo de alcance de las demás torres)
+    if (lvl.slowAura && id === selected) {
       const pulse = 0.5 + Math.sin(t * 2.4) * 0.12;
       g.fillStyle = `rgba(79,195,247,${0.07 + pulse * 0.05})`;
       g.strokeStyle = `rgba(129,212,250,${0.4 + pulse * 0.2})`;
@@ -1402,7 +1403,8 @@ function drawTowers(gs: GameStore, interp: InterpResult | null, now: number, dt:
     }
 
     // aura del Alquimista: anillo verde en el suelo (como el dorado del Estandarte).
-    if (lvl.auraBounty !== undefined && lvl.auraBounty > 0) {
+    // solo visible con la torre SELECCIONADA.
+    if (lvl.auraBounty !== undefined && lvl.auraBounty > 0 && id === selected) {
       const pulse = 0.5 + Math.sin(t * 2.4) * 0.12;
       g.fillStyle = `rgba(76,175,80,${0.05 + pulse * 0.05})`;
       g.strokeStyle = `rgba(129,199,132,${0.4 + pulse * 0.2})`;
@@ -1415,9 +1417,9 @@ function drawTowers(gs: GameStore, interp: InterpResult | null, now: number, dt:
       g.setLineDash([]);
     }
 
-    // aura del Estandarte: anillo cálido en el suelo, siempre visible. El tono
-    // vira a celeste si el aura es de celeridad (hastebanner).
-    if (lvl.auraDamage !== undefined || lvl.auraHaste !== undefined) {
+    // aura del Estandarte: anillo cálido en el suelo, solo visible con la torre
+    // SELECCIONADA. El tono vira a celeste si el aura es de celeridad (hastebanner).
+    if ((lvl.auraDamage !== undefined || lvl.auraHaste !== undefined) && id === selected) {
       const pulse = 0.5 + Math.sin(t * 2.4) * 0.12;
       const haste = (lvl.auraHaste ?? 0) > 0;
       const fill = haste ? `rgba(79,195,247,${0.05 + pulse * 0.05})` : `rgba(255,202,40,${0.05 + pulse * 0.05})`;
@@ -1480,6 +1482,21 @@ function drawTowers(gs: GameStore, interp: InterpResult | null, now: number, dt:
       const h = (sprite.naturalHeight / sprite.naturalWidth) * w;
       const rx = Math.cos(anim.angle) * anim.recoil * s * 0.12;
       const ry = Math.sin(anim.angle) * anim.recoil * s * 0.12;
+      // marca de dueño: con sprites ya no se distingue de quién es cada torre (el
+      // arte vectorial pintaba el color del dueño en la base, el sprite lo tapa).
+      // Elipse sutil en el suelo, bajo el sprite, para no ensuciar el tablero.
+      const oc = owner?.color ?? '#888888';
+      g.save();
+      g.shadowColor = oc;
+      g.shadowBlur = s * 0.12;
+      g.fillStyle = `${oc}30`;
+      g.strokeStyle = `${oc}b0`;
+      g.lineWidth = Math.max(1.5, s * 0.045);
+      g.beginPath();
+      g.ellipse(0, s * 0.44, s * 0.3, s * 0.1, 0, 0, Math.PI * 2);
+      g.fill();
+      g.stroke();
+      g.restore();
       if (id === selected) {
         g.shadowColor = 'rgba(255,213,79,0.85)';
         g.shadowBlur = s * 0.28;
@@ -3578,6 +3595,26 @@ function drawMiniMap(gs: GameStore, now: number): void {
       g.fill();
     }
   }
+
+  // pings cooperativos: también visibles en el minimapa, como anillo/punto
+  // pulsante del color de quien los lanzó, mientras el ping viva.
+  for (const p of pings) {
+    const alpha = Math.min(1, p.life / 0.5);
+    const pulse = 0.5 + Math.sin(now / 160 + p.x * 3) * 0.5;
+    const mx = bx + p.x * s;
+    const my = by + p.y * s;
+    g.globalAlpha = alpha;
+    g.strokeStyle = p.color;
+    g.lineWidth = 1.5;
+    g.beginPath();
+    g.arc(mx, my, Math.max(2, s * (0.35 + pulse * 0.25)), 0, Math.PI * 2);
+    g.stroke();
+    g.fillStyle = p.color;
+    g.beginPath();
+    g.arc(mx, my, Math.max(1.3, s * 0.2), 0, Math.PI * 2);
+    g.fill();
+  }
+  g.globalAlpha = 1;
 
   // rectángulo del viewport: qué parte del mapa se ve en pantalla ahora.
   // world visible = [(0-ox)/scale .. (W-ox)/scale] × [(0-oy)/scale .. (H-oy)/scale]
