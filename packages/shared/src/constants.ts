@@ -52,6 +52,16 @@ export const BLESSED_ODDS = 15;
 export const BLESSED_BOUNTY_MULT = 1.5;
 export const BLESSED_BONUS_MULT = 1.5;
 
+// ---------- Lote 3 · oleadas INVISIBLES (estilo Green TD) ----------
+// Cada INVISIBLE_EVERY oleadas desde INVISIBLE_FROM la oleada sale INVISIBLE: las
+// torres NO pueden apuntar a un enemigo invisible NO DETECTADO (ni verlo). Un
+// SENTRY del equipo (torre-item de la 🛒 Tienda) lo REVELA dentro de su radio.
+// Es DETERMINISTA por número de oleada (no consume RNG). Se exime cuando la oleada
+// coincide con INMUNE o con JEFE (mira isInvisibleWave en balance/waves.ts): así en
+// el clásico de 36 caen ~4 oleadas invisibles (12, 18, 24, 36) sin apilar castigos.
+export const INVISIBLE_FROM = 12;
+export const INVISIBLE_EVERY = 6;
+
 // ---------- F4.2 · torres nuevas + Rango II ----------
 // Trampa de púas: cargas iniciales (cada golpe consume 1; a 0 se auto-vende).
 export const TRAP_CHARGES = 20;
@@ -127,5 +137,5 @@ export const PLAYER_COLORS = [
   '#e57373', // rojo
 ];
 
-export const BALANCE_VERSION = 12; // F6.2: la Metralla hace bonus de daño a voladores (anti-Coloso)
+export const BALANCE_VERSION = 13; // Lote 3: oleadas INVISIBLES + Sentry detector (los replays guardan la invisibilidad)
 export const PROTOCOL_VERSION = 1;

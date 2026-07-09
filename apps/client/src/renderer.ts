@@ -56,6 +56,8 @@ export const TOWER_ICONS: Record<TowerTypeId, string> = {
   alchemist: '⚗️',
   // F4.4
   boom: '💥',
+  // Lote 3
+  sentry: '👁',
 };
 
 export const ENEMY_ICONS: Record<EnemyTypeId, string> = {
@@ -1453,9 +1455,24 @@ function drawTowers(gs: GameStore, interp: InterpResult | null, now: number, dt:
       }
     }
 
+    // Lote 3 · Sentry: radio de DETECCIÓN (azul, discontinuo) solo al SELECCIONARLO,
+    // como las auras. Reemplaza el círculo de alcance dorado genérico para el Sentry.
+    if (TOWERS[type].detects && id === selected) {
+      const pulse = 0.5 + Math.sin(t * 2.4) * 0.12;
+      g.fillStyle = `rgba(41,182,246,${0.05 + pulse * 0.05})`;
+      g.strokeStyle = `rgba(129,212,250,${0.45 + pulse * 0.25})`;
+      g.lineWidth = 1.5;
+      g.setLineDash([s * 0.18, s * 0.12]);
+      g.beginPath();
+      g.arc(toX(cx + 0.5), toY(cy + 0.5), lvl.range * s, 0, Math.PI * 2);
+      g.fill();
+      g.stroke();
+      g.setLineDash([]);
+    }
+
     // rango de la torre seleccionada (la Gran Bertha alcanza TODO el mapa:
-    // se omite el círculo, que taparía el mapa entero)
-    if (id === selected && lvl.range < 90) {
+    // se omite el círculo, que taparía el mapa entero; el Sentry usa su propio anillo)
+    if (id === selected && lvl.range < 90 && !TOWERS[type].detects) {
       const pulse = 0.5 + Math.sin(t * 4) * 0.08;
       g.fillStyle = 'rgba(255,255,255,0.07)';
       g.strokeStyle = `rgba(255,213,79,${pulse})`;
@@ -2037,6 +2054,59 @@ function drawTowerArt(
       g.fill();
       break;
     }
+    case 'sentry': {
+      // Lote 3 · OJO azul brillante sobre un pequeño trípode: esfera con iris
+      // celeste, glow y parpadeo sutil. El radio de detección lo pinta drawTowers
+      // (solo al seleccionar), como las auras.
+      // trípode / poste
+      g.strokeStyle = '#455a64';
+      g.lineWidth = Math.max(1.5, s * 0.05);
+      g.lineCap = 'round';
+      for (const dx of [-s * 0.14, 0, s * 0.14]) {
+        g.beginPath();
+        g.moveTo(0, s * 0.02);
+        g.lineTo(dx, s * 0.3);
+        g.stroke();
+      }
+      // parpadeo: cada ~3.3 s el ojo se cierra un instante
+      const blink = (t % 3.3) < 0.12 ? 0.12 : 1;
+      const eyeR = s * 0.26;
+      // glow celeste
+      const glow = g.createRadialGradient(0, -s * 0.06, eyeR * 0.3, 0, -s * 0.06, eyeR * 1.9);
+      glow.addColorStop(0, 'rgba(79,195,247,0.55)');
+      glow.addColorStop(1, 'rgba(79,195,247,0)');
+      g.fillStyle = glow;
+      g.beginPath();
+      g.arc(0, -s * 0.06, eyeR * 1.9, 0, Math.PI * 2);
+      g.fill();
+      // esclerótica (globo del ojo)
+      g.fillStyle = '#e3f2fd';
+      g.beginPath();
+      g.ellipse(0, -s * 0.06, eyeR, eyeR * blink, 0, 0, Math.PI * 2);
+      g.fill();
+      g.strokeStyle = '#0277bd';
+      g.lineWidth = Math.max(1, s * 0.03);
+      g.stroke();
+      if (blink > 0.5) {
+        // iris celeste
+        g.fillStyle = '#29b6f6';
+        g.beginPath();
+        g.arc(0, -s * 0.06, eyeR * 0.55, 0, Math.PI * 2);
+        g.fill();
+        // pupila
+        g.fillStyle = '#01579b';
+        g.beginPath();
+        g.arc(0, -s * 0.06, eyeR * 0.28, 0, Math.PI * 2);
+        g.fill();
+        // destello
+        const spark = 0.6 + Math.sin(t * 3) * 0.4;
+        g.fillStyle = `rgba(255,255,255,${spark})`;
+        g.beginPath();
+        g.arc(-eyeR * 0.2, -s * 0.06 - eyeR * 0.2, eyeR * 0.16, 0, Math.PI * 2);
+        g.fill();
+      }
+      break;
+    }
   }
   void def;
 
@@ -2484,12 +2554,20 @@ function drawEnemies(interp: InterpResult, now: number): void {
   let boss: { hpFrac: number; name: string } | null = null;
 
   for (const e of interp.enemies) {
+    // Lote 3 · INVISIBLE no detectado: NO se dibuja NADA (ni sombra ni barra de
+    // vida) — desaparece de verdad, para que el Sentry importe. Detectado: se pinta
+    // semitransparente con un shimmer (más abajo).
+    const isInvisible = (e.flags & 64) !== 0;
+    const isDetected = (e.flags & 128) !== 0;
+    if (isInvisible && !isDetected) continue;
+    const stealth = isInvisible && isDetected;
     const type = ENEMY_ORDER[e.typeIdx];
     const def = ENEMIES[type];
     const isBoss = (e.flags & 4) !== 0;
     const isElite = (e.flags & 8) !== 0;
     const isImmune = (e.flags & 16) !== 0;
     const affixes = isElite ? affixesFromMask(e.affix) : [];
+    if (stealth) g.globalAlpha = 0.5;
     const x = toX(e.x);
     let y = toY(e.y);
     const r = Math.max(4, def.radius * s * (isElite ? 1.3 : 1));
@@ -2519,6 +2597,19 @@ function drawEnemies(interp: InterpResult, now: number): void {
     g.save();
     g.translate(x, y);
     drawEnemyArt(type, def.color, r, t, e.id, bob, s);
+
+    // Lote 3 · DETECTADO (invisible revelado por un Sentry): shimmer sutil —
+    // anillo celeste discontinuo que gira, para leer "esto solo lo ves por el Sentry".
+    if (stealth) {
+      const shim = 0.45 + Math.sin(t * 6 + e.id) * 0.3;
+      g.strokeStyle = `rgba(120,200,255,${shim})`;
+      g.lineWidth = Math.max(1, r * 0.1);
+      g.setLineDash([r * 0.3, r * 0.3]);
+      g.beginPath();
+      g.arc(0, 0, r * 1.12, t + e.id, t + e.id + Math.PI * 2);
+      g.stroke();
+      g.setLineDash([]);
+    }
 
     // INMUNE a magia: tinte azulado + escudo runado giratorio. Marca visual clara
     // de que hielo/veneno/execute/tesla no le hacen mella (solo daño físico).
@@ -2627,8 +2718,10 @@ function drawEnemies(interp: InterpResult, now: number): void {
     if (isBoss && (!boss || e.hpFrac > boss.hpFrac)) {
       boss = { hpFrac: e.hpFrac, name: def.name };
     }
+    if (stealth) g.globalAlpha = 1; // restablecer antes del siguiente enemigo
   }
 
+  g.globalAlpha = 1;
   if (boss) drawBossBar(boss);
 }
 
@@ -3588,6 +3681,8 @@ function drawMiniMap(gs: GameStore, now: number): void {
     }
     // enemigos: rojo normal, morado si élite (flag 8)
     for (const e of snap.enemies) {
+      // Lote 3 · invisible no detectado: tampoco en el minimapa (solo los detectados)
+      if ((e[5] & 64) !== 0 && (e[5] & 128) === 0) continue;
       const elite = (e[5] & 8) !== 0;
       g.fillStyle = elite ? '#c77dff' : '#ff5252';
       g.beginPath();

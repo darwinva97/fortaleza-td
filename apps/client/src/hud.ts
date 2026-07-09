@@ -66,7 +66,7 @@ function premoveUpgradeCost(snap: Snap, towerId: number): { gold: number; wood: 
   const level = t[4];
   const spec = t[9] ?? -1;
   const fusion = t[13] ?? -1;
-  if (fusion >= 0 || TOWERS[type].onPathOnly) return null;
+  if (fusion >= 0 || TOWERS[type].onPathOnly || TOWERS[type].detects) return null;
   if (spec >= 0) {
     if (level >= 4 || !hasRank2(type, spec)) return null;
     return { gold: rank2Cost(type, spec) ?? 0, wood: WOOD_COST_RANK2 };
@@ -196,7 +196,9 @@ export function buildTowerBar(): void {
   const bar = $('hud-towers');
   bar.innerHTML = '';
   const flat = BAR_GROUPS.flat();
-  const extras = TOWER_ORDER.filter((t) => !flat.includes(t));
+  // el Sentry NO va en la barra (se compra en la 🛒 Tienda): se excluye también de
+  // la red de seguridad de "extras" que recoge cualquier torre no agrupada.
+  const extras = TOWER_ORDER.filter((t) => !flat.includes(t) && t !== 'sentry');
   const groups = extras.length > 0 ? [...BAR_GROUPS, extras] : BAR_GROUPS;
   for (let gi = 0; gi < groups.length; gi++)
   for (let ti = 0; ti < groups[gi].length; ti++) {
@@ -273,10 +275,11 @@ function syncPlacingInfo(): void {
   const isAura = lvl.auraDamage !== undefined || lvl.auraHaste !== undefined || lvl.auraBounty !== undefined;
   if (lvl.damage > 0 && !def.onPathOnly) parts.push(`Daño <b>${lvl.damage}</b>`);
   if (def.onPathOnly) parts.push(def.detonates ? `💥 Detona al pisarlo: <b>ELIMINA</b> a los terrestres del área (jefes: ${lvl.damage} de daño)` : `Daño por golpe <b>${lvl.damage}</b>`);
+  if (def.detects) parts.push('👁 <b>Revela invisibles</b> en su radio');
   if (lvl.auraDamage !== undefined && lvl.auraDamage > 0) parts.push(`Aura de daño <b>+${Math.round(lvl.auraDamage * 100)}%</b>`);
   if (lvl.auraHaste !== undefined && lvl.auraHaste > 0) parts.push(`Aura de cadencia <b>+${Math.round(lvl.auraHaste * 100)}%</b>`);
   if (lvl.auraBounty !== undefined && lvl.auraBounty > 0) parts.push(`Aura de oro <b>+${Math.round(lvl.auraBounty * 100)}%</b>`);
-  if (lvl.range > 0) parts.push(`${isAura ? 'Radio' : 'Alcance'} <b>${lvl.range}</b>`);
+  if (lvl.range > 0) parts.push(`${isAura || def.detects ? 'Radio' : 'Alcance'} <b>${lvl.range}</b>`);
   if (lvl.cooldown > 0) parts.push(`Cadencia <b>${lvl.cooldown}s</b>`);
   parts.push(...specialStats(lvl));
   const hint = window.matchMedia('(hover: hover)').matches
@@ -488,6 +491,7 @@ function targetModesHtml(projKind: string, lvl: TowerLevelDef, modeIdx: number):
 function towerAttacks(lvl: TowerLevelDef, def: TowerDef): boolean {
   if (lvl.alsoFires) return true;
   if (def.onPathOnly) return false;
+  if (def.detects) return false; // el Sentry no dispara: solo detecta
   if (lvl.incomePerWave) return false;
   if (lvl.slowAura) return false;
   if (lvl.auraBounty !== undefined) return false;
@@ -581,6 +585,9 @@ export function refreshPanel(): void {
     live.goldgen = `🪙${goldGen.toLocaleString()}`;
     statLines.push('Oro extra generado: <b data-lv="goldgen"></b>');
     if (goldGen === 0) statLines.push('<span class="hint">Aún nada: los enemigos deben MORIR dentro de su anillo</span>');
+  } else if (def.detects) {
+    // Sentry: no acumula bajas/daño; explica su función y su radio.
+    statLines.push('👁 Revela a los monstruos invisibles (aéreos y terrestres) dentro de su radio.');
   } else if (def.onPathOnly) {
     if (def.detonates) {
       // Barril explosivo: se consume al detonar (no tiene cargas que contar)
@@ -661,8 +668,8 @@ export function refreshPanel(): void {
         <p class="spec-desc" style="padding:0 4px 6px">${fusion.desc}</p>
         <div class="prow"><button id="panel-sell" class="btn ghost">💸 Vender ${sellValue}</button></div>
         ${targetModesHtml(projKind, lvl, modeIdx)}`;
-    } else if (def.onPathOnly) {
-      // Trampa de púas: no se mejora ni especializa; solo se puede vender.
+    } else if (def.onPathOnly || def.detects) {
+      // Trampa/Barril y Sentry: no se mejoran ni especializan; solo se pueden vender.
       actions = `<div class="prow"><button id="panel-sell" class="btn ghost">💸 Vender ${sellValue}</button></div>`;
     } else if (canSpecialize) {
       const wood = myWood(gs);
@@ -859,6 +866,7 @@ export function onTick(snap: Snap): void {
     const tags: string[] = [];
     if (snap.nextImmune) tags.push('<span class="wave-tag immune" title="Inmune a la magia: solo daño físico">🛡 inmune</span>');
     if (snap.nextBlessed) tags.push('<span class="wave-tag blessed" title="¡Oleada bendecida: doble botín!">⭐ bendecida</span>');
+    if (snap.nextInvisible) tags.push('<span class="wave-tag invisible" title="Oleada INVISIBLE: sin un Sentry (🛒 Tienda) no puedes ver ni apuntar a los enemigos">👁 invisible</span>');
     if (snap.nextBossType >= 0) {
       const bossType = ENEMY_ORDER[snap.nextBossType];
       const bossFlying = ENEMIES[bossType]?.flying;
@@ -890,6 +898,8 @@ export function onTick(snap: Snap): void {
 
   // tabla de jugadores en vivo (F7.1): refresca daño/bajas mientras esté abierta
   syncScoreboard(now);
+  // tienda (Lote 3): refresca costes/estado de compra mientras esté abierta
+  syncShop(now);
 
   // F6.2 · el contador de próximo ataque baja FLUIDO: se refresca en CADA tick
   // (15/s), no solo cuando el panel se rehace (4/s). Solo tocamos el span si
@@ -958,6 +968,9 @@ export function initMarket(): void {
     if (store.spectator || store.replay) return; // mirones: sin trading
     panel.hidden = !panel.hidden;
     if (!panel.hidden) {
+      // vive en la misma esquina que 📊 y 🛒: abrir el mercado cierra los otros
+      $('scoreboard-panel').hidden = true;
+      $('shop-panel').hidden = true;
       // descubierto: apagar la llamada de atención para siempre
       localStorage.setItem('td_market_seen', '1');
       $('hud-wood').classList.remove('attn');
@@ -992,6 +1005,93 @@ export function initMarket(): void {
   repeatOnHold($<HTMLButtonElement>('market-buy'), () => net.send({ type: 'cmd', cmd: { kind: 'buy_wood' } }));
   repeatOnHold($<HTMLButtonElement>('market-sell'), () => net.send({ type: 'cmd', cmd: { kind: 'sell_wood' } }));
   repeatOnHold($<HTMLButtonElement>('orc-upgrade'), () => net.send({ type: 'cmd', cmd: { kind: 'upgrade_orc' } }));
+}
+
+// ---------- tienda de items (Lote 3) ----------
+// Panel 🛒 con una rejilla de items. Estructura lista para más items: array de defs.
+// Por ahora 1 item: el Sentry (revela invisibles). Comprar = entrar en MODO COLOCACIÓN
+// (setPlacing) — el flujo de pago/colocación ya existe vía el comando `place`.
+
+interface ShopItem {
+  towerType: TowerTypeId;
+  icon: string;
+  name: string;
+  desc: string;
+}
+
+const SHOP_ITEMS: ShopItem[] = [
+  {
+    towerType: 'sentry',
+    icon: '👁',
+    name: 'Sentry',
+    desc: 'Revela monstruos invisibles (terrestres y aéreos) en su radio. Colócalo cubriendo el camino en las oleadas 👁.',
+  },
+];
+
+let lastShopSync = 0;
+
+// (re)construye la rejilla de items con costes y estado (throttle desde onTick).
+export function renderShop(): void {
+  const gs = store.game;
+  if (!gs) return;
+  const gold = myGold(gs);
+  $('shop-grid').innerHTML = SHOP_ITEMS.map((it) => {
+    const cost = TOWERS[it.towerType].levels[0].cost;
+    const poor = gold < cost;
+    const placing = gs.selection?.kind === 'placing' && gs.selection.towerType === it.towerType;
+    return `<button class="shop-item${placing ? ' selected' : ''}${poor ? ' poor' : ''}" data-item="${it.towerType}">
+      <span class="shop-icon">${it.icon}</span>
+      <span class="shop-info"><b>${it.name}</b><span class="shop-desc">${it.desc}</span></span>
+      <span class="shop-cost">🪙${cost}</span>
+    </button>`;
+  }).join('');
+}
+
+function syncShop(now: number): void {
+  if ($('shop-panel').hidden) return;
+  if (now - lastShopSync < 250) return;
+  lastShopSync = now;
+  renderShop();
+}
+
+// Cablea la tienda: 🛒 la abre/cierra; ✕ o un toque fuera la cierran; comprar un
+// item entra en modo colocación (como tocar la barra de torres).
+export function initShop(): void {
+  const panel = $('shop-panel');
+  const btn = $('btn-shop');
+  const setOpen = (v: boolean): void => {
+    panel.hidden = !v;
+    btn.setAttribute('aria-expanded', String(v));
+    if (v) {
+      // vive en la misma esquina que 📊 y 🪵: abrir uno cierra los otros
+      $('scoreboard-panel').hidden = true;
+      $('market-panel').hidden = true;
+      renderShop();
+    }
+  };
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (store.spectator || store.replay) return; // los mirones no compran
+    setOpen(panel.hidden);
+  });
+  $('shop-close').addEventListener('click', (e) => {
+    e.stopPropagation();
+    setOpen(false);
+  });
+  // clic dentro no cierra; un toque fuera sí (mismo patrón que mercado/tabla)
+  panel.addEventListener('click', (e) => e.stopPropagation());
+  document.addEventListener('click', () => {
+    if (!panel.hidden) setOpen(false);
+  });
+  // comprar = armar la colocación del item; el pago se hace al plantar (comando place)
+  $('shop-grid').addEventListener('click', (e) => {
+    const el = (e.target as HTMLElement).closest<HTMLElement>('[data-item]');
+    if (!el) return;
+    const type = el.dataset.item as TowerTypeId;
+    const cur = store.game?.selection;
+    setPlacing(cur?.kind === 'placing' && cur.towerType === type ? null : type);
+    setOpen(false);
+  });
 }
 
 // ---------- tabla de jugadores en vivo (F7.1) ----------
@@ -1121,7 +1221,8 @@ export function initScoreboard(): void {
     btn.setAttribute('aria-expanded', String(v));
     localStorage.setItem('td_scoreboard', v ? '1' : '0');
     if (v) {
-      $('market-panel').hidden = true; // ambos viven arriba: abrir uno cierra el otro
+      $('market-panel').hidden = true; // los tres viven arriba: abrir uno cierra los demás
+      $('shop-panel').hidden = true;
       if (store.game?.latest) renderScoreboard();
     } else {
       giveTarget = null;

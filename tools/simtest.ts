@@ -10,6 +10,7 @@ import {
   generateWave,
   getMap,
   hasRank2,
+  isInvisibleWave,
   makePlacementContext,
   makeSimContext,
   pathCells,
@@ -61,6 +62,7 @@ function mkEnemy(type: EnemyTypeId, over: Partial<EnemyState> = {}): EnemyState 
     poisonSrc: 0, bountyMult: 1, elite: false, affixes: [], speedMult: 1, armorBonus: 0, regenBonus: 0,
     dodgeBonus: 0, slowResist: 0, radiusMult: 1, auraRadius: 0, auraHps: 0, deathSpawn: 0, laps: 0,
     spellImmune: def.spellImmune ?? false, stunTowerId: 0, lastWpIdx: 1, armorShredUntil: 0,
+    invisible: false, detected: false,
     ...over,
   };
 }
@@ -100,16 +102,46 @@ function buildCellCandidates(mapId: string): [number, number][] {
 
 const BUILD_ORDER: TowerTypeId[] = ['archer', 'cannon', 'frost', 'archer', 'tesla', 'banner', 'poison', 'sniper', 'mortar'];
 
+// Lote 3 · elige la celda libre (junto al camino) MÁS CERCANA al INICIO del camino:
+// con detección PEGAJOSA basta revelar a los enemigos pronto para que sigan visibles
+// el resto del recorrido, así que el bot planta sus Sentry lo más cerca posible del
+// spawn (donde la oleada invisible se revela cuanto antes).
+function pickSentryCell(
+  candidates: [number, number][],
+  used: Set<string>,
+  spawn: { x: number; y: number },
+): [number, number] | null {
+  let best: [number, number] | null = null;
+  let bestD = Infinity;
+  for (const [cx, cy] of candidates) {
+    if (used.has(`${cx},${cy}`)) continue;
+    const d = Math.hypot(cx + 0.5 - spawn.x, cy + 0.5 - spawn.y);
+    if (d < bestD) {
+      bestD = d;
+      best = [cx, cy];
+    }
+  }
+  return best;
+}
+
 function botCommands(
   state: GameState,
   candidates: [number, number][],
   counters: Map<string, number>,
+  spawn: { x: number; y: number } = { x: 0.5, y: 0.5 },
 ): PlayerCommand[] {
   const cmds: PlayerCommand[] = [];
   if (state.waveState !== 'interlude') return cmds;
 
   // celdas ya ocupadas + las que se reclaman dentro de este mismo tick
   const used = new Set(state.towers.map((t) => `${t.cx},${t.cy}`));
+
+  // Lote 3 · SENTRY: con detección PEGAJOSA basta UN detector cerca del spawn para
+  // revelar toda la oleada invisible el resto del camino. El clásico va justo, así que
+  // se planta en el interludio de la oleada 11 (justo antes de la primera invisible, la
+  // 12) y SOLO con oro de SOBRA, sin robarle una acción a la defensa temprana.
+  let sentryCount = state.towers.filter((t) => t.type === 'sentry').length;
+  const sentryTarget = state.wave >= 11 ? 1 : 0;
   for (const player of state.players) {
     let budget = player.gold; // oro disponible tras las órdenes de este tick
     let woodBudget = player.wood; // madera disponible (F5.2: specs y Rango II la cuestan)
@@ -154,7 +186,7 @@ function botCommands(
     // de las órdenes de ESTE tick sin tocar el estado real de la simulación.
     // Se excluyen las fusionadas este tick y las ya fusionadas (no se mejoran).
     const mine = state.towers
-      .filter((t) => t.owner === player.id && !fusedIds.has(t.id) && t.fusion < 0)
+      .filter((t) => t.owner === player.id && !fusedIds.has(t.id) && t.fusion < 0 && t.type !== 'sentry')
       .map((t) => ({ id: t.id, type: t.type, level: t.level, spec: t.spec }));
     // prioridad: primero los miembros de un par de receta, luego el resto
     const byPairFirst = <T extends { id: number }>(x: T, y: T) =>
@@ -272,6 +304,21 @@ function botCommands(
       }
       break; // no se pudo hacer nada más este tick
     }
+
+    // SENTRY (Lote 3): tras las acciones de defensa, si sobra oro y aún falta el
+    // detector, se planta UNO cerca del spawn. Usa SOLO el oro sobrante del tick, así
+    // no le roba una acción a la defensa; con detección pegajosa uno basta para todas
+    // las oleadas invisibles (12/18/24/36). Excluido de `mine` (no se mejora).
+    const sentryCost = TOWERS.sentry.levels[0].cost;
+    if (mine.length >= 4 && sentryCount < sentryTarget && budget >= sentryCost) {
+      const cell = pickSentryCell(candidates, used, spawn);
+      if (cell) {
+        used.add(`${cell[0]},${cell[1]}`);
+        cmds.push({ playerId: player.id, cmd: { kind: 'place', towerType: 'sentry', cx: cell[0], cy: cell[1] } });
+        sentryCount += 1;
+        budget -= sentryCost;
+      }
+    }
   }
   // acelerar: llamar la oleada cuando falten menos de 8 segundos
   if (state.interludeLeft < TICK_RATE * 8 && state.interludeLeft > TICK_RATE * 2) {
@@ -280,7 +327,7 @@ function botCommands(
   return cmds;
 }
 
-function runScenario(mapId = MAP_ID, maxTicks = MAX_TICKS): { state: GameState; totalKills: number; totalLeaks: number; maxWave: number; eventCounts: Map<string, number> } {
+function runScenario(mapId = MAP_ID, maxTicks = MAX_TICKS): { state: GameState; totalKills: number; totalLeaks: number; maxWave: number; eventCounts: Map<string, number>; leaksByWave: Map<number, number> } {
   const map = getMap(mapId);
   const simCtx = makeSimContext(map, makePlacementContext(map));
   const state = createGame(mapId, 'classic', 'normal', SEED, [
@@ -294,17 +341,20 @@ function runScenario(mapId = MAP_ID, maxTicks = MAX_TICKS): { state: GameState; 
   let totalLeaks = 0;
   let maxWave = 0;
 
+  const spawn = simCtx.waypoints[0][0];
+  const leaksByWave = new Map<number, number>();
   for (let i = 0; i < maxTicks && !state.over; i++) {
-    const events: GameEvent[] = stepGame(state, simCtx, botCommands(state, candidates, counters));
+    const events: GameEvent[] = stepGame(state, simCtx, botCommands(state, candidates, counters, spawn));
     for (const ev of events) {
       eventCounts.set(ev.e, (eventCounts.get(ev.e) ?? 0) + 1);
+      if (ev.e === 'leak') leaksByWave.set(state.wave, (leaksByWave.get(state.wave) ?? 0) + 1);
       if (ev.e === 'death') totalKills++;
       if (ev.e === 'leak') totalLeaks++;
       if (ev.e === 'wave_start') maxWave = ev.wave;
       if (ev.e === 'reject') throw new Error(`Comando de bot rechazado: ${ev.reason}`);
     }
   }
-  return { state, totalKills, totalLeaks, maxWave, eventCounts };
+  return { state, totalKills, totalLeaks, maxWave, eventCounts, leaksByWave };
 }
 
 function assert(cond: boolean, msg: string): void {
@@ -379,6 +429,8 @@ console.log(
     `oleada máx ${a.maxWave} · bajas ${a.totalKills} · fugas ${a.totalLeaks} · vidas ${a.state.lives}`,
 );
 console.log(`   eventos: ${[...a.eventCounts.entries()].map(([k, v]) => `${k}:${v}`).join(' ')}`);
+console.log(`   fugas por oleada: ${[...a.leaksByWave.entries()].sort((x, y) => x[0] - y[0]).map(([w, n]) => `w${w}:${n}`).join(' ')}`);
+console.log(`   sentries al final: ${a.state.towers.filter((t) => t.type === 'sentry').length} · torres: ${a.state.towers.length}`);
 
 assert(a.maxWave >= 5, `el juego avanza de oleada (llegó a la ${a.maxWave})`);
 assert(a.totalKills > 30, `las torres matan enemigos (${a.totalKills} bajas)`);
@@ -409,6 +461,11 @@ assert(
 assert(
   a.state.over?.victory === true,
   `los bots GANAN el clásico en normal (oleada ${a.maxWave}, ${a.state.lives} vidas, over=${JSON.stringify(a.state.over)})`,
+);
+// Lote 3: los bots colocan Sentry para las oleadas invisibles (12/18/24/36) y GANAN igual
+assert(
+  a.state.towers.some((t) => t.type === 'sentry'),
+  `los bots colocan al menos un Sentry (${a.state.towers.filter((t) => t.type === 'sentry').length}) y siguen ganando el clásico`,
 );
 // F5.2: el clásico dura 36 oleadas, como Green TD
 assert(a.state.totalWaves === 36 && a.maxWave >= 36, `el clásico dura 36 oleadas (jugadas ${a.maxWave}/${a.state.totalWaves})`);
@@ -453,7 +510,7 @@ console.log('— Regresión: las crías de spawnOnDeath sobreviven a un golpe de
     pathIdx: 0, wpIdx: 1, travelled: 5, slowFactor: 1, slowUntil: 0, poisonDps: 0, poisonUntil: 0,
     poisonSrc: 0, bountyMult: 1, elite: false, affixes: [], speedMult: 1, armorBonus: 0, regenBonus: 0,
     dodgeBonus: 0, slowResist: 0, radiusMult: 1, auraRadius: 0, auraHps: 0, deathSpawn: 0, laps: 0,
-    spellImmune: false, stunTowerId: 0, lastWpIdx: 1, armorShredUntil: 0,
+    spellImmune: false, stunTowerId: 0, lastWpIdx: 1, armorShredUntil: 0, invisible: false, detected: false,
   };
   st.enemies.push(slime);
   const cannon: TowerState = {
@@ -495,7 +552,7 @@ console.log('— Estandarte: refuerza el daño de las torres cercanas (sin apila
       pathIdx: 0, wpIdx: 1, travelled: 0, slowFactor: 1, slowUntil: 0, poisonDps: 0, poisonUntil: 0,
       poisonSrc: 0, bountyMult: 1, elite: false, affixes: [], speedMult: 1, armorBonus: 0, regenBonus: 0,
       dodgeBonus: 0, slowResist: 0, radiusMult: 1, auraRadius: 0, auraHps: 0, deathSpawn: 0, laps: 0,
-      spellImmune: false, stunTowerId: 0, lastWpIdx: 1, armorShredUntil: 0,
+      spellImmune: false, stunTowerId: 0, lastWpIdx: 1, armorShredUntil: 0, invisible: false, detected: false,
     };
     st.enemies.push(enemy);
     const archer: TowerState = {
@@ -567,7 +624,7 @@ console.log('— Repetición (replay): reconstruye el estado final EXACTO —');
     }
 
     // solo el jugador conectado da órdenes mientras Beto está caído
-    const cmds = botCommands(state, candidates, counters).filter(
+    const cmds = botCommands(state, candidates, counters, simCtx.waypoints[0][0]).filter(
       (c) => betoConnected || c.playerId !== 'p2',
     );
     const cmdTick = state.tick;
@@ -674,8 +731,9 @@ function runHorde(seed: number, difficulty: 'easy' | 'normal' | 'hard', maxTicks
   let tiredAny = false;
   let maxWave = 0;
   let i = 0;
+  const spawn = simCtx.waypoints[0][0];
   for (; i < maxTicks && !state.over; i++) {
-    stepGame(state, simCtx, botCommands(state, candidates, counters));
+    stepGame(state, simCtx, botCommands(state, candidates, counters, spawn));
     maxWave = Math.max(maxWave, state.wave);
     maxAlive = Math.max(maxAlive, state.enemies.length);
     for (const e of state.enemies) {
@@ -1792,6 +1850,133 @@ console.log('— F7.1 · Transferencia de recursos a un aliado: fondos exactos, 
     return JSON.stringify([s.tick, s.rng, s.nextId, s.players.map((p) => [Math.round(p.gold * 1000), Math.round(p.wood * 1000)])]);
   }
   assert(giveRun() === giveRun(), 'la transferencia es DETERMINISTA (misma semilla + mismo give → mismo estado)');
+}
+
+console.log('— Lote 3 · Oleadas INVISIBLES: calendario determinista, sin inmunes ni jefes —');
+{
+  const rng = { rng: SEED };
+  const invisibleWaves: number[] = [];
+  for (let w = 1; w <= 36; w++) {
+    const gen = generateWave(rng, w, 2, 1);
+    if (gen.invisible) {
+      invisibleWaves.push(w);
+      // NO coincide con inmune ni jefe (como la bendecida evita combinarse)
+      if (gen.immune || gen.hasBoss) throw new Error(`oleada invisible ${w} combinada con inmune/jefe`);
+      // toda entrada no-jefe nace invisible
+      const nonBoss = gen.entries.filter((e) => !ENEMIES[e.type].boss);
+      if (nonBoss.length === 0 || !nonBoss.every((e) => e.invisible)) throw new Error(`oleada invisible ${w} con no-jefes visibles`);
+    } else if (gen.entries.some((e) => e.invisible)) {
+      throw new Error(`entrada invisible en una oleada ${w} NO invisible`);
+    }
+  }
+  assert(
+    JSON.stringify(invisibleWaves) === JSON.stringify([12, 18, 24, 36]),
+    `las oleadas invisibles del clásico caen en 12/18/24/36 (${invisibleWaves.join(',')})`,
+  );
+  // función directa: 12 sí; 30 no (golem + inmune la eximen)
+  assert(isInvisibleWave(12) && isInvisibleWave(18) && !isInvisibleWave(30) && !isInvisibleWave(15),
+    'isInvisibleWave: 12/18 sí; 30 (golem+inmune) y 15 (Quimera) no');
+  // determinista: dos generaciones dan el mismo calendario
+  const rng2 = { rng: SEED };
+  const inv2: number[] = [];
+  for (let w = 1; w <= 36; w++) if (generateWave(rng2, w, 2, 1).invisible) inv2.push(w);
+  assert(JSON.stringify(invisibleWaves) === JSON.stringify(inv2), 'el calendario de oleadas invisibles es determinista');
+}
+
+console.log('— Lote 3 · Invisibilidad: sin Sentry la torre NO dispara; con Sentry SÍ —');
+{
+  const map = getMap('sendero');
+  const simCtx = makeSimContext(map, makePlacementContext(map));
+  // Un bruto INVISIBLE inmóvil en rango de un arquero. Sin Sentry: intargeteable
+  // (no recibe daño ni queda detectado). Con un Sentry cubriéndolo: detectado y
+  // recibe disparos normales.
+  function run(sentry: boolean): { dmg: number; detected: boolean } {
+    const st = createGame('sendero', 'endless', 'normal', 1300, [{ id: 'p1', name: 'A', color: '#fff' }]);
+    st.nextId = 8000; st.wave = 12; st.waveState = 'active'; st.spawnQueue = []; st.pendingWave = [];
+    const enemy = mkEnemy('brute', { id: 6000, hp: 100000, maxHp: 100000, invisible: true, speedMult: 0, x: 5.5, y: 2.5, wpIdx: 1 });
+    st.enemies.push(enemy);
+    st.towers.push(mkTower('archer', { id: 6001, cx: 5, cy: 1, level: 3, invested: 200 }));
+    if (sentry) st.towers.push(mkTower('sentry', { id: 6002, cx: 5, cy: 3, level: 1, spec: -1, invested: 50 }));
+    const hp0 = enemy.hp;
+    for (let i = 0; i < TICK_RATE * 2; i++) stepGame(st, simCtx, []);
+    return { dmg: hp0 - enemy.hp, detected: enemy.detected };
+  }
+  const without = run(false);
+  const withS = run(true);
+  assert(without.dmg === 0 && !without.detected, `sin Sentry, el invisible NO recibe disparos ni queda detectado (daño ${without.dmg})`);
+  assert(withS.detected && withS.dmg > 0, `con un Sentry en rango, el invisible queda DETECTADO y recibe disparos (−${withS.dmg.toFixed(0)})`);
+}
+
+console.log('— Lote 3 · La Trampa de camino golpea a un invisible NO detectado —');
+{
+  const map = getMap('sendero');
+  const simCtx = makeSimContext(map, makePlacementContext(map));
+  const st = createGame('sendero', 'endless', 'normal', 1301, [{ id: 'p1', name: 'A', color: '#fff' }]);
+  st.nextId = 8000; st.wave = 12; st.waveState = 'active'; st.spawnQueue = []; st.pendingWave = [];
+  const pathCell = [...pathCells(map)][0].split(',').map(Number) as [number, number];
+  st.towers.push(mkTower('trap', { id: 6100, cx: pathCell[0], cy: pathCell[1], level: 1, spec: -1, charges: 20, invested: 60 }));
+  const enemy = mkEnemy('brute', { id: 6101, hp: 100000, maxHp: 100000, invisible: true, speedMult: 0, x: pathCell[0] + 0.5, y: pathCell[1] + 0.5, wpIdx: 1 });
+  st.enemies.push(enemy);
+  const hp0 = enemy.hp;
+  stepGame(st, simCtx, []);
+  assert(!enemy.detected && enemy.hp < hp0, `la Trampa hiere a un invisible NO detectado (−${(hp0 - enemy.hp).toFixed(0)}, detected=${enemy.detected})`);
+}
+
+console.log('— Lote 3 · El daño de ÁREA alcanza a un invisible no detectado (colateral) —');
+{
+  const map = getMap('sendero');
+  const simCtx = makeSimContext(map, makePlacementContext(map));
+  const st = createGame('sendero', 'endless', 'normal', 1303, [{ id: 'p1', name: 'A', color: '#fff' }]);
+  st.nextId = 8000; st.wave = 12; st.waveState = 'active'; st.spawnQueue = []; st.pendingWave = [];
+  // un cañón (área) apunta a un enemigo VISIBLE; un invisible NO detectado pegado a él
+  // recibe el splash aunque no pueda ser objetivo directo.
+  st.towers.push(mkTower('cannon', { id: 6200, cx: 5, cy: 1, level: 3, spec: -1, invested: 440 }));
+  const visible = mkEnemy('brute', { id: 6201, hp: 100000, maxHp: 100000, speedMult: 0, x: 5.5, y: 2.5, wpIdx: 1 });
+  const hidden = mkEnemy('brute', { id: 6202, hp: 100000, maxHp: 100000, invisible: true, speedMult: 0, x: 5.9, y: 2.5, wpIdx: 1 });
+  st.enemies.push(visible, hidden);
+  const hp0 = hidden.hp;
+  for (let i = 0; i < TICK_RATE * 3 && hidden.hp === hp0; i++) stepGame(st, simCtx, []);
+  assert(!hidden.detected && hidden.hp < hp0, `el splash del cañón toca al invisible no detectado (−${(hp0 - hidden.hp).toFixed(0)}, detected=${hidden.detected})`);
+}
+
+console.log('— Lote 3 · el Sentry no se mejora ni especializa (solo se vende) —');
+{
+  const map = getMap('sendero');
+  const simCtx = makeSimContext(map, makePlacementContext(map));
+  const st = createGame('sendero', 'endless', 'normal', 1304, [{ id: 'p1', name: 'A', color: '#fff' }]);
+  st.nextId = 8000; st.wave = 1; st.waveState = 'active'; st.spawnQueue = []; st.pendingWave = [];
+  st.towers.push(mkTower('sentry', { id: 6300, cx: 5, cy: 1, level: 1, spec: -1, invested: 50 }));
+  st.players[0].gold = 10000; st.players[0].wood = 500;
+  const ev = stepGame(st, simCtx, [
+    { playerId: 'p1', cmd: { kind: 'upgrade', towerId: 6300 } },
+    { playerId: 'p1', cmd: { kind: 'specialize', towerId: 6300, spec: 0 } },
+  ]);
+  const rejects = ev.filter((e) => e.e === 'reject').map((e) => (e.e === 'reject' ? e.reason : ''));
+  assert(rejects.some((r) => r.includes('no se puede mejorar')), 'el Sentry NO se puede mejorar (reject)');
+  assert(rejects.some((r) => r.includes('no se puede especializar')), 'el Sentry NO se puede especializar (reject)');
+  const sentry = st.towers.find((t) => t.id === 6300)!;
+  assert(sentry.level === 1 && sentry.spec === -1, 'el Sentry queda en nivel 1 sin especializar');
+}
+
+console.log('— Lote 3 · determinismo con oleada invisible + Sentry —');
+{
+  function hashInv(): string {
+    const map = getMap('sendero');
+    const simCtx = makeSimContext(map, makePlacementContext(map));
+    const st = createGame('sendero', 'classic', 'normal', 1302, [{ id: 'p1', name: 'A', color: '#fff' }]);
+    // arranca en el interludio previo a la oleada 12 (invisible) con defensa + Sentry
+    st.nextId = 8000; st.wave = 11; st.waveState = 'interlude'; st.interludeLeft = 5 * TICK_RATE;
+    st.towers.push(mkTower('sentry', { id: 7000, cx: 5, cy: 3, level: 1, spec: -1 }));
+    st.towers.push(mkTower('archer', { id: 7001, cx: 5, cy: 1, level: 3 }));
+    st.towers.push(mkTower('cannon', { id: 7002, cx: 6, cy: 1, level: 3 }));
+    for (let i = 0; i < TICK_RATE * 40; i++) stepGame(st, simCtx, []);
+    return JSON.stringify([
+      st.tick, st.rng, st.nextId, st.wave,
+      st.enemies.map((e) => [e.id, Math.round(e.x * 100), e.invisible, e.detected]),
+      st.players[0].gold,
+    ]);
+  }
+  assert(hashInv() === hashInv(), 'la sim con oleada invisible + Sentry es determinista');
 }
 
 console.log('— Determinismo: misma semilla + mismos comandos → mismo estado —');

@@ -16,6 +16,8 @@ export const TOWER_ORDER: TowerTypeId[] = [
   'alchemist',
   // F4.4 — al FINAL para no romper índices de snapshot
   'boom',
+  // Lote 3 — al FINAL para no romper índices de snapshot
+  'sentry',
 ];
 
 export const TOWERS: Record<TowerTypeId, TowerDef> = {
@@ -637,6 +639,31 @@ export const TOWERS: Record<TowerTypeId, TowerDef> = {
     specs: [
       { key: 'boom', name: 'Barril explosivo', desc: 'No se especializa.', cost: 0, damage: 240, range: 0, cooldown: 0, splash: 1.7, charges: 1 },
       { key: 'boom', name: 'Barril explosivo', desc: 'No se especializa.', cost: 0, damage: 240, range: 0, cooldown: 0, splash: 1.7, charges: 1 },
+    ],
+  },
+
+  // ---------- Lote 3 · Sentry (item de la Tienda) ----------
+  sentry: {
+    id: 'sentry',
+    name: 'Sentry',
+    desc: 'No ataca: REVELA a los monstruos invisibles (terrestres y aéreos) dentro de su radio, volviéndolos targeteables para todo el equipo.',
+    color: '#29b6f6',
+    hotkey: 'e',
+    targetsAir: false,
+    targetsGround: false,
+    projectileKind: 'none',
+    // `detects`: cada tick marca como detectados a los invisibles dentro de su `range`.
+    // No dispara (towerFires lo excluye), 1 nivel, sin specs útiles (specs dummy como la
+    // Trampa), vendible. `range` = radio de detección.
+    detects: true,
+    levels: [
+      { cost: 50, damage: 0, range: 3.5, cooldown: 0 },
+      { cost: 50, damage: 0, range: 3.5, cooldown: 0 },
+      { cost: 50, damage: 0, range: 3.5, cooldown: 0 },
+    ],
+    specs: [
+      { key: 'sentry', name: 'Sentry', desc: 'No se especializa.', cost: 0, damage: 0, range: 3.5, cooldown: 0 },
+      { key: 'sentry', name: 'Sentry', desc: 'No se especializa.', cost: 0, damage: 0, range: 3.5, cooldown: 0 },
     ],
   },
 };

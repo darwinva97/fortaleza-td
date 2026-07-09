@@ -5,7 +5,7 @@ import { pushFrame, roomPrevToken, saveName, saveRoomToken, startGameStore, stor
 import { addPing, addShake, initRenderer, isMinimapOn, resetRenderer, toggleMinimap, towerFired } from './renderer.js';
 import { initInput } from './input.js';
 import { initBestiary } from './bestiary.js';
-import { applySpectatorUI, buildTowerBar, hidePanel, initMarket, initScoreboard, onTick, toast, addChat, refreshPanel, syncSpeedButton, syncTowerBar } from './hud.js';
+import { applySpectatorUI, buildTowerBar, hidePanel, initMarket, initScoreboard, initShop, onTick, toast, addChat, refreshPanel, syncSpeedButton, syncTowerBar } from './hud.js';
 import { hideEnd, homeError, initHome, initLobby, renderLobby, showEnd, switchScreen } from './screens.js';
 import { beam, burst, clearParticles, floatText, fx, line, ring } from './particles.js';
 import { sfx, setSfxVolume, setMusicVolume, unlockAudio } from './audio.js';
@@ -721,6 +721,7 @@ initLobby();
 initBestiary();
 initMarket();
 initScoreboard();
+initShop();
 wireHudButtons();
 wireNet();
 // el reproductor de repeticiones reusa el MISMO pipeline de eventos que la red

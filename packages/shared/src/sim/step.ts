@@ -107,6 +107,8 @@ function spawnEnemy(
     stunTowerId: 0,
     lastWpIdx: at ? at.wpIdx : 1,
     armorShredUntil: 0,
+    invisible: false,
+    detected: false,
   };
   state.enemies.push(enemy);
   return enemy;
@@ -330,6 +332,9 @@ function pickTarget(
   for (const e of state.enemies) {
     if (e.hp <= 0) continue;
     if (exclude && exclude.has(e.id)) continue;
+    // Lote 3 · un invisible NO detectado no puede ser objetivo DIRECTO de ninguna
+    // torre (los efectos de ÁREA sí lo tocan: ver explode/línea perforante/auras).
+    if (e.invisible && !e.detected) continue;
     const edef = ENEMIES[e.type];
     if (edef.flying && !canAir) continue;
     if (!edef.flying && !canGround) continue;
@@ -386,7 +391,8 @@ function towerFires(tower: TowerState): boolean {
     lvl.slowAura ||
     isBanner(lvl) ||
     lvl.auraBounty !== undefined ||
-    TOWERS[tower.type].onPathOnly
+    TOWERS[tower.type].onPathOnly ||
+    TOWERS[tower.type].detects // Lote 3 · el Sentry no dispara, solo detecta
   );
 }
 
@@ -524,6 +530,7 @@ function fireTower(
       for (let bi = 0; bi < chainN; bi++) {
         const e = state.enemies[bi];
         if (e.hp <= 0 || hitIds.has(e.id)) continue;
+        if (e.invisible && !e.detected) continue; // el rayo no salta a un invisible no detectado
         const edef = ENEMIES[e.type];
         if (edef.flying && !canAir) continue;
         const d = dist(current.x, current.y, e.x, e.y);
@@ -930,6 +937,7 @@ function stepWaves(state: GameState, ctx: SimContext, events: GameEvent[]): void
       state.nextWaveImmune = gen.immune;
       state.nextWaveBlessed = gen.blessed;
       state.nextWaveFlying = gen.flying;
+      state.nextWaveInvisible = gen.invisible;
       state.nextWaveBoss = gen.bossType;
     }
     state.interludeLeft -= 1;
@@ -951,6 +959,7 @@ function stepWaves(state: GameState, ctx: SimContext, events: GameEvent[]): void
       state.nextWaveImmune = false;
       state.nextWaveBlessed = false;
       state.nextWaveFlying = false;
+      state.nextWaveInvisible = false;
       state.nextWaveBoss = null;
     }
     return;
@@ -971,6 +980,8 @@ function stepWaves(state: GameState, ctx: SimContext, events: GameEvent[]): void
       if (entry.blessed && entry.blessedAffix && !ENEMIES[entry.type].boss) {
         makeBlessed(enemy, entry.blessedAffix);
       }
+      // Lote 3 · oleada invisible: los no-jefe nacen invisibles (un Sentry los revela)
+      if (entry.invisible && !ENEMIES[entry.type].boss) enemy.invisible = true;
       state.spawnCooldown = state.spawnQueue.length > 0 ? state.spawnQueue[0].delay : 0;
     }
   }
@@ -1138,6 +1149,26 @@ function stepTowerAuras(state: GameState): void {
   }
 }
 
+// Lote 3 · DETECCIÓN de invisibles (recalculada CADA tick en la sim, determinista):
+// un invisible que entra en el radio (= `range`) de algún SENTRY del equipo (torres
+// con `detects`) queda `detected` y REVELADO el resto de su recorrido (detección
+// PEGAJOSA, estilo Green TD: basta un Sentry en el camino para revelar la oleada;
+// caminos largos no exigen cobertura total). Determinista: sin RNG ni reloj, orden
+// estable de `state.towers`/`state.enemies`. Se corre tras mover a los enemigos y
+// antes de que las torres apunten, para que `pickTarget` lea la detección de este tick.
+function recomputeDetection(state: GameState): void {
+  for (const t of state.towers) {
+    if (!TOWERS[t.type].detects) continue;
+    const radius = statsOf(t).range;
+    const tx = t.cx + 0.5;
+    const ty = t.cy + 0.5;
+    for (const e of state.enemies) {
+      if (!e.invisible || e.detected) continue; // ya revelado: sigue revelado (pegajoso)
+      if (dist(tx, ty, e.x, e.y) <= radius) e.detected = true;
+    }
+  }
+}
+
 // Avanza un tick de la simulación. Muta `state` y devuelve los eventos del tick.
 export function stepGame(
   state: GameState,
@@ -1154,7 +1185,7 @@ export function stepGame(
   if (state.tick === 0 && state.mode !== 'horde') {
     events.push({
       e: 'sys',
-      msg: '🛡 Las oleadas múltiplos de 5 (desde la 10) son INMUNES a la magia: ten daño físico de reserva. ☠ Los jefes llegan cada 10 (la Quimera voladora en la 15/25/35).',
+      msg: '🛡 Las oleadas múltiplos de 5 (desde la 10) son INMUNES a la magia: ten daño físico de reserva. ☠ Los jefes llegan cada 10 (la Quimera voladora en la 15/25/35). 👁 Algunas oleadas son INVISIBLES: compra un Sentry en la 🛒 Tienda para revelarlas.',
     });
   }
   if (state.tick === 0) {
@@ -1173,6 +1204,9 @@ export function stepGame(
   stepWaves(state, ctx, events);
   stepTowerAuras(state);
   stepEnemies(state, ctx, events);
+  // Lote 3 · detección de invisibles por los Sentry: se recalcula tras el movimiento
+  // y ANTES de que las torres apunten (stepTowers), para que pickTarget lea `detected`.
+  recomputeDetection(state);
   // Trampas de púas: golpean a los enemigos que pisan su celda y consumen carga.
   stepTraps(state, ctx, events);
   // refuerzo de los Estandartes: se calcula una vez por tick (solo lee el estado)

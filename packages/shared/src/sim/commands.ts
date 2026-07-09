@@ -86,8 +86,8 @@ export function applyCommands(
           reject(events, playerId, 'Solo el dueño puede mejorar esta torre');
           break;
         }
-        // las torres de camino (Trampa/Barril) no se mejoran (se agotan y desaparecen)
-        if (TOWERS[tower.type].onPathOnly) {
+        // las torres de camino (Trampa/Barril) y el Sentry no se mejoran
+        if (TOWERS[tower.type].onPathOnly || TOWERS[tower.type].detects) {
           reject(events, playerId, 'Esta torre no se puede mejorar');
           break;
         }
@@ -154,6 +154,11 @@ export function applyCommands(
         // una torre fusionada no se especializa (su fusión ES su identidad, F4.3)
         if (tower.fusion >= 0) {
           reject(events, playerId, 'Una fusión no se puede especializar');
+          break;
+        }
+        // el Sentry (y las torres de camino) no se especializan
+        if (TOWERS[tower.type].detects || TOWERS[tower.type].onPathOnly) {
+          reject(events, playerId, 'Esta torre no se puede especializar');
           break;
         }
         if (tower.level < 3) {

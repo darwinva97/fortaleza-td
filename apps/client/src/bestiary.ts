@@ -138,6 +138,14 @@ function buildElites(): void {
         <p class="edesc">Dominada por voladores: el cañón y el mortero no llegan. Necesitas anti-aire
         (arquero, hielo, veneno, tesla, francotirador o la Metralla).</p>
       </div>
+      <div class="enemy-card">
+        <div class="ecard-head"><span class="eicon">👁</span><span class="ename">Oleada INVISIBLE</span></div>
+        <p class="edesc">Cada 6 oleadas desde la 12 (12, 18, 24, 36…), toda la oleada es <b>invisible</b>:
+        las torres <b>no pueden verla ni apuntarle</b> y desaparece del mapa. Compra un <b>👁 Sentry</b> en la
+        <b>🛒 Tienda</b> y colócalo cubriendo el camino: revela a los monstruos (terrestres y aéreos) dentro de su radio,
+        volviéndolos targeteables para todo el equipo. Las trampas de camino (Trampa/Barril) y el daño de ÁREA
+        también los golpean aunque no estén detectados.</p>
+      </div>
       <div class="enemy-card boss">
         <div class="ecard-head"><span class="eicon">☠</span><span class="ename">JEFES</span></div>
         <p class="edesc">Llegan cada 10 oleadas; la <b>Quimera voladora</b> en la 15/25/35 del clásico.

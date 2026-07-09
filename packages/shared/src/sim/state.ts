@@ -52,6 +52,7 @@ export function createGame(
     nextWaveImmune: false,
     nextWaveBlessed: false,
     nextWaveFlying: false,
+    nextWaveInvisible: false,
     nextWaveBoss: null,
     pendingWave: null,
     pendingBoss: false,

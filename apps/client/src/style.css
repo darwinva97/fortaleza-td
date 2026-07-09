@@ -632,6 +632,51 @@ html, body {
   #scoreboard-panel { top: 40px; padding: 8px 10px; }
 }
 
+/* ---------- tienda de items (Lote 3) ---------- */
+/* mismo estilo que la tabla 📊: panel flotante centrado arriba, se cierra al tocar fuera */
+#shop-panel {
+  position: absolute;
+  top: 52px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 31;
+  width: 320px;
+  max-width: calc(100vw - 24px);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  padding: 10px 12px;
+  pointer-events: auto;
+}
+#shop-grid { display: flex; flex-direction: column; gap: 8px; }
+.shop-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  padding: 9px 11px;
+  background: rgba(12, 16, 26, 0.55);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--fg);
+  cursor: pointer;
+}
+.shop-item:hover { border-color: rgba(41, 182, 246, 0.6); }
+.shop-item.selected { border-color: var(--accent-hi); box-shadow: 0 0 0 1px var(--accent-hi) inset; }
+.shop-item.poor { opacity: 0.5; }
+.shop-item .shop-icon { font-size: 1.5rem; flex-shrink: 0; }
+.shop-item .shop-info { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.shop-item .shop-info b { font-size: 0.92rem; }
+.shop-item .shop-desc { font-size: 0.74rem; color: var(--fg-dim); line-height: 1.25; }
+.shop-item .shop-cost { flex-shrink: 0; color: var(--accent-hi); font-weight: 700; font-variant-numeric: tabular-nums; }
+@media (max-height: 500px) {
+  #shop-panel { top: 40px; padding: 8px 10px; }
+}
+
 /* ---------- panel de ajustes de sonido (⚙) ---------- */
 #settings-panel {
   position: absolute;
@@ -730,6 +775,7 @@ html, body {
 .wave-tag.blessed { background: rgba(255, 213, 79, 0.22); border-color: rgba(255, 213, 79, 0.6); color: #ffe082; }
 .wave-tag.flying  { background: rgba(236, 64, 122, 0.20); border-color: rgba(236, 64, 122, 0.55); color: #f8bbd0; }
 .wave-tag.boss    { background: rgba(239, 83, 80, 0.22);  border-color: rgba(239, 83, 80, 0.6);  color: #ffcdd2; }
+.wave-tag.invisible { background: rgba(41, 182, 246, 0.20); border-color: rgba(41, 182, 246, 0.6); color: #b3e5fc; }
 
 /* franja de información al elegir torre para construir */
 #hud-placing {

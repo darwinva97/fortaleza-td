@@ -62,7 +62,8 @@ export interface PublicRoomInfo {
 // ---------- Snapshot compacto (arrays para ahorrar bytes) ----------
 
 // enemigo: [id, typeIdx, x, y, hpFrac, flags, affixMask]
-//   flags: 1=slow 2=poison 4=boss 8=elite 16=inmune 32=shred   affixMask: bits de balance/affixes
+//   flags: 1=slow 2=poison 4=boss 8=elite 16=inmune 32=shred 64=invisible 128=detectado
+//   (bits nuevos AL FINAL; afijos aparte)   affixMask: bits de balance/affixes
 export type SnapEnemy = [number, number, number, number, number, number, number];
 // torre: [id, typeIdx, cx, cy, level, ownerIdx, targetModeIdx, kills, damage, spec, stunned, charges, growth, fusion, invested, goldGen, cd]
 //   spec: -1 sin especializar, 0/1 rama; stunned: 0/1; charges: Trampa (0 = N/A);
@@ -97,10 +98,11 @@ export interface Snap {
   active: boolean; // false = interludio
   interludeSec: number;
   nextWave: [number, number][]; // [enemyTypeIdx, count]
-  // telegrafía de la PRÓXIMA oleada (durante el interludio): 🛡 inmune / ⭐ bendecida / 🦅 aérea / ☠ jefe
+  // telegrafía de la PRÓXIMA oleada (durante el interludio): 🛡 inmune / ⭐ bendecida / 🦅 aérea / 👁 invisible / ☠ jefe
   nextImmune: boolean;
   nextBlessed: boolean;
   nextFlying: boolean;
+  nextInvisible: boolean; // Lote 3 · la próxima oleada es INVISIBLE (necesitas un Sentry)
   nextBossType: number; // typeIdx del jefe de la próxima oleada, o -1
   players: SnapPlayer[];
   enemies: SnapEnemy[];
@@ -131,6 +133,7 @@ export function buildSnap(state: GameState): Snap {
     nextImmune: state.nextWaveImmune,
     nextBlessed: state.nextWaveBlessed,
     nextFlying: state.nextWaveFlying,
+    nextInvisible: state.nextWaveInvisible,
     nextBossType: state.nextWaveBoss ? (enemyTypeIdx.get(state.nextWaveBoss) ?? -1) : -1,
     players: state.players.map((p) => ({
       id: p.id,
@@ -150,6 +153,8 @@ export function buildSnap(state: GameState): Snap {
       if (e.elite) flags |= 8;
       if (e.spellImmune) flags |= 16;
       if (e.armorShredUntil > state.tick) flags |= 32; // shred de armadura activo
+      if (e.invisible) flags |= 64; // Lote 3 · invisible
+      if (e.detected) flags |= 128; // Lote 3 · detectado por un Sentry
       return [
         e.id,
         enemyTypeIdx.get(e.type) ?? 0,

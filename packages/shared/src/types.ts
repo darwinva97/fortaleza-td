@@ -16,7 +16,9 @@ export type TowerTypeId =
   | 'trap' // Trampa de púas: se coloca SOBRE el camino; daño físico por cargas
   | 'alchemist' // Alquimista: aura económica (+bounty por bajas en su radio)
   // F4.4 — al FINAL del orden de snapshot
-  | 'boom'; // Barril explosivo: SOBRE el camino; detona una vez en área y desaparece
+  | 'boom' // Barril explosivo: SOBRE el camino; detona una vez en área y desaparece
+  // Lote 3 — al FINAL del orden de snapshot
+  | 'sentry'; // Sentry: NO ataca; REVELA a los monstruos invisibles dentro de su radio (item de tienda)
 
 export type EnemyTypeId =
   | 'goblin'
@@ -144,6 +146,11 @@ export interface TowerDef {
   // y se autodestruye: ELIMINA a los terrestres no-jefe en radio `splash`; a los
   // jefes les hace `damage` físico.
   detonates?: boolean;
+  // Lote 3 · Sentry: NO ataca. Cada tick marca como DETECTADOS a los enemigos
+  // invisibles dentro de su radio (= su `range`), volviéndolos targeteables y
+  // visibles para todo el equipo. No dispara (towerFires lo excluye), no se mejora
+  // ni especializa; solo se vende.
+  detects?: boolean;
 }
 
 export interface EnemyDef {
@@ -222,6 +229,9 @@ export interface EnemyState {
   lastWpIdx: number; // Behemot: último waypoint cruzado (para aturdir una vez por esquina)
   // --- F4.2 ---
   armorShredUntil: number; // tick hasta el que su armadura efectiva está a la MITAD (shred del Obús/Metralla II). 0 = sin shred
+  // --- Lote 3 · invisibilidad ---
+  invisible: boolean; // nace en una oleada INVISIBLE: las torres no pueden apuntarle ni verlo salvo si un Sentry lo detecta
+  detected: boolean; // recalculado por tick: true si está dentro del radio de algún Sentry del equipo (targeteable + visible)
 }
 
 export interface TowerState {
@@ -311,6 +321,8 @@ export interface SpawnEntry {
   immune?: boolean; // oleada inmune: el enemigo nace spellImmune
   blessed?: boolean; // oleada bendecida: aplica un afijo común sin el ×2.6 de hp
   blessedAffix?: AffixId; // el afijo común de la oleada bendecida
+  // Lote 3 · oleada invisible: el enemigo nace `invisible` (no en jefes)
+  invisible?: boolean;
 }
 
 export interface WaveComp {
@@ -335,6 +347,7 @@ export interface GameState {
   nextWaveImmune: boolean;
   nextWaveBlessed: boolean;
   nextWaveFlying: boolean;
+  nextWaveInvisible: boolean; // Lote 3 · la próxima oleada es INVISIBLE (telegrafía 👁)
   nextWaveBoss: EnemyTypeId | null;
   pendingWave: SpawnEntry[] | null; // oleada ya generada, esperando el fin del interludio
   pendingBoss: boolean;

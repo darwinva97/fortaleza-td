@@ -10,6 +10,8 @@ import {
   HP_PER_EXTRA_PLAYER,
   IMMUNE_EVERY,
   IMMUNE_FROM,
+  INVISIBLE_EVERY,
+  INVISIBLE_FROM,
   TICK_RATE,
 } from '../constants.js';
 import { rand, pick } from '../rng.js';
@@ -34,6 +36,17 @@ export function isImmuneWave(wave: number): boolean {
   if (wave < IMMUNE_FROM || (wave - IMMUNE_FROM) % IMMUNE_EVERY !== 0) return false;
   const isChimeraWave = wave >= 15 && wave % 10 === 5;
   return !isChimeraWave;
+}
+
+// ¿La oleada `wave` es INVISIBLE? (Lote 3) Cada INVISIBLE_EVERY oleadas desde
+// INVISIBLE_FROM (12, 18, 24, 30, 36…), PERO se exime cuando coincide con una
+// oleada INMUNE o de JEFE — como la bendecida evita combinarse — para no apilar
+// castigos (un invisible + inmune, o invisible + jefe, sería desproporcionado).
+// Determinista por número de oleada: NO consume RNG. En el clásico de 36 caen
+// exactamente 4 oleadas invisibles: 12, 18, 24 y 36 (la 30 es golem+inmune).
+export function isInvisibleWave(wave: number): boolean {
+  if (wave < INVISIBLE_FROM || (wave - INVISIBLE_FROM) % INVISIBLE_EVERY !== 0) return false;
+  return !isImmuneWave(wave) && !waveHasBoss(wave);
 }
 
 // Presupuesto de la oleada: cuánto "vale" en enemigos.
@@ -78,6 +91,7 @@ export interface GeneratedWave {
   blessed: boolean; // oleada bendecida (afijo común + doble botín)
   blessedAffix: AffixId | null; // el afijo común, si es bendecida
   flying: boolean; // la oleada está dominada por lo aéreo / jefe volador (telegrafía 🦅)
+  invisible: boolean; // Lote 3 · oleada INVISIBLE: los enemigos no-jefe nacen invisibles (telegrafía 👁)
 }
 
 // Elige el jefe de una oleada con jefe. En el CLÁSICO: golem en múltiplos de 10,
@@ -210,6 +224,12 @@ export function generateWave(
     }
   }
 
+  // Oleada INVISIBLE (Lote 3): determinista por número de oleada (no consume RNG,
+  // así no descuadra nada). Marca a TODA la composición no-jefe como invisible:
+  // sin un Sentry del equipo, las torres no pueden apuntarla ni verla. Nunca cae
+  // en oleadas inmunes ni de jefe (lo garantiza isInvisibleWave).
+  const invisible = isInvisibleWave(wave);
+
   // Espaciado entre spawns: más denso en oleadas altas
   const baseGap = Math.max(0.28, 0.85 - wave * 0.018); // segundos
   const entries: SpawnEntry[] = ordered.map((type, i) => {
@@ -222,6 +242,8 @@ export function generateWave(
       ...(affixes ? { elite: true, affixes } : {}),
       ...(immune ? { immune: true } : {}),
       ...(blessed && blessedAffix ? { blessed: true, blessedAffix } : {}),
+      // invisible se aplica solo a los no-jefe (spawnEnemy/stepWaves lo respeta)
+      ...(invisible && !ENEMIES[type].boss ? { invisible: true } : {}),
     };
   });
 
@@ -235,5 +257,5 @@ export function generateWave(
   const flyers = ordered.filter((t) => ENEMIES[t].flying).length;
   const flying = (bossType !== null && ENEMIES[bossType].flying) || (ordered.length > 0 && flyers >= ordered.length / 2);
 
-  return { entries, comp, hasBoss, bossType, immune, blessed, blessedAffix, flying };
+  return { entries, comp, hasBoss, bossType, immune, blessed, blessedAffix, flying, invisible };
 }
