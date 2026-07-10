@@ -65,7 +65,7 @@ export interface PublicRoomInfo {
 //   flags: 1=slow 2=poison 4=boss 8=elite 16=inmune 32=shred 64=invisible 128=detectado
 //   (bits nuevos AL FINAL; afijos aparte)   affixMask: bits de balance/affixes
 export type SnapEnemy = [number, number, number, number, number, number, number];
-// torre: [id, typeIdx, cx, cy, level, ownerIdx, targetModeIdx, kills, damage, spec, stunned, charges, growth, fusion, invested, goldGen, cd, halted, focusId]
+// torre: [id, typeIdx, cx, cy, level, ownerIdx, targetModeIdx, kills, damage, spec, stunned, charges, growth, fusion, invested, goldGen, cd, halted, focusId, expiresTick]
 //   spec: -1 sin especializar, 0/1 rama; stunned: 0/1; charges: Trampa (0 = N/A);
 //   growth: bono de crecimiento permanente (Arco Largo/Explorador II; 0 = N/A);
 //   fusion: índice en FUSION_ORDER (−1 = sin fusión); invested: oro invertido total
@@ -76,10 +76,13 @@ export type SnapEnemy = [number, number, number, number, number, number, number]
 //   lo muestra como contador de cadencia; las torres que no disparan lo ignoran (F6.2);
 //   halted: 0/1 — torre DETENIDA por su dueño (Lote 4; badge ⏸ + botón ⏹/▶);
 //   focusId: id del enemigo ENFOCADO (Lote 4; 0 = ninguno — pinta el vínculo 🎯
-//   al seleccionar y el estado del panel)
-//   (los campos F4.2 charges/growth, F4.3 fusion/invested, F5.3 goldGen, F6.2 cd y
-//   Lote 4 halted/focusId van al FINAL para no romper índices previos)
-export type SnapTower = [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number];
+//   al seleccionar y el estado del panel);
+//   expiresTick: tick de sim en el que el Sentry CADUCA (v17; 0 = nunca). El cliente
+//   calcula el tiempo restante con el tick del snap (el `t` del mensaje tick) para el
+//   countdown ⏳ del panel y el parpadeo de aviso; el resto de torres lo ignoran
+//   (los campos F4.2 charges/growth, F4.3 fusion/invested, F5.3 goldGen, F6.2 cd,
+//   Lote 4 halted/focusId y v17 expiresTick van al FINAL para no romper índices previos)
+export type SnapTower = [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number];
 // proyectil: [id, kindIdx(0 bullet,1 shell,2 bomb), x, y, colorIdx(=typeIdx de torre)]
 export type SnapProj = [number, number, number, number, number];
 
@@ -194,6 +197,9 @@ export function buildSnap(state: GameState): Snap {
           // Lote 4 · detenida (⏸) + enemigo enfocado (0 = ninguno)
           t.halted ? 1 : 0,
           t.focusId,
+          // v17 · Sentry temporal: tick de caducidad (0 = nunca). El cliente lo
+          // resta al tick del snap para el countdown ⏳ y el parpadeo de aviso.
+          t.expiresTick,
         ] as SnapTower,
     ),
     projs: state.projectiles.map((p) => {

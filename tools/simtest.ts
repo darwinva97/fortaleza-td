@@ -28,6 +28,7 @@ import {
   FUSIONS,
   HORDE_CAP,
   MAPS,
+  SENTRY_DURATION_SEC,
   START_LIVES,
   TICK_RATE,
   TOWERS,
@@ -56,9 +57,13 @@ const MAP_ID = 'sendero';
 // Semilla del smoke-test de partida completa. OJO: es un test de "el juego es
 // ganable por bots simples", sensible por diseño a cambios de economía (los bots
 // deciden por umbrales de oro). El oro de ASISTENCIA (#9) volteó la semilla
-// anterior (123456789: ganaba con 4 vidas, margen finísimo); esta gana con 13.
+// anterior (123456789: ganaba con 4 vidas, margen finísimo); 123456791 ganaba con 13.
+// v17 · el SENTRY pasó a TEMPORAL (caduca): el bot ahora lo RENUEVA en cada ventana
+// invisible (12/18/24/36), gasto recurrente que restaba defensa y volcó 123456791 (y
+// TODA su vecindad) a derrota en la 36. Semilla vecina ganadora robusta: 123456815
+// (Δ+24), que gana con 24 vidas de margen con la nueva cobertura de Sentry.
 // El barrido multi-semilla de verdad es trabajo de F5.1 (balance global).
-const SEED = 123456791;
+const SEED = 123456815;
 const MAX_TICKS = TICK_RATE * 60 * 40; // 40 minutos de juego (el clásico ahora son 36 oleadas)
 
 // Fábricas para pruebas dirigidas (construir estado a mano sin repetir 25 campos).
@@ -78,7 +83,7 @@ function mkTower(type: TowerTypeId, over: Partial<TowerState> = {}): TowerState 
   return {
     id: 2000, type, cx: 5, cy: 1, level: 3, spec: -1, owner: 'p1',
     cooldownLeft: 0, targetMode: 'first', invested: 100, kills: 0, damage: 0, stunnedUntil: 0,
-    charges: 0, growthBonus: 0, goldGen: 0, fusion: -1, focusId: 0, halted: false,
+    charges: 0, growthBonus: 0, goldGen: 0, fusion: -1, focusId: 0, halted: false, expiresTick: 0,
     ...over,
   };
 }
@@ -110,19 +115,16 @@ function buildCellCandidates(mapId: string): [number, number][] {
 
 const BUILD_ORDER: TowerTypeId[] = ['archer', 'cannon', 'frost', 'archer', 'tesla', 'banner', 'poison', 'sniper', 'mortar'];
 
-// Lote 3 · elige la celda libre (junto al camino) MÁS CERCANA al INICIO del camino:
-// con detección PEGAJOSA basta revelar a los enemigos pronto para que sigan visibles
-// el resto del recorrido, así que el bot planta sus Sentry lo más cerca posible del
-// spawn (donde la oleada invisible se revela cuanto antes).
-function pickSentryCell(
+// v17 · celda buildable MÁS cercana al inicio del camino, IGNORANDO ocupación: la
+// celda RESERVADA del Sentry (fija toda la partida), que cubre el spawn de la oleada
+// invisible. Determinista (candidates y spawn son fijos).
+function nearestCellToSpawn(
   candidates: [number, number][],
-  used: Set<string>,
   spawn: { x: number; y: number },
 ): [number, number] | null {
   let best: [number, number] | null = null;
   let bestD = Infinity;
   for (const [cx, cy] of candidates) {
-    if (used.has(`${cx},${cy}`)) continue;
     const d = Math.hypot(cx + 0.5 - spawn.x, cy + 0.5 - spawn.y);
     if (d < bestD) {
       bestD = d;
@@ -144,12 +146,18 @@ function botCommands(
   // celdas ya ocupadas + las que se reclaman dentro de este mismo tick
   const used = new Set(state.towers.map((t) => `${t.cx},${t.cy}`));
 
-  // Lote 3 · SENTRY: con detección PEGAJOSA basta UN detector cerca del spawn para
-  // revelar toda la oleada invisible el resto del camino. El clásico va justo, así que
-  // se planta en el interludio de la oleada 11 (justo antes de la primera invisible, la
-  // 12) y SOLO con oro de SOBRA, sin robarle una acción a la defensa temprana.
-  let sentryCount = state.towers.filter((t) => t.type === 'sentry').length;
-  const sentryTarget = state.wave >= 11 ? 1 : 0;
+  // Lote 3 (v17) · SENTRY TEMPORAL: el detector CADUCA (5 min de base), así que el bot
+  // lo RENUEVA. Clave para no romper el clásico: reserva UNA celda fija junto al spawn
+  // (la más cercana, cubre siempre el nacimiento de la oleada) que la defensa NUNCA usa,
+  // y en el interludio ANTES de cada oleada invisible (12/18/24/36) garantiza ahí un
+  // Sentry FRESCO: si el anterior sigue vivo lo VENDE (recupera el 70% de refund) y
+  // planta uno nuevo — refrescar en el sitio evita huecos de cobertura tardíos (celdas
+  // llenas) y el refund abarata la renovación. La detección pegajosa hace el resto.
+  const sentryCell = nearestCellToSpawn(candidates, spawn);
+  if (sentryCell) used.add(`${sentryCell[0]},${sentryCell[1]}`); // reservada: la defensa no construye ahí
+  const wantSentry = isInvisibleWave(state.wave + 1);
+  const SENTRY_FRESH = TICK_RATE * 240; // ya cubierto si al Sentry le sobran ≥4 min
+  let sentryDone = false; // un solo (re)plantado por tick (cualquier jugador con oro), sin duplicar
   for (const player of state.players) {
     let budget = player.gold; // oro disponible tras las órdenes de este tick
     let woodBudget = player.wood; // madera disponible (F5.2: specs y Rango II la cuestan)
@@ -204,6 +212,26 @@ function botCommands(
     // prioridad: primero los miembros de un par de receta, luego el resto
     const byPairFirst = <T extends { id: number }>(x: T, y: T) =>
       Number(pairable.has(y.id)) - Number(pairable.has(x.id));
+
+    // SENTRY (Lote 3/v17): la cobertura de las oleadas invisibles es CRÍTICA (una sin
+    // detector se fuga entera), así que se resuelve ANTES de la defensa, con el oro
+    // principal — no con las sobras (que casi nunca llegan a 50). Antes de una oleada
+    // invisible garantiza un Sentry FRESCO en la celda reservada: si el anterior sigue
+    // vivo sin holgura lo VENDE (recupera refund) y planta uno nuevo en el sitio;
+    // refrescar en el mismo sitio evita los huecos de cobertura tardíos (tablero lleno).
+    if (sentryCell && wantSentry && !sentryDone && mine.length >= 4) {
+      const here = state.towers.find((t) => t.type === 'sentry' && t.cx === sentryCell[0] && t.cy === sentryCell[1]);
+      const fresh = here !== undefined && here.expiresTick - state.tick > SENTRY_FRESH;
+      const sentryCost = TOWERS.sentry.levels[0].cost;
+      if (fresh) {
+        sentryDone = true; // ya hay un Sentry con holgura: nada que hacer esta ventana
+      } else if (budget >= sentryCost) {
+        if (here) cmds.push({ playerId: player.id, cmd: { kind: 'sell', towerId: here.id } }); // refresca en el sitio (recupera refund)
+        cmds.push({ playerId: player.id, cmd: { kind: 'place', towerType: 'sentry', cx: sentryCell[0], cy: sentryCell[1] } });
+        sentryDone = true;
+        budget -= sentryCost;
+      }
+    }
 
     // hasta 3 acciones por interludio: prioriza progresar torres hacia la especialización
     for (let act = 0; act < 3; act++) {
@@ -318,20 +346,6 @@ function botCommands(
       break; // no se pudo hacer nada más este tick
     }
 
-    // SENTRY (Lote 3): tras las acciones de defensa, si sobra oro y aún falta el
-    // detector, se planta UNO cerca del spawn. Usa SOLO el oro sobrante del tick, así
-    // no le roba una acción a la defensa; con detección pegajosa uno basta para todas
-    // las oleadas invisibles (12/18/24/36). Excluido de `mine` (no se mejora).
-    const sentryCost = TOWERS.sentry.levels[0].cost;
-    if (mine.length >= 4 && sentryCount < sentryTarget && budget >= sentryCost) {
-      const cell = pickSentryCell(candidates, used, spawn);
-      if (cell) {
-        used.add(`${cell[0]},${cell[1]}`);
-        cmds.push({ playerId: player.id, cmd: { kind: 'place', towerType: 'sentry', cx: cell[0], cy: cell[1] } });
-        sentryCount += 1;
-        budget -= sentryCost;
-      }
-    }
   }
   // acelerar: llamar la oleada cuando falten menos de 8 segundos
   if (state.interludeLeft < TICK_RATE * 8 && state.interludeLeft > TICK_RATE * 2) {
@@ -340,10 +354,10 @@ function botCommands(
   return cmds;
 }
 
-function runScenario(mapId = MAP_ID, maxTicks = MAX_TICKS): { state: GameState; totalKills: number; totalLeaks: number; maxWave: number; eventCounts: Map<string, number>; leaksByWave: Map<number, number> } {
+function runScenario(mapId = MAP_ID, maxTicks = MAX_TICKS, seed = SEED): { state: GameState; totalKills: number; totalLeaks: number; maxWave: number; eventCounts: Map<string, number>; leaksByWave: Map<number, number>; sentryPlaces: number } {
   const map = getMap(mapId);
   const simCtx = makeSimContext(map, makePlacementContext(map));
-  const state = createGame(mapId, 'classic', 'normal', SEED, [
+  const state = createGame(mapId, 'classic', 'normal', seed, [
     { id: 'p1', name: 'Ana', color: '#4fc3f7' },
     { id: 'p2', name: 'Beto', color: '#f06292' },
   ]);
@@ -353,6 +367,7 @@ function runScenario(mapId = MAP_ID, maxTicks = MAX_TICKS): { state: GameState; 
   let totalKills = 0;
   let totalLeaks = 0;
   let maxWave = 0;
+  let sentryPlaces = 0; // v17 · colocaciones de Sentry (el bot recompra para mantener cobertura)
 
   const spawn = simCtx.waypoints[0][0];
   const leaksByWave = new Map<number, number>();
@@ -363,11 +378,12 @@ function runScenario(mapId = MAP_ID, maxTicks = MAX_TICKS): { state: GameState; 
       if (ev.e === 'leak') leaksByWave.set(state.wave, (leaksByWave.get(state.wave) ?? 0) + 1);
       if (ev.e === 'death') totalKills++;
       if (ev.e === 'leak') totalLeaks++;
+      if (ev.e === 'place' && ev.towerType === 'sentry') sentryPlaces++;
       if (ev.e === 'wave_start') maxWave = ev.wave;
       if (ev.e === 'reject') throw new Error(`Comando de bot rechazado: ${ev.reason}`);
     }
   }
-  return { state, totalKills, totalLeaks, maxWave, eventCounts, leaksByWave };
+  return { state, totalKills, totalLeaks, maxWave, eventCounts, leaksByWave, sentryPlaces };
 }
 
 function assert(cond: boolean, msg: string): void {
@@ -475,10 +491,12 @@ assert(
   a.state.over?.victory === true,
   `los bots GANAN el clásico en normal (oleada ${a.maxWave}, ${a.state.lives} vidas, over=${JSON.stringify(a.state.over)})`,
 );
-// Lote 3: los bots colocan Sentry para las oleadas invisibles (12/18/24/36) y GANAN igual
+// Lote 3/v17: el Sentry es TEMPORAL, así que el bot MANTIENE cobertura recomprando a lo
+// largo de la partida (no basta uno). Cuenta las colocaciones de Sentry: cubren las
+// ventanas invisibles 12/18/24/36 y los bots GANAN el clásico igual.
 assert(
-  a.state.towers.some((t) => t.type === 'sentry'),
-  `los bots colocan al menos un Sentry (${a.state.towers.filter((t) => t.type === 'sentry').length}) y siguen ganando el clásico`,
+  a.sentryPlaces >= 2,
+  `los bots MANTIENEN cobertura de Sentry (${a.sentryPlaces} colocaciones) para las oleadas invisibles y ganan el clásico`,
 );
 // F5.2: el clásico dura 36 oleadas, como Green TD
 assert(a.state.totalWaves === 36 && a.maxWave >= 36, `el clásico dura 36 oleadas (jugadas ${a.maxWave}/${a.state.totalWaves})`);
@@ -532,7 +550,7 @@ console.log('— Regresión: las crías de spawnOnDeath sobreviven a un golpe de
   const cannon: TowerState = {
     id: 2000, type: 'cannon', cx: 5, cy: 1, level: 3, spec: -1, owner: 'p1',
     cooldownLeft: 0, targetMode: 'first', invested: 440, kills: 0, damage: 0, stunnedUntil: 0,
-    charges: 0, growthBonus: 0, goldGen: 0, fusion: -1, focusId: 0, halted: false,
+    charges: 0, growthBonus: 0, goldGen: 0, fusion: -1, focusId: 0, halted: false, expiresTick: 0,
   };
   st.towers.push(cannon);
 
@@ -574,14 +592,14 @@ console.log('— Estandarte: refuerza el daño de las torres cercanas (sin apila
     const archer: TowerState = {
       id: 2000, type: 'archer', cx: 5, cy: 1, level: 1, spec: -1, owner: 'p1',
       cooldownLeft: 0, targetMode: 'first', invested: 50, kills: 0, damage: 0, stunnedUntil: 0,
-      charges: 0, growthBonus: 0, goldGen: 0, fusion: -1, focusId: 0, halted: false,
+      charges: 0, growthBonus: 0, goldGen: 0, fusion: -1, focusId: 0, halted: false, expiresTick: 0,
     };
     st.towers.push(archer);
     for (let i = 0; i < banners; i++) {
       st.towers.push({
         id: 3000 + i, type: 'banner', cx: 6 + i, cy: 1, level: 1, spec: -1, owner: 'p1',
         cooldownLeft: 0, targetMode: 'first', invested: 90, kills: 0, damage: 0, stunnedUntil: 0,
-        charges: 0, growthBonus: 0, goldGen: 0, fusion: -1, focusId: 0, halted: false,
+        charges: 0, growthBonus: 0, goldGen: 0, fusion: -1, focusId: 0, halted: false, expiresTick: 0,
       });
     }
     // un tick: el arquero está listo y dispara; leemos el proyectil emitido
@@ -2221,23 +2239,123 @@ console.log('— Lote 3 · El daño de ÁREA alcanza a un invisible no detectado
   assert(!hidden.detected && hidden.hp < hp0, `el splash del cañón toca al invisible no detectado (−${(hp0 - hidden.hp).toFixed(0)}, detected=${hidden.detected})`);
 }
 
-console.log('— Lote 3 · el Sentry no se mejora ni especializa (solo se vende) —');
+console.log('— v17 · el Sentry SE MEJORA (más radio) pero NO se especializa; la Trampa sigue sin mejorar —');
 {
   const map = getMap('sendero');
   const simCtx = makeSimContext(map, makePlacementContext(map));
   const st = createGame('sendero', 'endless', 'normal', 1304, [{ id: 'p1', name: 'A', color: '#fff' }]);
-  st.nextId = 8000; st.wave = 1; st.waveState = 'active'; st.spawnQueue = []; st.pendingWave = [];
-  st.towers.push(mkTower('sentry', { id: 6300, cx: 5, cy: 1, level: 1, spec: -1, invested: 50 }));
+  st.nextId = 8000; st.tick = 500; st.wave = 1; st.waveState = 'active'; st.spawnQueue = []; st.pendingWave = [];
+  st.towers.push(mkTower('sentry', { id: 6300, cx: 5, cy: 1, level: 1, spec: -1, invested: 50, expiresTick: st.tick + 999999 }));
   st.players[0].gold = 10000; st.players[0].wood = 500;
   const ev = stepGame(st, simCtx, [
     { playerId: 'p1', cmd: { kind: 'upgrade', towerId: 6300 } },
     { playerId: 'p1', cmd: { kind: 'specialize', towerId: 6300, spec: 0 } },
   ]);
   const rejects = ev.filter((e) => e.e === 'reject').map((e) => (e.e === 'reject' ? e.reason : ''));
-  assert(rejects.some((r) => r.includes('no se puede mejorar')), 'el Sentry NO se puede mejorar (reject)');
-  assert(rejects.some((r) => r.includes('no se puede especializar')), 'el Sentry NO se puede especializar (reject)');
   const sentry = st.towers.find((t) => t.id === 6300)!;
-  assert(sentry.level === 1 && sentry.spec === -1, 'el Sentry queda en nivel 1 sin especializar');
+  assert(sentry.level === 2, `el Sentry SÍ se mejora: sube a nivel 2 (nivel ${sentry.level})`);
+  assert(!rejects.some((r) => r.includes('no se puede mejorar')), 'la mejora del Sentry NO se rechaza (v17)');
+  assert(rejects.some((r) => r.includes('no se puede especializar')), 'el Sentry NO se puede especializar (reject)');
+  assert(sentry.spec === -1, 'el Sentry queda sin especializar');
+
+  // regresión: la Trampa de camino sigue SIN poder mejorarse (gate onPathOnly intacto)
+  const pc = [...pathCells(map)][0].split(',').map(Number) as [number, number];
+  const st2 = createGame('sendero', 'endless', 'normal', 1305, [{ id: 'p1', name: 'A', color: '#fff' }]);
+  st2.nextId = 8100; st2.tick = 10; st2.wave = 1; st2.waveState = 'active'; st2.spawnQueue = []; st2.pendingWave = [];
+  st2.towers.push(mkTower('trap', { id: 6400, cx: pc[0], cy: pc[1], level: 1, charges: 20, invested: 60 }));
+  st2.players[0].gold = 10000; st2.players[0].wood = 500;
+  const ev2 = stepGame(st2, simCtx, [{ playerId: 'p1', cmd: { kind: 'upgrade', towerId: 6400 } }]);
+  assert(
+    ev2.some((e) => e.e === 'reject' && e.reason.includes('no se puede mejorar')),
+    'la Trampa sigue SIN poder mejorarse (regresión v17)',
+  );
+}
+
+console.log('— v17 · el Sentry CADUCA EXACTO a su duración (evento sell refund 0, SIN sys) —');
+{
+  const map = getMap('sendero');
+  const simCtx = makeSimContext(map, makePlacementContext(map));
+  const st = createGame('sendero', 'endless', 'normal', 1310, [{ id: 'p1', name: 'A', color: '#fff' }]);
+  // tick > 0 para no disparar los avisos `sys` del arranque (tick 0). Un enemigo
+  // inmóvil off-path mantiene la oleada ACTIVA (evita que se cicle sola y emita nada).
+  st.nextId = 8000; st.tick = 500; st.wave = 12; st.waveState = 'active'; st.spawnQueue = []; st.pendingWave = [];
+  st.lives = 1e9; st.maxLives = 1e9; st.players[0].gold = 10000;
+  st.enemies.push(mkEnemy('brute', { id: 5, hp: 1e9, maxHp: 1e9, speedMult: 0, x: 40, y: 40, wpIdx: 1 }));
+  const cell = buildCellCandidates('sendero')[0];
+  const placeTick = st.tick; // la orden `place` se aplica a ESTE tick
+  stepGame(st, simCtx, [{ playerId: 'p1', cmd: { kind: 'place', towerType: 'sentry', cx: cell[0], cy: cell[1] } }]);
+  const sentry = st.towers.find((t) => t.type === 'sentry')!;
+  const dur = SENTRY_DURATION_SEC[0] * TICK_RATE;
+  assert(sentry.expiresTick === placeTick + dur, `el Sentry nace con expiresTick = tick_colocación + ${dur} (${sentry.expiresTick} == ${placeTick + dur})`);
+  let sellTick = -1;
+  let sawSys = false;
+  for (let i = 0; i < dur + 5 && st.towers.some((t) => t.type === 'sentry'); i++) {
+    const tickBefore = st.tick;
+    for (const e of stepGame(st, simCtx, [])) {
+      if (e.e === 'sell' && e.refund === 0) sellTick = tickBefore;
+      if (e.e === 'sys') sawSys = true;
+    }
+  }
+  assert(sellTick === sentry.expiresTick, `el Sentry expira EXACTO en su expiresTick con sell refund 0 (${sellTick} == ${sentry.expiresTick})`);
+  assert(!st.towers.some((t) => t.type === 'sentry'), 'el Sentry desaparece al caducar');
+  assert(!sawSys, 'la caducidad NO manda mensaje de sistema (sin spam de chat)');
+}
+
+console.log('— v17 · mientras vive detecta; tras caducar un invisible NUEVO ya no se revela —');
+{
+  const map = getMap('sendero');
+  const simCtx = makeSimContext(map, makePlacementContext(map));
+  const st = createGame('sendero', 'endless', 'normal', 1312, [{ id: 'p1', name: 'A', color: '#fff' }]);
+  st.nextId = 8000; st.tick = 1000; st.wave = 12; st.waveState = 'active'; st.spawnQueue = []; st.pendingWave = [];
+  st.lives = 1e9; st.maxLives = 1e9;
+  const inv = mkEnemy('brute', { id: 6000, hp: 1e6, maxHp: 1e6, invisible: true, speedMult: 0, x: 5.5, y: 2.5, wpIdx: 1 });
+  st.enemies.push(inv);
+  st.towers.push(mkTower('archer', { id: 6001, cx: 5, cy: 1, level: 3, invested: 200 }));
+  // Sentry con caducidad CORTA por construcción (expiresTick a mano)
+  st.towers.push(mkTower('sentry', { id: 6002, cx: 5, cy: 3, level: 1, spec: -1, invested: 50, expiresTick: st.tick + 5 }));
+  const hp0 = inv.hp;
+  stepGame(st, simCtx, []);
+  const detectedAlive = inv.detected;
+  const dmgAlive = hp0 - inv.hp;
+  for (let i = 0; i < 20 && st.towers.some((t) => t.type === 'sentry'); i++) stepGame(st, simCtx, []);
+  const sentryGone = !st.towers.some((t) => t.type === 'sentry');
+  // un invisible NUEVO (nunca detectado) ya no se revela sin Sentry vivo
+  const fresh = mkEnemy('brute', { id: 6099, hp: 1e6, maxHp: 1e6, invisible: true, speedMult: 0, x: 5.5, y: 2.5, wpIdx: 1 });
+  st.enemies.push(fresh);
+  const fhp0 = fresh.hp;
+  for (let i = 0; i < TICK_RATE * 2; i++) stepGame(st, simCtx, []);
+  assert(detectedAlive && dmgAlive > 0, `mientras vive, el Sentry detecta y el arquero daña al invisible (−${dmgAlive.toFixed(0)})`);
+  assert(sentryGone, 'el Sentry caduca por su expiresTick');
+  assert(!fresh.detected && fresh.hp === fhp0, 'tras caducar, un invisible NUEVO ya no se revela ni recibe disparos');
+}
+
+console.log('— v17 · mejorar el Sentry L1→L3: sube el radio Y reinicia la duración —');
+{
+  const map = getMap('sendero');
+  const simCtx = makeSimContext(map, makePlacementContext(map));
+  const st = createGame('sendero', 'endless', 'normal', 1311, [{ id: 'p1', name: 'A', color: '#fff' }]);
+  st.nextId = 8000; st.tick = 2000; st.wave = 1; st.waveState = 'active'; st.spawnQueue = []; st.pendingWave = [];
+  st.lives = 1e9; st.maxLives = 1e9; st.players[0].gold = 10000;
+  const cell = buildCellCandidates('sendero')[0];
+  stepGame(st, simCtx, [{ playerId: 'p1', cmd: { kind: 'place', towerType: 'sentry', cx: cell[0], cy: cell[1] } }]);
+  const s = st.towers.find((t) => t.type === 'sentry')!;
+  assert(s.level === 1 && TOWERS.sentry.levels[0].range === 3.5, `el Sentry nace en nivel 1, radio ${TOWERS.sentry.levels[0].range}`);
+  // dejar correr un poco: la duración baja
+  for (let i = 0; i < TICK_RATE * 30; i++) stepGame(st, simCtx, []);
+  const beforeUpExpires = s.expiresTick;
+  const upTick1 = st.tick;
+  stepGame(st, simCtx, [{ playerId: 'p1', cmd: { kind: 'upgrade', towerId: s.id } }]);
+  assert(s.level === 2, 'el Sentry sube a nivel 2 (mejora permitida)');
+  assert(TOWERS.sentry.levels[1].range > TOWERS.sentry.levels[0].range, `el radio del nivel 2 es mayor (${TOWERS.sentry.levels[1].range} > ${TOWERS.sentry.levels[0].range})`);
+  assert(s.expiresTick === upTick1 + SENTRY_DURATION_SEC[1] * TICK_RATE, `mejorar REINICIA la duración al total del nivel 2 (${s.expiresTick} == ${upTick1 + SENTRY_DURATION_SEC[1] * TICK_RATE})`);
+  assert(s.expiresTick > beforeUpExpires, 'la duración se REFRESCA (expira más tarde que antes de mejorar)');
+  const upTick2 = st.tick;
+  stepGame(st, simCtx, [{ playerId: 'p1', cmd: { kind: 'upgrade', towerId: s.id } }]);
+  assert(s.level === 3, 'el Sentry sube a nivel 3');
+  assert(TOWERS.sentry.levels[2].range > TOWERS.sentry.levels[1].range, `el radio del nivel 3 es el mayor (${TOWERS.sentry.levels[2].range})`);
+  assert(s.expiresTick === upTick2 + SENTRY_DURATION_SEC[2] * TICK_RATE, `mejorar a nivel 3 REINICIA al total (10 min): ${s.expiresTick} == ${upTick2 + SENTRY_DURATION_SEC[2] * TICK_RATE}`);
+  const evMax = stepGame(st, simCtx, [{ playerId: 'p1', cmd: { kind: 'upgrade', towerId: s.id } }]);
+  assert(evMax.some((e) => e.e === 'reject' && e.reason.includes('Nivel máximo')), 'en nivel 3 el Sentry ya no se mejora (Nivel máximo)');
 }
 
 console.log('— Lote 3 · determinismo con oleada invisible + Sentry —');

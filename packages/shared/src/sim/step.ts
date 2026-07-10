@@ -1251,6 +1251,29 @@ function recomputeDetection(state: GameState): void {
   }
 }
 
+// v17 · CADUCIDAD del Sentry (temporal): pase barato por tick que elimina los
+// Sentry cuyo `expiresTick` ya venció (>0 y ≤ tick). Al caducar NO manda chat
+// (spamea, como aprendimos con la Trampa): solo el evento `sell` con refund 0, que
+// el cliente ya convierte en un poof discreto sin texto de oro. La detección
+// (recomputeDetection) sigue funcionando mientras el Sentry vive; los invisibles ya
+// revelados quedan `detected` (pegajoso), pero sin un Sentry vivo los NUEVOS
+// invisibles dejan de revelarse. Determinista: solo compara con state.tick.
+function expireSentries(state: GameState, events: GameEvent[]): void {
+  let expired = false;
+  for (const t of state.towers) {
+    if (!TOWERS[t.type].detects) continue;
+    if (t.expiresTick > 0 && t.expiresTick <= state.tick) {
+      events.push({ e: 'sell', x: t.cx + 0.5, y: t.cy + 0.5, refund: 0 });
+      expired = true;
+    }
+  }
+  if (expired) {
+    state.towers = state.towers.filter(
+      (t) => !(TOWERS[t.type].detects && t.expiresTick > 0 && t.expiresTick <= state.tick),
+    );
+  }
+}
+
 // Avanza un tick de la simulación. Muta `state` y devuelve los eventos del tick.
 export function stepGame(
   state: GameState,
@@ -1289,6 +1312,9 @@ export function stepGame(
   // Lote 3 · detección de invisibles por los Sentry: se recalcula tras el movimiento
   // y ANTES de que las torres apunten (stepTowers), para que pickTarget lea `detected`.
   recomputeDetection(state);
+  // v17 · Sentry temporal: tras usar la detección de este tick, retira los Sentry
+  // caducados (evento `sell` refund 0, sin chat).
+  expireSentries(state, events);
   // Trampas de púas: golpean a los enemigos que pisan su celda y consumen carga.
   stepTraps(state, ctx, events);
   // refuerzo de los Estandartes: se calcula una vez por tick (solo lee el estado)

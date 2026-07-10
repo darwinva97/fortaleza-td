@@ -282,6 +282,12 @@ export interface TowerState {
   // STOP: una torre `halted` NO dispara (mismo gate que el aturdimiento). Solo
   // aplica a torres que disparan; las auras/economía no son halteables.
   halted: boolean;
+  // --- Lote 3 (v17) · SENTRY temporal · AL FINAL ---
+  // Tick de sim en el que la torre CADUCA (se auto-vende con refund 0). 0 = nunca
+  // caduca. SOLO lo usa el Sentry: se fija al colocarlo (tick + duración del nivel 1)
+  // y se REINICIA al total del nuevo nivel al mejorarlo. El resto de torres lo dejan
+  // en 0. Determinista: se compara contra state.tick, sin reloj ni RNG.
+  expiresTick: number;
 }
 
 export interface ProjectileState {

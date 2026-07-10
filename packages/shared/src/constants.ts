@@ -62,6 +62,13 @@ export const BLESSED_BONUS_MULT = 1.5;
 export const INVISIBLE_FROM = 12;
 export const INVISIBLE_EVERY = 6;
 
+// El SENTRY (👁 de la 🛒 Tienda) es TEMPORAL y MEJORABLE: caduca solas su duración
+// (medida en TICKS de sim, determinista) y al mejorarlo gana radio Y se REFRESCA al
+// total del nuevo nivel. Duración por nivel (segundos): 5 / 7.5 / 10 min. El índice =
+// nivel − 1. Al expirar NO manda chat (spamea): solo el evento `sell` con refund 0
+// (poof discreto, como la Trampa al agotar cargas).
+export const SENTRY_DURATION_SEC = [300, 450, 600];
+
 // ---------- F4.2 · torres nuevas + Rango II ----------
 // Trampa de púas: cargas iniciales (cada golpe consume 1; a 0 se auto-vende).
 export const TRAP_CHARGES = 20;
@@ -151,6 +158,8 @@ export const PLAYER_COLORS = [
 
 // 14: ráfaga completa del multidisparo · 15: oro de ASISTENCIA (el mayor dañador
 // con ≥35% del maxHp cobra un extra si no dio el golpe final) · 16 (issue #7): 5
-// recetas de fusión nuevas (toxicstorm/shredder/siegeeye/alchemyvault/icelance)
-export const BALANCE_VERSION = 16;
+// recetas de fusión nuevas (toxicstorm/shredder/siegeeye/alchemyvault/icelance) ·
+// 17: SENTRY rediseñado — MEJORABLE (más radio, 3 niveles) y TEMPORAL (caduca por
+// TICKS; duración 5/7.5/10 min por nivel; mejorar refresca el ward)
+export const BALANCE_VERSION = 17;
 export const PROTOCOL_VERSION = 1;

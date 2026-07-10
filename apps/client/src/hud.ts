@@ -12,6 +12,7 @@ import {
   placementError,
   rank2Cost,
   SELL_REFUND,
+  SENTRY_DURATION_SEC,
   TARGET_MODES,
   TICK_RATE,
   TOWERS,
@@ -62,6 +63,10 @@ const MAX_PREMOVES = 20;
 
 // coste de la próxima mejora de una torre del snapshot, o null si no se puede
 // mejorar (fusión, torre de camino, nivel máximo, o hace falta especializar).
+// v17 · el Sentry SÍ es mejorable en la sim, pero se EXCLUYE aquí a propósito del
+// sistema de premovimientos: mejorar un Sentry además REFRESCA su duración (ward), y
+// un premove que se auto-disparara al alcanzar el oro renovaría el ward en un momento
+// inesperado. Se mejora a mano desde su panel; su botón no usa premove.
 function premoveUpgradeCost(snap: Snap, towerId: number): { gold: number; wood: number } | null {
   const t = snap.towers.find((tt) => tt[0] === towerId);
   if (!t) return null;
@@ -290,7 +295,7 @@ function syncPlacingInfo(): void {
   const isAura = lvl.auraDamage !== undefined || lvl.auraHaste !== undefined || lvl.auraBounty !== undefined;
   if (lvl.damage > 0 && !def.onPathOnly) parts.push(`Daño <b>${lvl.damage}</b>`);
   if (def.onPathOnly) parts.push(def.detonates ? `💥 Detona al pisarlo: <b>ELIMINA</b> a los terrestres del área (jefes: ${lvl.damage} de daño)` : `Daño por golpe <b>${lvl.damage}</b>`);
-  if (def.detects) parts.push('👁 <b>Revela invisibles</b> en su radio');
+  if (def.detects) parts.push(`👁 <b>Revela invisibles</b> en su radio · ⏳ dura <b>${SENTRY_DURATION_SEC[0] / 60} min</b> (mejorable)`);
   if (lvl.auraDamage !== undefined && lvl.auraDamage > 0) parts.push(`Aura de daño <b>+${Math.round(lvl.auraDamage * 100)}%</b>`);
   if (lvl.auraHaste !== undefined && lvl.auraHaste > 0) parts.push(`Aura de cadencia <b>+${Math.round(lvl.auraHaste * 100)}%</b>`);
   if (lvl.auraBounty !== undefined && lvl.auraBounty > 0) parts.push(`Aura de oro <b>+${Math.round(lvl.auraBounty * 100)}%</b>`);
@@ -694,6 +699,21 @@ function cooldownText(stunned: number, cdTicks: number, halted = 0): string {
   return cdTicks <= 0 ? '⚔️ listo' : `⚔️ ${(cdTicks / TICK_RATE).toFixed(1)}s`;
 }
 
+// v17 · tick de sim del último snapshot (el `t` del mensaje tick, guardado en frames).
+// El Sentry temporal calcula su tiempo restante restándolo a su `expiresTick`.
+function latestSnapTick(gs: GameStore): number {
+  const f = gs.frames;
+  return f.length ? f[f.length - 1].t : 0;
+}
+
+// v17 · texto del countdown de caducidad del Sentry: "⏳ m:ss" mientras vive.
+function expiryText(expiresTick: number, tickNow: number): string {
+  const left = Math.max(0, Math.ceil((expiresTick - tickNow) / TICK_RATE));
+  const m = Math.floor(left / 60);
+  const s = left % 60;
+  return `⏳ ${m}:${s.toString().padStart(2, '0')}`;
+}
+
 export function refreshPanel(): void {
   const gs = store.game;
   const panel = $('hud-panel');
@@ -880,7 +900,7 @@ function buildTowerPanel(gs: GameStore, selectedId: number): { html: string; liv
   // la inversión de una fusión (suma de sus dos ingredientes) no se puede
   // reconstruir desde type/level/spec: usa el `invested` real del snapshot
   const sellValue = Math.floor((fusion ? invested : towerTotalCost(type, level, spec)) * SELL_REFUND);
-  const canSpecialize = !fusion && level >= 3 && !specialized && !def.onPathOnly;
+  const canSpecialize = !fusion && level >= 3 && !specialized && !def.onPathOnly && !def.detects;
   // ¿puede subir al Rango II? torre especializada, aún en nivel 3, cuya spec tenga rank2
   const canRank2 = !fusion && specialized && level === 3 && hasRank2(type, spec);
   const r2cost = canRank2 ? rank2Cost(type, spec) : null;
@@ -918,8 +938,14 @@ function buildTowerPanel(gs: GameStore, selectedId: number): { html: string; liv
     statLines.push('Oro extra generado: <b data-lv="goldgen"></b>');
     if (goldGen === 0) statLines.push('<span class="hint">Aún nada: los enemigos deben MORIR dentro de su anillo</span>');
   } else if (def.detects) {
-    // Sentry: no acumula bajas/daño; explica su función y su radio.
+    // Sentry (v17): no acumula bajas/daño; explica su función, su radio y su TIEMPO
+    // RESTANTE (temporal). El countdown va en un span estable, refrescado cada tick
+    // desde onTick (como el de cadencia), sin re-renderizar el panel.
     statLines.push('👁 Revela a los monstruos invisibles (aéreos y terrestres) dentro de su radio.');
+    const expiresTick = data[19] ?? 0;
+    statLines.push(
+      `Tiempo restante: <span id="panel-expiry" class="pcd">${expiryText(expiresTick, latestSnapTick(gs))}</span>`,
+    );
   } else if (def.onPathOnly) {
     if (def.detonates) {
       // Barril explosivo: se consume al detonar (no tiene cargas que contar)
@@ -1021,9 +1047,27 @@ function buildTowerPanel(gs: GameStore, selectedId: number): { html: string; liv
         <div class="prow"><button id="panel-sell" class="btn ghost">💸 Vender ${sellValue}</button></div>
         ${targetModesHtml(projKind, lvl, modeIdx)}
         ${controlRow}`;
-    } else if (def.onPathOnly || def.detects) {
-      // Trampa/Barril y Sentry: no se mejoran ni especializan; solo se pueden vender.
+    } else if (def.onPathOnly) {
+      // Trampa/Barril: no se mejoran ni especializan; solo se pueden vender.
       actions = `<div class="prow"><button id="panel-sell" class="btn ghost">💸 Vender ${sellValue}</button></div>`;
+    } else if (def.detects) {
+      // Sentry (v17): MEJORABLE (más radio) pero sin especialización, sin fusión y sin
+      // premove. Mejorar además RENUEVA la duración al total del nuevo nivel. Botón
+      // manual (id panel-upgrade, cableado como el resto) + venta.
+      let upBtn: string;
+      if (!next) {
+        upBtn = '<button id="panel-upgrade" class="btn primary" disabled>Radio máximo</button>';
+      } else if (gold >= next.cost) {
+        upBtn = `<button id="panel-upgrade" class="btn primary">⬆ Más radio 🪙${next.cost}</button>`;
+      } else {
+        upBtn = `<button id="panel-upgrade" class="btn primary" disabled>⬆ Más radio 🪙${next.cost}</button>`;
+      }
+      actions = `
+        <p class="hint" style="padding:0 4px 4px">Mejorar sube el radio de detección y RENUEVA la duración al total del nuevo nivel.</p>
+        <div class="prow">
+          ${upBtn}
+          <button id="panel-sell" class="btn ghost">💸 Vender ${sellValue}</button>
+        </div>`;
     } else if (canSpecialize) {
       const wood = myWood(gs);
       // descubrimiento contextual: si lo que te frena es la madera, el panel te
@@ -1235,13 +1279,18 @@ export function onTick(snap: Snap): void {
   // que los volátiles data-lv). Sin rAF ni timers nuevos.
   const sel = gs.selection;
   if (sel?.kind === 'tower') {
+    const t = snap.towers.find((tt) => tt[0] === sel.id);
     const cdEl = document.getElementById('panel-cd');
-    if (cdEl) {
-      const t = snap.towers.find((tt) => tt[0] === sel.id);
-      if (t) {
-        const txt = cooldownText(t[10] ?? 0, t[16] ?? 0, t[17] ?? 0);
-        if (cdEl.textContent !== txt) cdEl.textContent = txt;
-      }
+    if (cdEl && t) {
+      const txt = cooldownText(t[10] ?? 0, t[16] ?? 0, t[17] ?? 0);
+      if (cdEl.textContent !== txt) cdEl.textContent = txt;
+    }
+    // v17 · countdown ⏳ del Sentry: baja fluido (15/s) como el de cadencia, por
+    // textContent sobre el span estable (no re-renderiza ni roba clicks).
+    const expEl = document.getElementById('panel-expiry');
+    if (expEl && t) {
+      const txt = expiryText(t[19] ?? 0, latestSnapTick(gs));
+      if (expEl.textContent !== txt) expEl.textContent = txt;
     }
   }
 }
@@ -1351,7 +1400,7 @@ const SHOP_ITEMS: ShopItem[] = [
     towerType: 'sentry',
     icon: '👁',
     name: 'Sentry',
-    desc: 'Revela monstruos invisibles (terrestres y aéreos) en su radio. Colócalo cubriendo el camino en las oleadas 👁.',
+    desc: `Revela monstruos invisibles (terrestres y aéreos) en su radio. Colócalo cubriendo el camino en las oleadas 👁. ⏳ Dura ${SENTRY_DURATION_SEC[0] / 60} min; mejorable: más radio y hasta ${SENTRY_DURATION_SEC[SENTRY_DURATION_SEC.length - 1] / 60} min.`,
   },
 ];
 

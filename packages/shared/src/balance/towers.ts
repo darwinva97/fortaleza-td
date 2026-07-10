@@ -653,17 +653,22 @@ export const TOWERS: Record<TowerTypeId, TowerDef> = {
     targetsGround: false,
     projectileKind: 'none',
     // `detects`: cada tick marca como detectados a los invisibles dentro de su `range`.
-    // No dispara (towerFires lo excluye), 1 nivel, sin specs útiles (specs dummy como la
-    // Trampa), vendible. `range` = radio de detección.
+    // No dispara (towerFires lo excluye) y NO se especializa (specs dummy como la
+    // Trampa), pero v17 lo hace MEJORABLE: 3 niveles reales que suben el RADIO
+    // (=`range`) 3.5 → 4.2 → 5.0. Es un consumible TEMPORAL y RECURRENTE (caduca), así
+    // que los costes de mejora son baratos (L1 50 como siempre; L2 40; L3 60). Mejorar
+    // además REFRESCA la duración al total del nuevo nivel (ver SENTRY_DURATION_SEC y
+    // sim/commands.ts). `range` = radio de detección.
     detects: true,
     levels: [
       { cost: 50, damage: 0, range: 3.5, cooldown: 0 },
-      { cost: 50, damage: 0, range: 3.5, cooldown: 0 },
-      { cost: 50, damage: 0, range: 3.5, cooldown: 0 },
+      { cost: 40, damage: 0, range: 4.2, cooldown: 0 },
+      { cost: 60, damage: 0, range: 5.0, cooldown: 0 },
     ],
+    // specs dummy: nunca se usan (specialize rechaza al Sentry). Radio alineado con L3.
     specs: [
-      { key: 'sentry', name: 'Sentry', desc: 'No se especializa.', cost: 0, damage: 0, range: 3.5, cooldown: 0 },
-      { key: 'sentry', name: 'Sentry', desc: 'No se especializa.', cost: 0, damage: 0, range: 3.5, cooldown: 0 },
+      { key: 'sentry', name: 'Sentry', desc: 'No se especializa.', cost: 0, damage: 0, range: 5.0, cooldown: 0 },
+      { key: 'sentry', name: 'Sentry', desc: 'No se especializa.', cost: 0, damage: 0, range: 5.0, cooldown: 0 },
     ],
   },
 };

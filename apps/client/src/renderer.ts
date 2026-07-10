@@ -6,6 +6,7 @@ import {
   ENEMY_ORDER,
   fusionByIndex,
   INTERP_DELAY_MS,
+  TICK_RATE,
   TOWERS,
   TOWER_ORDER,
   towerTargetsAir,
@@ -1372,6 +1373,9 @@ function drawTowers(gs: GameStore, interp: InterpResult | null, now: number, dt:
   const auras = computeBannerAuras(snap);
   const s = view.scale;
   const t = now / 1000;
+  // v17 · tick de sim del último snapshot: el Sentry temporal parpadea en sus
+  // últimos segundos (remaining = (expiresTick − snapTick) / TICK_RATE).
+  const snapTick = gs.frames.length ? gs.frames[gs.frames.length - 1].t : 0;
   // Lote 4 · la selección puede ser UNA torre o un GRUPO (doble click): todas
   // llevan el glow. Con grupos grandes el círculo de alcance se pinta TENUE
   // (solo contorno) para no embarrar el tablero con N discos superpuestos.
@@ -1548,6 +1552,15 @@ function drawTowers(gs: GameStore, interp: InterpResult | null, now: number, dt:
 
     g.save();
     g.translate(x + s / 2, y + s / 2);
+    // v17 · Sentry a punto de CADUCAR: parpadea/atenúa en sus últimos ~30 s como aviso
+    // visual (el globalAlpha lo restaura el g.restore() del final del bloque de torre).
+    const expiresTick = tw[19] ?? 0;
+    if (TOWERS[type].detects && expiresTick > 0) {
+      const remainingSec = (expiresTick - snapTick) / TICK_RATE;
+      if (remainingSec <= 30) {
+        g.globalAlpha = Math.max(0.25, 0.6 + Math.sin(t * 8) * 0.4);
+      }
+    }
     // sprite real si existe (torres base, no fusiones); si no, arte vectorial.
     const sprite = fusionIdx < 0 ? getTowerSprite(type, level, spec) : null;
     if (sprite) {

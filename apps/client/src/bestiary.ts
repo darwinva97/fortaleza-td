@@ -11,6 +11,7 @@ import {
   ENEMIES,
   FUSION_ORDER,
   FUSIONS,
+  SENTRY_DURATION_SEC,
   TOWER_ORDER,
   TOWERS,
   WOOD_COST_RANK2,
@@ -173,7 +174,9 @@ function buildElites(): void {
         <p class="edesc">Cada 6 oleadas desde la 12 (12, 18, 24, 36…), toda la oleada es <b>invisible</b>:
         las torres <b>no pueden verla ni apuntarle</b> y desaparece del mapa. Compra un <b>👁 Sentry</b> en la
         <b>🛒 Tienda</b> y colócalo cubriendo el camino: revela a los monstruos (terrestres y aéreos) dentro de su radio,
-        volviéndolos targeteables para todo el equipo. Las trampas de camino (Trampa/Barril) y el daño de ÁREA
+        volviéndolos targeteables para todo el equipo. El Sentry es <b>temporal</b> (dura ${SENTRY_DURATION_SEC[0] / 60} min) y
+        <b>mejorable</b> (más radio y hasta ${SENTRY_DURATION_SEC[SENTRY_DURATION_SEC.length - 1] / 60} min; mejorar renueva su duración), así que
+        recuérdalo antes de cada oleada 👁. Las trampas de camino (Trampa/Barril) y el daño de ÁREA
         también los golpean aunque no estén detectados.</p>
       </div>
       <div class="enemy-card boss">
@@ -382,11 +385,6 @@ function towerTraits(def: TowerDef): Trait[] {
   return t;
 }
 
-// Las torres de camino (Trampa/Barril) y el Sentry no se mejoran ni especializan.
-function isSimpleTower(def: TowerDef): boolean {
-  return def.onPathOnly === true || def.detects === true;
-}
-
 function buildTowers(): void {
   const cards = TOWER_ORDER.map((type) => {
     const def = TOWERS[type];
@@ -394,14 +392,20 @@ function buildTowers(): void {
       .map((tr) => `<span class="etrait ${tr.cls ?? ''}">${tr.icon} ${tr.label}</span>`)
       .join('');
 
-    // costes por nivel (incrementales). Las torres simples tienen un único coste.
-    const costLine = isSimpleTower(def)
+    // costes por nivel (incrementales). Las torres de camino tienen un único coste;
+    // el Sentry (v17) SÍ es mejorable (más radio), así que muestra sus 3 niveles.
+    const costLine = def.onPathOnly
       ? `<div class="tcosts">🪙 ${def.levels[0].cost} <span class="tdim">· no se mejora</span></div>`
       : `<div class="tcosts">🪙 Niveles: ${def.levels.map((l) => l.cost).join(' → ')}</div>`;
 
     // especializaciones (★) + Rango II (★★), con coste en 🪙 y 🪵
     let specHtml: string;
-    if (isSimpleTower(def)) {
+    if (def.detects) {
+      // Sentry (v17): mejorable (más RADIO) y TEMPORAL, pero sin especialización ni
+      // fusión. Duración por nivel derivada de SENTRY_DURATION_SEC.
+      const durs = SENTRY_DURATION_SEC.map((s) => `${s / 60} min`).join(' / ');
+      specHtml = `<div class="tspec"><p class="edesc tdim">⏳ TEMPORAL: dura ${durs} por nivel. Mejorarlo sube el radio de detección y RENUEVA la duración. No se especializa ni se fusiona.</p></div>`;
+    } else if (def.onPathOnly) {
       specHtml = `<div class="tspec"><p class="edesc tdim">No se mejora ni especializa.</p></div>`;
     } else {
       specHtml = def.specs

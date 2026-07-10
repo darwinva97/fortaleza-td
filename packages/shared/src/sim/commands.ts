@@ -6,6 +6,7 @@ import {
   ORC_RATES,
   ORC_UPGRADE_COSTS,
   SELL_REFUND,
+  SENTRY_DURATION_SEC,
   TICK_RATE,
   WOOD_COST_RANK2,
   WOOD_COST_SPEC,
@@ -76,6 +77,9 @@ export function applyCommands(
           fusion: -1,
           focusId: 0,
           halted: false,
+          // v17 · el Sentry nace TEMPORAL: caduca a la duración del nivel 1 (en TICKS,
+          // determinista). El resto de torres no caducan (0).
+          expiresTick: def.detects ? state.tick + SENTRY_DURATION_SEC[0] * TICK_RATE : 0,
         });
         events.push({ e: 'place', x: cmd.cx + 0.5, y: cmd.cy + 0.5, towerType: cmd.towerType });
         break;
@@ -88,8 +92,10 @@ export function applyCommands(
           reject(events, playerId, 'Solo el dueño puede mejorar esta torre');
           break;
         }
-        // las torres de camino (Trampa/Barril) y el Sentry no se mejoran
-        if (TOWERS[tower.type].onPathOnly || TOWERS[tower.type].detects) {
+        // las torres de camino (Trampa/Barril) no se mejoran. El Sentry SÍ (v17):
+        // sube de nivel por la ruta genérica de abajo (más radio) y al mejorar
+        // REFRESCA su duración al total del nuevo nivel (mejorar = renovar el ward).
+        if (TOWERS[tower.type].onPathOnly) {
           reject(events, playerId, 'Esta torre no se puede mejorar');
           break;
         }
@@ -142,6 +148,11 @@ export function applyCommands(
         player.stats.goldSpent += cost;
         tower.level += 1;
         tower.invested += cost;
+        // v17 · el Sentry, al mejorar, se RENUEVA: su duración vuelve al total del
+        // nuevo nivel (SENTRY_DURATION_SEC crece con el nivel). Determinista (TICKS).
+        if (TOWERS[tower.type].detects) {
+          tower.expiresTick = state.tick + SENTRY_DURATION_SEC[tower.level - 1] * TICK_RATE;
+        }
         events.push({ e: 'upgrade', x: tower.cx + 0.5, y: tower.cy + 0.5, level: tower.level });
         break;
       }

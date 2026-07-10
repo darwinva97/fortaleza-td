@@ -6,6 +6,7 @@ import {
   generateWave,
   getMap,
   hasRank2,
+  isInvisibleWave,
   makePlacementContext,
   makeSimContext,
   pathCells,
@@ -42,7 +43,7 @@ function mkFusedTower(fid: FusionId, cx: number, cy: number, owner = 'p1'): Towe
     id: 90000 + FUSION_ORDER.indexOf(fid), type: FUSIONS[fid].ingredients[0], cx, cy,
     level: 3, spec: -1, fusion: FUSION_ORDER.indexOf(fid), owner,
     cooldownLeft: 0, targetMode: 'first', invested: 400, kills: 0, damage: 0, stunnedUntil: 0,
-    charges: 0, growthBonus: 0, goldGen: 0, focusId: 0, halted: false,
+    charges: 0, growthBonus: 0, goldGen: 0, focusId: 0, halted: false, expiresTick: 0,
   };
 }
 
@@ -107,8 +108,15 @@ function botCommands(
   const cmds: PlayerCommand[] = [];
   if (state.waveState !== 'interlude') return cmds;
   const used = new Set(state.towers.map((t) => `${t.cx},${t.cy}`));
-  let sentryCount = state.towers.filter((t) => t.type === 'sentry').length;
-  const sentryTarget = state.wave >= 11 ? 1 : 0;
+  // v17 · SENTRY temporal (igual que el simtest): celda RESERVADA junto al spawn que la
+  // defensa nunca usa; antes de cada oleada invisible (12/18/24/36) se garantiza ahí un
+  // Sentry FRESCO, vendiendo el anterior si sigue vivo (recupera refund). Se resuelve
+  // ANTES de la defensa (oro principal) porque una oleada invisible sin detector se fuga.
+  const sentryCell = pickSentryCell(candidates, new Set(), spawn); // nearest al spawn, ignorando ocupación
+  if (sentryCell) used.add(`${sentryCell[0]},${sentryCell[1]}`); // reservada para el Sentry
+  const wantSentry = isInvisibleWave(state.wave + 1);
+  const SENTRY_FRESH = TICK_RATE * 240;
+  let sentryDone = false;
   for (const player of state.players) {
     let budget = player.gold;
     let woodBudget = player.wood;
@@ -129,6 +137,22 @@ function botCommands(
     const mine = state.towers
       .filter((t) => t.owner === player.id && t.fusion < 0 && t.type !== 'sentry')
       .map((t) => ({ id: t.id, type: t.type, level: t.level, spec: t.spec }));
+
+    // SENTRY (Lote 3/v17): cobertura CRÍTICA ANTES de la defensa (con el oro principal).
+    if (sentryCell && wantSentry && !sentryDone && mine.length >= 4) {
+      const here = state.towers.find((t) => t.type === 'sentry' && t.cx === sentryCell[0] && t.cy === sentryCell[1]);
+      const fresh = here !== undefined && here.expiresTick - state.tick > SENTRY_FRESH;
+      const sentryCost = TOWERS.sentry.levels[0].cost;
+      if (fresh) {
+        sentryDone = true;
+      } else if (budget >= sentryCost) {
+        if (here) cmds.push({ playerId: player.id, cmd: { kind: 'sell', towerId: here.id } });
+        cmds.push({ playerId: player.id, cmd: { kind: 'place', towerType: 'sentry', cx: sentryCell[0], cy: sentryCell[1] } });
+        sentryDone = true;
+        budget -= sentryCost;
+      }
+    }
+
     for (let act = 0; act < 3; act++) {
       const maxed = mine.filter((t) => t.level >= 3 && t.spec < 0)[0];
       if (maxed) {
@@ -179,19 +203,6 @@ function botCommands(
         }
       }
       break;
-    }
-
-    // SENTRY (Lote 3): con oro de sobra y aún sin detector, planta UNO cerca del
-    // spawn (detección pegajosa: uno basta para todas las oleadas invisibles).
-    const sentryCost = TOWERS.sentry.levels[0].cost;
-    if (mine.length >= 4 && sentryCount < sentryTarget && budget >= sentryCost) {
-      const cell = pickSentryCell(candidates, used, spawn);
-      if (cell) {
-        used.add(`${cell[0]},${cell[1]}`);
-        cmds.push({ playerId: player.id, cmd: { kind: 'place', towerType: 'sentry', cx: cell[0], cy: cell[1] } });
-        sentryCount += 1;
-        budget -= sentryCost;
-      }
     }
   }
   if (state.interludeLeft < TICK_RATE * 8 && state.interludeLeft > TICK_RATE * 2) {
@@ -391,7 +402,7 @@ for (const wave of [8, 15, 25]) {
   st.towers.push({
     id: 9000, type: 'boom', cx: 8, cy: 2, level: 1, spec: -1, owner: 'p1',
     cooldownLeft: 0, targetMode: 'first', invested: 90, kills: 0, damage: 0,
-    stunnedUntil: 0, charges: 1, growthBonus: 0, goldGen: 0, fusion: -1, focusId: 0, halted: false,
+    stunnedUntil: 0, charges: 1, growthBonus: 0, goldGen: 0, fusion: -1, focusId: 0, halted: false, expiresTick: 0,
   });
   let bounty = 0, kills = 0;
   for (let i = 0; i < TICK_RATE * 60 && st.towers.length > 0; i++) {
