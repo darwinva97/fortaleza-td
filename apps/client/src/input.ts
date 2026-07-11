@@ -104,17 +104,20 @@ function enemyAtPoint(canvas: HTMLCanvasElement, clientX: number, clientY: numbe
   return best;
 }
 
-// Lote 4 · doble tap/click sobre una torre PROPIA: selecciona el GRUPO de todas
-// mis torres IDÉNTICAS (mismo tipo+nivel+spec+fusión exactos — así el coste de la
-// mejora en grupo es uniforme). Devuelve true si consumió el gesto.
+// Lote 4 · doble tap/click sobre una torre: selecciona el GRUPO de todas las
+// torres IDÉNTICAS de su dueño (mismo tipo+nivel+spec+fusión exactos — así el
+// coste de la mejora en grupo es uniforme). Un jugador solo agrupa torres
+// PROPIAS (las órdenes en lote son del dueño); espectador y replay agrupan las
+// de cualquier dueño, en solo lectura. Devuelve true si consumió el gesto.
 function selectTowerGroupAt(canvas: HTMLCanvasElement, clientX: number, clientY: number): boolean {
   const gs = store.game;
-  if (!gs?.latest || store.spectator || store.replay) return false;
+  if (!gs?.latest) return false;
   const cell = cellFromPoint(canvas, clientX, clientY);
   if (!cell) return false;
   const t = gs.latest.towers.find((tw) => tw[2] === cell.cx && tw[3] === cell.cy);
   if (!t) return false;
-  if (gs.init.players[t[5]]?.id !== store.playerId) return false; // solo torres propias
+  const inspectOnly = store.spectator || store.replay;
+  if (!inspectOnly && gs.init.players[t[5]]?.id !== store.playerId) return false; // solo torres propias
   const ids = gs.latest.towers
     .filter(
       (tw) =>
@@ -162,11 +165,30 @@ function sendPlace(cx: number, cy: number, keepPlacing: boolean): void {
   if (!keepPlacing) clearSelection();
 }
 
+// Selección de INSPECCIÓN (espectador/replay): abre el panel de la torre tocada
+// en solo lectura (hud.ts oculta todas las acciones fuera del modo jugador).
+function selectTowerForInspect(canvas: HTMLCanvasElement, clientX: number, clientY: number): void {
+  const gs = store.game;
+  if (!gs?.latest) return;
+  const cell = cellFromPoint(canvas, clientX, clientY);
+  const tower = cell ? gs.latest.towers.find((t) => t[2] === cell.cx && t[3] === cell.cy) : undefined;
+  if (tower) {
+    gs.selection = { kind: 'tower', id: tower[0] };
+    showPanel();
+  } else {
+    clearSelection();
+  }
+}
+
 function tapSelect(canvas: HTMLCanvasElement, clientX: number, clientY: number, shiftKey: boolean, mouseLike: boolean): void {
   const gs = store.game;
   if (!gs || !gs.latest || gs.over) return;
-  // en modo repetición no hay input de juego (ni colocar/pinear/sugerir): solo mirar
-  if (store.replay) return;
+  // en modo repetición no hay input de juego (colocar/pinear/sugerir), pero SÍ
+  // se puede INSPECCIONAR: tocar una torre abre su panel en solo lectura
+  if (store.replay) {
+    selectTowerForInspect(canvas, clientX, clientY);
+    return;
+  }
 
   // modo sugerencia (torre armada desde la barra): el toque manda una sugerencia
   // de torre (map_ping + towerType) en vez de colocar. Tiene prioridad sobre el
@@ -186,8 +208,12 @@ function tapSelect(canvas: HTMLCanvasElement, clientX: number, clientY: number, 
     return;
   }
 
-  // el espectador no coloca torres ni abre el panel: cualquier otro toque no hace nada
-  if (store.spectator) return;
+  // el espectador no coloca ni da órdenes, pero SÍ inspecciona: tocar una torre
+  // abre su panel en solo lectura (nivel, spec, stats); tocar vacío deselecciona
+  if (store.spectator) {
+    selectTowerForInspect(canvas, clientX, clientY);
+    return;
+  }
 
   // Lote 4 · modo FOCUS armado (🎯 / tecla F): este tap intenta fijar un enemigo
   // como objetivo de TODAS las torres seleccionadas. Tap en vacío = cancelar.
@@ -459,7 +485,11 @@ export function initInput(canvas: HTMLCanvasElement): void {
 
   window.addEventListener('keydown', (e) => {
     if (store.screen !== 'game' || !store.game) return;
-    if (store.replay) return; // en repetición, el teclado de juego está desactivado
+    // en repetición el teclado de juego está desactivado; solo ESC deselecciona
+    if (store.replay) {
+      if (e.key === 'Escape') clearSelection();
+      return;
+    }
     const active = document.activeElement;
     if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) return;
 

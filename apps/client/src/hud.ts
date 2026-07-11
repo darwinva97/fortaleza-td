@@ -783,6 +783,9 @@ function buildGroupPanel(
   const projKind = fusion ? fusion.projectileKind : def.projectileKind;
   const n = tuples.length;
   const fires = tupleFires(head);
+  // el grupo solo muestra acciones si es MÍO y estoy jugando: espectador/replay
+  // pueden agrupar torres ajenas para inspeccionarlas (panel en solo lectura)
+  const canAct = !store.spectator && !store.replay && gs.init.players[head[5]]?.id === store.playerId;
 
   const name = fusion
     ? `${fusion.icon} ${fusion.name}`
@@ -811,7 +814,7 @@ function buildGroupPanel(
   // Rango II cuesta ambas). El grupo nace idéntico, así que el unitario es uniforme;
   // si una mejora parcial lo mezcló, la suma por torre sigue siendo exacta.
   let upBtn = '';
-  {
+  if (canAct) {
     let totalGold = 0;
     let totalWood = 0;
     let count = 0;
@@ -839,9 +842,9 @@ function buildGroupPanel(
     }
   }
 
-  // ⏹/▶ + 🎯, solo si el grupo DISPARA (auras/economía no se detienen ni apuntan)
+  // ⏹/▶ + 🎯, solo si el grupo es MÍO y DISPARA (auras/economía no se detienen ni apuntan)
   let controls = '';
-  if (fires) {
+  if (canAct && fires) {
     const anyHalted = tuples.some((t) => (t[17] ?? 0) === 1);
     const anyFocus = tuples.some((t) => (t[18] ?? 0) > 0);
     const armed = gs.focusArmed;
@@ -858,8 +861,8 @@ function buildGroupPanel(
     <div class="pstats">${statLines.join('<br>')}</div>
     ${upBtn}
     ${controls}
-    ${fires ? targetModesHtml(projKind, lvl, modeIdx4(tuples)) : ''}
-    <p class="hint" style="padding:4px 4px 0">💸 Vender no está disponible en grupo: véndelas de una en una</p>
+    ${canAct && fires ? targetModesHtml(projKind, lvl, modeIdx4(tuples)) : ''}
+    ${canAct ? '<p class="hint" style="padding:4px 4px 0">💸 Vender no está disponible en grupo: véndelas de una en una</p>' : ''}
   `;
   return { html, live };
 }
@@ -895,7 +898,9 @@ function buildTowerPanel(gs: GameStore, selectedId: number): { html: string; liv
   const projKind = fusion ? fusion.projectileKind : def.projectileKind;
   const next = !fusion && !specialized && level < 3 ? def.levels[level] : null;
   const owner = gs.init.players[ownerIdx];
-  const isMine = owner?.id === store.playerId;
+  // espectador y replay NUNCA actúan: en la replay de tu propia partida tu id SÍ
+  // coincide con un slot — sin este gate saldrían botones sobre una red muerta.
+  const isMine = !store.spectator && !store.replay && owner?.id === store.playerId;
   const gold = myGold(gs);
   // la inversión de una fusión (suma de sus dos ingredientes) no se puede
   // reconstruir desde type/level/spec: usa el `invested` real del snapshot
