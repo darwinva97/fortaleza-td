@@ -330,7 +330,7 @@ function wireNet(): void {
   });
 
   net.on('lobby_state', (msg) => {
-    store.lobby = { players: msg.players, settings: msg.settings, inGame: msg.inGame };
+    store.lobby = { players: msg.players, spectators: msg.spectators, settings: msg.settings, inGame: msg.inGame };
     const me = msg.players.find((p) => p.id === store.playerId);
     if (me) {
       store.isHost = me.isHost;
@@ -338,6 +338,11 @@ function wireNet(): void {
       // terminar la partida: ya no soy espectador
       store.spectator = false;
       $('spectator-banner').hidden = true;
+    } else if (msg.spectators.some((s) => s.id === store.playerId)) {
+      // estoy en la zona de espectadores del lobby (el anfitrión me movió, o
+      // el fallback de inactividad me devolvió ahí): no soy anfitrión ni jugador
+      store.isHost = false;
+      store.spectator = true;
     }
     renderLobby();
     // pausar/reanudar es de TODOS los jugadores (co-op); la velocidad, del anfitrión

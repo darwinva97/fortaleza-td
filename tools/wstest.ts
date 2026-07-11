@@ -234,6 +234,10 @@ async function main(): Promise<void> {
   //   (c) la partida SIGUE para el resto (y sus torres quedan en el tablero)
   await abandonScenario();
 
+  // 9.6 · ZONA DE ESPECTADORES: mover/traer del lobby, y la distinción
+  //   expulsar (puede volver, solo de espectador) vs banear (no vuelve jamás)
+  await spectatorZoneScenario();
+
   // 10. Repetición (replay): partida corta que TERMINA (sin defensa) e incluye la
   //     reconexión de Beto. Al recibir game_over con `replay`, reconstruimos con el
   //     motor puro y comparamos el estado final con el de la partida real (leído de
@@ -246,6 +250,97 @@ async function main(): Promise<void> {
   }
   console.log('\n🎉 Test end-to-end OK');
   process.exit(0);
+}
+
+// Escenario dedicado: ZONA DE ESPECTADORES del lobby (PR #15) + kick vs ban.
+// (a) el anfitrión mueve a un jugador a espectadores y lo trae de vuelta;
+// (b) EXPULSAR no banea: el expulsado vuelve con su token, pero SOLO de espectador;
+// (c) BANEAR (a un espectador o a un jugador) bloquea la entrada por completo.
+async function spectatorZoneScenario(): Promise<void> {
+  console.log('\n— Zona de espectadores: mover/traer, expulsar vs banear —');
+  const gia = new TestClient('Gia', wsUrl({ create: true }));
+  await gia.open();
+  gia.send({
+    type: 'create_room',
+    name: 'Gia',
+    token: 'token-zone-gia',
+    settings: { mapId: 'sendero', mode: 'classic', difficulty: 'normal' },
+  });
+  const gj = await gia.waitFor('room_joined');
+
+  const hugo = new TestClient('Hugo', wsUrl({ code: gj.code }));
+  await hugo.open();
+  hugo.send({ type: 'join_room', name: 'Hugo', token: 'token-zone-hugo', code: gj.code });
+  const hj = await hugo.waitFor('room_joined');
+  const ivan = new TestClient('Ivan', wsUrl({ code: gj.code }));
+  await ivan.open();
+  ivan.send({ type: 'join_room', name: 'Ivan', token: 'token-zone-ivan', code: gj.code });
+  const ij = await ivan.waitFor('room_joined');
+
+  // (a) mover a Hugo a la zona de espectadores…
+  gia.send({ type: 'move_to_spectator', playerId: hj.playerId });
+  const hugoSpec = await hugo.waitFor('room_joined');
+  assert(hugoSpec.spectator === true, 'el movido a la zona recibe room_joined como espectador');
+  for (;;) {
+    const lb = await gia.waitFor('lobby_state');
+    if (lb.spectators.some((s) => s.id === hj.playerId) && !lb.players.some((p) => p.id === hj.playerId)) {
+      assert(true, 'el lobby lo lista en spectators y ya no en players');
+      break;
+    }
+  }
+  // …y traerlo de vuelta como jugador (además lo perdona de cualquier kick)
+  gia.send({ type: 'move_to_player', spectatorId: hj.playerId });
+  const hugoBack = await hugo.waitFor('room_joined');
+  assert(hugoBack.spectator === false, 'el restaurado recibe room_joined como jugador');
+  for (;;) {
+    const lb = await gia.waitFor('lobby_state');
+    if (lb.players.some((p) => p.id === hj.playerId) && lb.spectators.length === 0) {
+      assert(true, 'el lobby lo devuelve a players y la zona queda vacía');
+      break;
+    }
+  }
+
+  // (b) EXPULSAR a Iván: puede volver con su token, pero SOLO de espectador (pineado)
+  gia.send({ type: 'kick_player', playerId: ij.playerId });
+  await sleep(300);
+  const ivan2 = new TestClient('Ivan2', wsUrl({ code: gj.code }));
+  await ivan2.open();
+  ivan2.send({ type: 'join_room', name: 'Ivan', token: 'token-zone-ivan', code: gj.code });
+  const ivan2j = await ivan2.waitFor('room_joined');
+  assert(ivan2j.spectator === true, 'el EXPULSADO vuelve a entrar, pero solo de espectador');
+  for (;;) {
+    const lb = await gia.waitFor('lobby_state');
+    if (lb.spectators.some((s) => s.id === ivan2j.playerId)) {
+      assert(true, 'el expulsado aparece en la zona de espectadores del lobby');
+      break;
+    }
+  }
+
+  // (c1) BANEAR al espectador Iván: se le echa y su token ya no entra jamás
+  gia.send({ type: 'ban_player', playerId: ivan2j.playerId });
+  await sleep(300);
+  const ivan3 = new TestClient('Ivan3', wsUrl({ code: gj.code }));
+  await ivan3.open();
+  ivan3.send({ type: 'join_room', name: 'Ivan', token: 'token-zone-ivan', code: gj.code });
+  const banErr = await ivan3.waitFor('error');
+  assert(/bane/i.test(banErr.msg), `el BANEADO (desde espectadores) no puede volver a entrar ("${banErr.msg}")`);
+
+  // (c2) BANEAR a un jugador directamente (Hugo): mismo bloqueo total
+  gia.send({ type: 'ban_player', playerId: hj.playerId });
+  await sleep(300);
+  const hugo2 = new TestClient('Hugo2', wsUrl({ code: gj.code }));
+  await hugo2.open();
+  hugo2.send({ type: 'join_room', name: 'Hugo', token: 'token-zone-hugo', code: gj.code });
+  const banErr2 = await hugo2.waitFor('error');
+  assert(/bane/i.test(banErr2.msg), `el BANEADO (jugador) no puede volver a entrar ("${banErr2.msg}")`);
+
+  gia.ws.close();
+  hugo.ws.close();
+  ivan.ws.close();
+  ivan2.ws.close();
+  ivan3.ws.close();
+  hugo2.ws.close();
+  await sleep(200);
 }
 
 // Escenario dedicado: ABANDONO explícito (mensaje `leave`) a mitad de partida.

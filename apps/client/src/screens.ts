@@ -353,8 +353,21 @@ export function initLobby(): void {
     net.send({ type: 'set_ready', ready: !(me?.ready ?? false) });
   });
 
-  // expulsar / ceder anfitrión (solo anfitrión): delegación en la lista de jugadores
+  // banear pide confirmación (es irreversible para ese token); compartido entre
+  // la lista de jugadores y la zona de espectadores. true si consumió el clic.
+  const handleBanClick = (e: Event): boolean => {
+    const banBtn = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-ban]');
+    if (!banBtn || !store.isHost) return false;
+    const name = banBtn.dataset.name ?? 'este jugador';
+    if (confirm(`¿Banear a ${name}? No podrá volver a entrar a esta sala (expulsar sí le permite volver como espectador).`))
+      net.send({ type: 'ban_player', playerId: banBtn.dataset.ban! });
+    return true;
+  };
+
+  // expulsar / banear / ceder anfitrión / mover a espectadores (solo anfitrión):
+  // delegación en la lista de jugadores
   $('lobby-players').addEventListener('click', (e) => {
+    if (handleBanClick(e)) return;
     const kickBtn = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-kick]');
     if (kickBtn && store.isHost) {
       net.send({ type: 'kick_player', playerId: kickBtn.dataset.kick! });
@@ -365,6 +378,21 @@ export function initLobby(): void {
       const name = cedeBtn.title.replace('Ceder anfitrión a ', '');
       if (confirm(`¿Ceder la sala a ${name}? Ya no podrás iniciar la partida ni cambiar los ajustes.`))
         net.send({ type: 'transfer_host', playerId: cedeBtn.dataset.cede! });
+      return;
+    }
+    const spectateBtn = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-spectate]');
+    if (spectateBtn && store.isHost) {
+      net.send({ type: 'move_to_spectator', playerId: spectateBtn.dataset.spectate! });
+    }
+  });
+
+  // traer de vuelta como jugador / banear (solo anfitrión): delegación en la zona
+  // de espectadores (es un <ul> hermano de #lobby-players, no un descendiente)
+  $('lobby-spectators').addEventListener('click', (e) => {
+    if (handleBanClick(e)) return;
+    const toPlayerBtn = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-toplayer]');
+    if (toPlayerBtn && store.isHost) {
+      net.send({ type: 'move_to_player', spectatorId: toPlayerBtn.dataset.toplayer! });
     }
   });
 
@@ -397,7 +425,7 @@ export function initLobby(): void {
 }
 
 export function renderLobby(): void {
-  const { players, settings } = store.lobby;
+  const { players, spectators, settings } = store.lobby;
   $('lobby-code').textContent = store.roomCode;
 
   $('lobby-players').innerHTML = players
@@ -414,8 +442,19 @@ export function renderLobby(): void {
       const cede = store.isHost && !isMe && p.connected
         ? `<button class="cede-btn" data-cede="${p.id}" title="Ceder anfitrión a ${escapeHtml(p.name)}" aria-label="Ceder anfitrión">👑</button>`
         : '';
+      // expulsar (kick): lo saca de la sala, pero puede volver — solo de espectador
       const kick = store.isHost && !isMe
-        ? `<button class="kick-btn" data-kick="${p.id}" title="Expulsar a ${escapeHtml(p.name)}" aria-label="Expulsar">✕</button>`
+        ? `<button class="kick-btn" data-kick="${p.id}" title="Expulsar a ${escapeHtml(p.name)} (podrá volver como espectador)" aria-label="Expulsar">✕</button>`
+        : '';
+      // banear: lo saca y su token ya no puede volver a entrar de ninguna forma
+      const ban = store.isHost && !isMe
+        ? `<button class="ban-btn" data-ban="${p.id}" data-name="${escapeHtml(p.name)}" title="Banear a ${escapeHtml(p.name)} (no podrá volver)" aria-label="Banear">🚫</button>`
+        : '';
+      // mover a la zona de espectadores: para quien no quiere jugar la revancha,
+      // sin sacarlo de la sala. Solo CONECTADOS: sin socket no hay a quién
+      // reclasificar (el server lo rechaza igualmente).
+      const spectate = store.isHost && !isMe && !p.isHost && p.connected
+        ? `<button class="spectate-btn" data-spectate="${p.id}" title="Mover a ${escapeHtml(p.name)} a espectadores" aria-label="Mover a espectadores">👁</button>`
         : '';
       return `
       <li class="${p.connected ? '' : 'offline'}">
@@ -423,7 +462,32 @@ export function renderLobby(): void {
         <span class="player-name">${escapeHtml(p.name)}${isMe ? ' (tú)' : ''}</span>
         ${badge}
         ${cede}
+        ${spectate}
         ${kick}
+        ${ban}
+      </li>`;
+    })
+    .join('');
+
+  // zona de espectadores: solo visible cuando hay alguien ahí. El anfitrión
+  // puede traerlos de vuelta como jugador (respetando MAX_PLAYERS en el server).
+  $('lobby-spectators-box').hidden = spectators.length === 0;
+  $('lobby-spectators').innerHTML = spectators
+    .map((s) => {
+      const isMe = s.id === store.playerId;
+      const toPlayer = store.isHost && !isMe
+        ? `<button class="cede-btn" data-toplayer="${s.id}" title="Traer a ${escapeHtml(s.name)} como jugador" aria-label="Traer como jugador">🎮</button>`
+        : '';
+      // banear también desde la zona de espectadores (p. ej. un expulsado que
+      // volvió de espectador y sigue molestando en el chat)
+      const ban = store.isHost && !isMe
+        ? `<button class="ban-btn" data-ban="${s.id}" data-name="${escapeHtml(s.name)}" title="Banear a ${escapeHtml(s.name)} (no podrá volver)" aria-label="Banear">🚫</button>`
+        : '';
+      return `
+      <li>
+        <span class="player-name">👁 ${escapeHtml(s.name)}${isMe ? ' (tú)' : ''}</span>
+        ${toPlayer}
+        ${ban}
       </li>`;
     })
     .join('');
@@ -444,19 +508,24 @@ export function renderLobby(): void {
   const readyBtn = $<HTMLButtonElement>('btn-ready');
   const status = $('lobby-ready-status');
 
+  // en la zona de espectadores del lobby no hay «Listo» que marcar: solo se
+  // espera a que el anfitrión te traiga de vuelta como jugador
   startBtn.hidden = !store.isHost;
-  readyBtn.hidden = store.isHost;
-  $('lobby-wait').hidden = store.isHost;
+  readyBtn.hidden = store.isHost || store.spectator;
+  $('lobby-wait').hidden = store.isHost || store.spectator;
+  $('lobby-spectating').hidden = !store.spectator;
 
   if (store.isHost) {
     startBtn.disabled = !allReady;
     startBtn.textContent = allReady ? '▶ ¡Empezar partida!' : '⏳ Esperando a que todos estén listos…';
     status.hidden = others.length === 0;
     status.textContent = others.length > 0 ? `${readyCount}/${others.length} jugadores listos` : '';
-  } else {
+  } else if (!store.spectator) {
     const iAmReady = me?.ready ?? false;
     readyBtn.classList.toggle('active', iAmReady);
     readyBtn.textContent = iAmReady ? '⏳ Cancelar «Listo»' : '✅ Estoy listo';
+    status.hidden = true;
+  } else {
     status.hidden = true;
   }
 }

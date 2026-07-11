@@ -2,6 +2,7 @@ import type {
   EndStats,
   GameInit,
   LobbyPlayer,
+  LobbySpectator,
   MapDef,
   ReplayData,
   RoomSettings,
@@ -86,6 +87,7 @@ export const store = {
   suggestType: null as TowerTypeId | null,
   lobby: {
     players: [] as LobbyPlayer[],
+    spectators: [] as LobbySpectator[],
     settings: { mapId: 'sendero', mode: 'classic', difficulty: 'normal', public: false } as RoomSettings,
     inGame: false,
   },

@@ -106,6 +106,10 @@
           <div class="lobby-box lobby-players-box">
             <h3>Jugadores</h3>
             <ul id="lobby-players" class="player-list"></ul>
+            <div id="lobby-spectators-box" hidden>
+              <h3>👁 Espectadores</h3>
+              <ul id="lobby-spectators" class="player-list"></ul>
+            </div>
           </div>
 
           <div class="lobby-box lobby-maps-box">
@@ -137,6 +141,7 @@
             <button id="btn-ready" class="btn primary big" hidden>✅ Estoy listo</button>
             <p id="lobby-ready-status" class="hint" hidden></p>
             <p id="lobby-wait" class="hint" hidden>Esperando a que el anfitrión inicie…</p>
+            <p id="lobby-spectating" class="hint" hidden>👁 Estás en la zona de espectadores — el anfitrión puede traerte de vuelta como jugador.</p>
             <button id="btn-leave" class="btn ghost">Salir de la sala</button>
           </div>
 

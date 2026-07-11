@@ -271,10 +271,23 @@ export type ClientMsg =
   // del socket, igual que `leave_room`/`pause`/`resume`).
   | { type: 'leave' }
   | { type: 'set_settings'; settings: RoomSettings }
-  // el anfitrión expulsa a un jugador de la sala (solo en el lobby)
+  // el anfitrión EXPULSA a un jugador de la sala (solo en el lobby). Expulsar no
+  // banea: puede volver a entrar con el código, pero solo a la ZONA DE
+  // ESPECTADORES (pineado). Para bloquearle la entrada del todo, ver ban_player.
   | { type: 'kick_player'; playerId: string }
+  // el anfitrión BANEA a un jugador o espectador (solo en el lobby): se le saca
+  // de la sala y su token ya no puede volver a entrar de ninguna forma
+  | { type: 'ban_player'; playerId: string }
   // el anfitrión cede la propiedad de la sala a otro jugador conectado (solo en el lobby)
   | { type: 'transfer_host'; playerId: string }
+  // el anfitrión mueve a un jugador del lobby a la zona de espectadores (solo en
+  // el lobby, sin banear): para quien solo quiere mirar y no jugar la revancha.
+  // Queda PINEADO ahí (ver Spectator.pinned en el servidor): ya no se le vuelve
+  // a promover a jugador solo, ni al terminar futuras partidas.
+  | { type: 'move_to_spectator'; playerId: string }
+  // el anfitrión saca a alguien de la zona de espectadores y lo trae de vuelta
+  // como jugador del lobby (solo en el lobby; falla si la sala está llena)
+  | { type: 'move_to_player'; spectatorId: string }
   // el jugador marca/desmarca «Listo» en el lobby
   | { type: 'set_ready'; ready: boolean }
   | { type: 'start_game' }
@@ -296,10 +309,17 @@ export interface GameInit {
   youAre: string;
 }
 
+// espectador visible en el lobby (p. ej. alguien que el anfitrión movió a la
+// zona de espectadores): solo lo necesario para listarlo y traerlo de vuelta
+export interface LobbySpectator {
+  id: string;
+  name: string;
+}
+
 export type ServerMsg =
   | { type: 'error'; msg: string }
   | { type: 'room_joined'; code: string; playerId: string; isHost: boolean; spectator?: boolean }
-  | { type: 'lobby_state'; players: LobbyPlayer[]; settings: RoomSettings; inGame: boolean }
+  | { type: 'lobby_state'; players: LobbyPlayer[]; spectators: LobbySpectator[]; settings: RoomSettings; inGame: boolean }
   // cuenta regresiva antes de iniciar ('start') o reanudar ('resume') la partida.
   // El cliente muestra `seconds`..1 en pantalla; el servidor arranca/reanuda al
   // llegar a 0. seconds=0 significa CANCELADA (alguien desmarcó «Listo», entró
