@@ -21,6 +21,7 @@ import {
   stepGame,
   towerFires,
   towerLevel,
+  validateSaveData,
   ASSIST_MIN_DMG_FRAC,
   ASSIST_SHARE,
   BALANCE_VERSION,
@@ -49,6 +50,8 @@ import {
   type PlayerCommand,
   type ReplayData,
   type ReplayEntry,
+  type SaveData,
+  type SaveSlot,
   type TowerState,
   type TowerTypeId,
 } from '@td/shared';
@@ -833,6 +836,100 @@ console.log('— Repetición (replay): reconstruye el estado final EXACTO —');
 
   const bytes = JSON.stringify(replay).length;
   console.log(`   replay: ${log.length} entradas, ${bytes} bytes (~${(bytes / 1024).toFixed(1)} KB), ${replay.finalTick} ticks`);
+}
+
+console.log('— Guardar/Cargar (issue #12): SaveData válido y el fast-forward reproduce el estado —');
+{
+  // Juega una partida clásica con 2 bots grabando el log (igual que el servidor) y
+  // se DETIENE a mitad (como un guardado en pausa). Construye el SaveData con ese
+  // corte, lo VALIDA con el mismo validador que usan cliente/worker, y verifica que
+  // el fast-forward (reconstrucción con el motor puro) reproduce EXACTO el estado en
+  // el tick guardado: misma oleada/vidas/oro/torres/rng. Es la garantía de que
+  // reanudar una partida guardada continúa desde el estado correcto.
+  const mapId = MAP_ID;
+  const seed = 778899;
+  const map = getMap(mapId);
+  const simCtx = makeSimContext(map, makePlacementContext(map));
+  const players = [
+    { id: 'p1', name: 'Ana', color: '#4fc3f7' },
+    { id: 'p2', name: 'Beto', color: '#f06292' },
+  ];
+  const state = createGame(mapId, 'classic', 'normal', seed, players);
+  const candidates = buildCellCandidates(mapId);
+  const counters = new Map<string, number>();
+  const log: ReplayEntry[] = [];
+
+  // corte del guardado: ~4 minutos de juego (mitad de partida, no terminada)
+  const SAVE_TICK = TICK_RATE * 60 * 4;
+  const spawn = simCtx.waypoints[0][0];
+  for (let i = 0; i < SAVE_TICK && !state.over; i++) {
+    const cmds = botCommands(state, candidates, counters, spawn);
+    const cmdTick = state.tick;
+    for (const c of cmds) log.push({ t: cmdTick, kind: 'cmd', playerId: c.playerId, cmd: c.cmd });
+    stepGame(state, simCtx, cmds);
+  }
+
+  // slots con tokenHash de relleno (el hash real lo prueba wstest de punta a punta;
+  // aquí basta que sean cadenas hex para pasar el validador)
+  const slots: SaveSlot[] = players.map((p, i) => ({
+    id: p.id,
+    name: p.name,
+    color: p.color,
+    tokenHash: `${i}`.padStart(64, 'a'),
+  }));
+  const save: SaveData = {
+    kind: 'fortaleza-save',
+    v: BALANCE_VERSION,
+    seed,
+    mapId,
+    mode: 'classic',
+    difficulty: 'normal',
+    players,
+    log,
+    tick: state.tick,
+    wave: state.wave,
+    salt: 'deadbeefdeadbeef',
+    slots,
+  };
+
+  // ida y vuelta por JSON (como el archivo compartible) + validación
+  const parsed = JSON.parse(JSON.stringify(save));
+  const v = validateSaveData(parsed);
+  assert(v.ok === true, `el SaveData serializado pasa la validación${v.ok ? '' : `: ${v.msg}`}`);
+
+  // versión anterior del balance → rechazo con mensaje claro
+  const oldV = validateSaveData({ ...parsed, v: BALANCE_VERSION - 1 });
+  assert(!oldV.ok && /versión anterior/i.test(oldV.msg), 'un guardado de otra versión del balance se rechaza');
+  // basura evidente → rechazo
+  assert(!validateSaveData({ hola: 1 }).ok, 'un objeto que no es un guardado se rechaza');
+  // un comando con tick posterior al guardado → rechazo (defensa anti-corrupción)
+  const tamper = { ...parsed, log: [...parsed.log, { t: parsed.tick + 5, kind: 'cmd', playerId: 'p1', cmd: { kind: 'call_wave' } }] };
+  assert(!validateSaveData(tamper).ok, 'un comando con tick > guardado se rechaza');
+
+  // FAST-FORWARD: reconstruir con el motor puro hasta el tick guardado (como el DO
+  // al reanudar) y comparar con el estado vivo en ese mismo tick.
+  const rdata: ReplayData = {
+    v: save.v, seed: save.seed, mapId: save.mapId, mode: save.mode, difficulty: save.difficulty,
+    players: save.players, log: save.log, finalTick: save.tick, victory: false, wave: save.wave,
+  };
+  const rebuilt = replayTo(rdata, save.tick);
+
+  const liveGold = state.players.map((p) => Math.round(p.gold));
+  const rebuiltGold = rebuilt.players.map((p) => Math.round(p.gold));
+  assert(rebuilt.tick === state.tick, `el fast-forward alcanza el tick guardado (${rebuilt.tick} == ${state.tick})`);
+  assert(rebuilt.wave === state.wave, `oleada idéntica tras reanudar (real ${state.wave} == guardado ${rebuilt.wave})`);
+  assert(rebuilt.lives === state.lives, `vidas idénticas tras reanudar (real ${state.lives} == guardado ${rebuilt.lives})`);
+  assert(rebuilt.rng === state.rng, `rng idéntico tras reanudar (${rebuilt.rng})`);
+  assert(rebuilt.nextId === state.nextId, `nextId idéntico tras reanudar (${rebuilt.nextId})`);
+  assert(rebuilt.towers.length === state.towers.length, `mismas torres tras reanudar (real ${state.towers.length} == guardado ${rebuilt.towers.length})`);
+  assert(
+    JSON.stringify(liveGold) === JSON.stringify(rebuiltGold),
+    `oro de cada jugador idéntico tras reanudar (real ${JSON.stringify(liveGold)} == guardado ${JSON.stringify(rebuiltGold)})`,
+  );
+  assert(state.wave >= 3 && state.towers.length >= 4 && !state.over, `el guardado captura una partida en curso (oleada ${state.wave}, ${state.towers.length} torres)`);
+
+  const kb = (JSON.stringify(save).length / 1024).toFixed(1);
+  console.log(`   guardado: ${log.length} comandos, ${kb} KB, tick ${save.tick}, oleada ${save.wave}, ${state.towers.length} torres`);
 }
 
 console.log('— Modo Horda: bucle, cansancio y derrota por saturación —');

@@ -11,6 +11,7 @@ import { beam, burst, clearParticles, floatText, fx, line, ring } from './partic
 import { sfx, setMuted, setSfxVolume, setMusicVolume, unlockAudio } from './audio.js';
 import { startMusic, setMusicState, pauseMusic, resumeMusic, stopMusic, type MusicState } from './music.js';
 import { initReplayHome, saveReplay, setReplayEventSink, startReplay } from './replay.js';
+import { downloadSave, initLoadSaveHome, requestSaveGame } from './savegame.js';
 import type { ReplayData } from '@td/shared';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -330,7 +331,7 @@ function wireNet(): void {
   });
 
   net.on('lobby_state', (msg) => {
-    store.lobby = { players: msg.players, settings: msg.settings, inGame: msg.inGame };
+    store.lobby = { players: msg.players, spectators: msg.spectators, settings: msg.settings, inGame: msg.inGame, saved: msg.saved };
     const me = msg.players.find((p) => p.id === store.playerId);
     if (me) {
       store.isHost = me.isHost;
@@ -338,6 +339,11 @@ function wireNet(): void {
       // terminar la partida: ya no soy espectador
       store.spectator = false;
       $('spectator-banner').hidden = true;
+    } else if (msg.spectators.some((s) => s.id === store.playerId)) {
+      // estoy en la zona de espectadores del lobby (el anfitrión me movió, o
+      // el fallback de inactividad me devolvió ahí): no soy anfitrión ni jugador
+      store.isHost = false;
+      store.spectator = true;
     }
     renderLobby();
     // pausar/reanudar es de TODOS los jugadores (co-op); la velocidad, del anfitrión
@@ -440,6 +446,14 @@ function wireNet(): void {
     showEnd(msg.stats);
     const btn = document.getElementById('btn-watch-replay') as HTMLButtonElement;
     btn.hidden = !replay;
+    // 💾 Guardar partida en la pantalla de fin (solo jugadores, no espectadores)
+    $('btn-save-end').hidden = store.spectator;
+  });
+
+  // 💾 el servidor construyó el guardado: descargarlo como .json
+  net.on('save_info', (msg) => {
+    downloadSave(msg.save);
+    toast('💾 Partida guardada. Se descargó el archivo — cárgalo desde la portada para continuar.', 'info');
   });
 
   net.on('chat', (msg) => addChat(msg.from, msg.color, msg.text));
@@ -451,6 +465,9 @@ function wireNet(): void {
     $('pause-by').textContent = msg.by ? `${msg.by} pausó la partida` : 'La partida está en pausa';
     // cualquier jugador puede reanudar (los espectadores no)
     $('btn-resume').hidden = store.spectator;
+    // 💾 guardar desde la pausa: solo jugadores (el servidor tiene el registro
+    // completo desde el tick 0; el espectador no es jugador de la partida)
+    $('btn-save-pause').hidden = store.spectator;
     $('overlay-pause').hidden = false;
     $('btn-pause').textContent = '▶';
     // .paused sube el chat POR ENCIMA del velo de pausa: se puede hablar en pausa
@@ -719,6 +736,10 @@ function wireHudButtons(): void {
     startReplay(lastReplay);
   });
 
+  // 💾 Guardar partida (pausa y pantalla de fin): pide el guardado al servidor
+  $('btn-save-pause').addEventListener('click', () => requestSaveGame());
+  $('btn-save-end').addEventListener('click', () => requestSaveGame());
+
   // chat dentro del juego; en móvil la clase .open muestra también el log.
   // En PAUSA el input nunca se esconde: siempre queda visible y disponible.
   const chatForm = $('game-chat-form');
@@ -809,6 +830,7 @@ wireNet();
 // el reproductor de repeticiones reusa el MISMO pipeline de eventos que la red
 setReplayEventSink(processEvents);
 initReplayHome();
+initLoadSaveHome();
 switchScreen('home');
 
 // enlace directo ?n=Nombre#SALA: entra a la sala sin pasar por el formulario

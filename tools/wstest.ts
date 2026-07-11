@@ -8,13 +8,18 @@ import {
   makePlacementContext,
   placementError,
   replayTo,
+  sha256Hex,
   type ClientMsg,
+  type ReplayData,
+  type SaveData,
   type ServerMsg,
 } from '@td/shared';
 
 // Sirve tanto para el servidor Node (ignora el query) como para el Worker de
 // Cloudflare (enruta por ?create=1 / ?code=XXXX al Durable Object de la sala).
-const BASE = `ws://localhost:${process.env.PORT ?? 3000}/ws`;
+const HOST = `localhost:${process.env.PORT ?? 3000}`;
+const BASE = `ws://${HOST}/ws`;
+const HTTP_BASE = `http://${HOST}`;
 const wsUrl = (opts: { create: true } | { code: string }): string =>
   'create' in opts ? `${BASE}?create=1` : `${BASE}?code=${opts.code}`;
 const failures: string[] = [];
@@ -234,11 +239,20 @@ async function main(): Promise<void> {
   //   (c) la partida SIGUE para el resto (y sus torres quedan en el tablero)
   await abandonScenario();
 
+  // 9.6 · ZONA DE ESPECTADORES: mover/traer del lobby, y la distinción
+  //   expulsar (puede volver, solo de espectador) vs banear (no vuelve jamás)
+  await spectatorZoneScenario();
+
   // 10. Repetición (replay): partida corta que TERMINA (sin defensa) e incluye la
   //     reconexión de Beto. Al recibir game_over con `replay`, reconstruimos con el
   //     motor puro y comparamos el estado final con el de la partida real (leído de
   //     los últimos snapshots). DEBEN SER IDÉNTICOS.
   await replayIdentityScenario();
+
+  // 11. Guardar/Cargar (issue #12): jugar → pausar → pedir save_info → validar que el
+  //     log del guardado reconstruye el estado congelado → crear sala from-save →
+  //     reclamar slots por token → reanudar → verificar que continúa desde ahí.
+  await saveLoadScenario();
 
   if (failures.length > 0) {
     console.error(`\n💥 ${failures.length} fallos`);
@@ -246,6 +260,97 @@ async function main(): Promise<void> {
   }
   console.log('\n🎉 Test end-to-end OK');
   process.exit(0);
+}
+
+// Escenario dedicado: ZONA DE ESPECTADORES del lobby (PR #15) + kick vs ban.
+// (a) el anfitrión mueve a un jugador a espectadores y lo trae de vuelta;
+// (b) EXPULSAR no banea: el expulsado vuelve con su token, pero SOLO de espectador;
+// (c) BANEAR (a un espectador o a un jugador) bloquea la entrada por completo.
+async function spectatorZoneScenario(): Promise<void> {
+  console.log('\n— Zona de espectadores: mover/traer, expulsar vs banear —');
+  const gia = new TestClient('Gia', wsUrl({ create: true }));
+  await gia.open();
+  gia.send({
+    type: 'create_room',
+    name: 'Gia',
+    token: 'token-zone-gia',
+    settings: { mapId: 'sendero', mode: 'classic', difficulty: 'normal' },
+  });
+  const gj = await gia.waitFor('room_joined');
+
+  const hugo = new TestClient('Hugo', wsUrl({ code: gj.code }));
+  await hugo.open();
+  hugo.send({ type: 'join_room', name: 'Hugo', token: 'token-zone-hugo', code: gj.code });
+  const hj = await hugo.waitFor('room_joined');
+  const ivan = new TestClient('Ivan', wsUrl({ code: gj.code }));
+  await ivan.open();
+  ivan.send({ type: 'join_room', name: 'Ivan', token: 'token-zone-ivan', code: gj.code });
+  const ij = await ivan.waitFor('room_joined');
+
+  // (a) mover a Hugo a la zona de espectadores…
+  gia.send({ type: 'move_to_spectator', playerId: hj.playerId });
+  const hugoSpec = await hugo.waitFor('room_joined');
+  assert(hugoSpec.spectator === true, 'el movido a la zona recibe room_joined como espectador');
+  for (;;) {
+    const lb = await gia.waitFor('lobby_state');
+    if (lb.spectators.some((s) => s.id === hj.playerId) && !lb.players.some((p) => p.id === hj.playerId)) {
+      assert(true, 'el lobby lo lista en spectators y ya no en players');
+      break;
+    }
+  }
+  // …y traerlo de vuelta como jugador (además lo perdona de cualquier kick)
+  gia.send({ type: 'move_to_player', spectatorId: hj.playerId });
+  const hugoBack = await hugo.waitFor('room_joined');
+  assert(hugoBack.spectator === false, 'el restaurado recibe room_joined como jugador');
+  for (;;) {
+    const lb = await gia.waitFor('lobby_state');
+    if (lb.players.some((p) => p.id === hj.playerId) && lb.spectators.length === 0) {
+      assert(true, 'el lobby lo devuelve a players y la zona queda vacía');
+      break;
+    }
+  }
+
+  // (b) EXPULSAR a Iván: puede volver con su token, pero SOLO de espectador (pineado)
+  gia.send({ type: 'kick_player', playerId: ij.playerId });
+  await sleep(300);
+  const ivan2 = new TestClient('Ivan2', wsUrl({ code: gj.code }));
+  await ivan2.open();
+  ivan2.send({ type: 'join_room', name: 'Ivan', token: 'token-zone-ivan', code: gj.code });
+  const ivan2j = await ivan2.waitFor('room_joined');
+  assert(ivan2j.spectator === true, 'el EXPULSADO vuelve a entrar, pero solo de espectador');
+  for (;;) {
+    const lb = await gia.waitFor('lobby_state');
+    if (lb.spectators.some((s) => s.id === ivan2j.playerId)) {
+      assert(true, 'el expulsado aparece en la zona de espectadores del lobby');
+      break;
+    }
+  }
+
+  // (c1) BANEAR al espectador Iván: se le echa y su token ya no entra jamás
+  gia.send({ type: 'ban_player', playerId: ivan2j.playerId });
+  await sleep(300);
+  const ivan3 = new TestClient('Ivan3', wsUrl({ code: gj.code }));
+  await ivan3.open();
+  ivan3.send({ type: 'join_room', name: 'Ivan', token: 'token-zone-ivan', code: gj.code });
+  const banErr = await ivan3.waitFor('error');
+  assert(/bane/i.test(banErr.msg), `el BANEADO (desde espectadores) no puede volver a entrar ("${banErr.msg}")`);
+
+  // (c2) BANEAR a un jugador directamente (Hugo): mismo bloqueo total
+  gia.send({ type: 'ban_player', playerId: hj.playerId });
+  await sleep(300);
+  const hugo2 = new TestClient('Hugo2', wsUrl({ code: gj.code }));
+  await hugo2.open();
+  hugo2.send({ type: 'join_room', name: 'Hugo', token: 'token-zone-hugo', code: gj.code });
+  const banErr2 = await hugo2.waitFor('error');
+  assert(/bane/i.test(banErr2.msg), `el BANEADO (jugador) no puede volver a entrar ("${banErr2.msg}")`);
+
+  gia.ws.close();
+  hugo.ws.close();
+  ivan.ws.close();
+  ivan2.ws.close();
+  ivan3.ws.close();
+  hugo2.ws.close();
+  await sleep(200);
 }
 
 // Escenario dedicado: ABANDONO explícito (mensaje `leave`) a mitad de partida.
@@ -449,6 +554,152 @@ async function replayIdentityScenario(): Promise<void> {
 
   host.ws.close();
   bob2?.ws.close();
+}
+
+// Escenario dedicado: GUARDAR/CARGAR (issue #12). Juega una partida, la PAUSA para
+// congelar el tick, pide el guardado (save_info), verifica que el token va hasheado
+// (nunca en claro) y que el log del guardado reconstruye EXACTO el estado congelado.
+// Luego crea una sala desde el guardado (POST /api/rooms/from-save), cada jugador
+// recupera su slot por token, y al REANUDAR la partida continúa desde el guardado.
+async function saveLoadScenario(): Promise<void> {
+  console.log('\n— Guardar/Cargar (issue #12): guardar en pausa y reanudar —');
+  const HOST_TOKEN = 'token-save-host';
+  const BOB_TOKEN = 'token-save-bob';
+
+  // --- partida ORIGINAL ---
+  const host = new TestClient('SaveHost', wsUrl({ create: true }));
+  await host.open();
+  host.send({
+    type: 'create_room',
+    name: 'Sara',
+    token: HOST_TOKEN,
+    settings: { mapId: 'sendero', mode: 'classic', difficulty: 'normal' },
+  });
+  const rj = await host.waitFor('room_joined');
+  await host.waitFor('lobby_state');
+
+  const bob = new TestClient('SaveBob', wsUrl({ code: rj.code }));
+  await bob.open();
+  bob.send({ type: 'join_room', name: 'Bruno', token: BOB_TOKEN, code: rj.code });
+  await bob.waitFor('room_joined');
+  await host.waitFor('lobby_state');
+
+  bob.send({ type: 'set_ready', ready: true });
+  for (;;) {
+    const lb = await host.waitFor('lobby_state');
+    if (lb.players.find((p) => !p.isHost)?.ready === true) break;
+  }
+
+  host.send({ type: 'start_game' });
+  await host.waitFor('countdown');
+  const initH = await host.waitFor('game_started', 6000);
+  await bob.waitFor('game_started', 6000);
+
+  // colocar 2 torres y llamar la oleada para tener un estado no trivial
+  const map = getMap(initH.init.mapId);
+  const ctx = makePlacementContext(map);
+  const cells: [number, number][] = [];
+  outer: for (let cy = 0; cy < map.gridH; cy++) {
+    for (let cx = 0; cx < map.gridW; cx++) {
+      if (placementError(map, ctx, [], cx, cy) === null) {
+        cells.push([cx, cy]);
+        if (cells.length >= 2) break outer;
+      }
+    }
+  }
+  host.send({ type: 'cmd', cmd: { kind: 'place', towerType: 'archer', cx: cells[0][0], cy: cells[0][1] } });
+  host.send({ type: 'cmd', cmd: { kind: 'place', towerType: 'cannon', cx: cells[1][0], cy: cells[1][1] } });
+  await sleep(400);
+  host.send({ type: 'cmd', cmd: { kind: 'call_wave' } });
+  await sleep(2500);
+
+  // PAUSAR: congela el tick para un guardado estable, y leer el snapshot congelado
+  host.send({ type: 'pause' });
+  await host.waitFor('paused');
+  await sleep(400);
+  const frozen = host.ticks[host.ticks.length - 1];
+  assert(!!frozen, 'hay un snapshot congelado tras pausar');
+
+  // pedir el guardado (save_request → save_info)
+  const salt = 'a1b2c3d4e5f6a7b8';
+  host.send({ type: 'save_request', salt });
+  const info = await host.waitFor('save_info', 6000);
+  const save: SaveData = info.save;
+  assert(save.kind === 'fortaleza-save', 'save_info trae un SaveData con la marca de formato');
+  assert(save.tick === frozen.t, `el guardado se tomó en el tick congelado (${save.tick} == ${frozen.t})`);
+  assert(save.slots.length === 2, `el guardado tiene 2 slots (${save.slots.length})`);
+
+  // los tokenHash son sha256(token + salt); el token NUNCA viaja en claro
+  const hostHash = await sha256Hex(HOST_TOKEN + salt);
+  assert(save.slots.some((s) => s.tokenHash === hostHash), 'el tokenHash del anfitrión = sha256(token+salt)');
+  assert(!JSON.stringify(save).includes(HOST_TOKEN), 'el guardado NO contiene ningún token en claro');
+
+  // el log del guardado reconstruye EXACTO el estado congelado (como hará el DO)
+  const rdata: ReplayData = {
+    v: save.v, seed: save.seed, mapId: save.mapId, mode: save.mode, difficulty: save.difficulty,
+    players: save.players, log: save.log, finalTick: save.tick, victory: false, wave: save.wave,
+  };
+  const rebuilt = replayTo(rdata, save.tick);
+  assert(rebuilt.wave === frozen.snap.wave, `reconstrucción: oleada idéntica al congelado (${rebuilt.wave} == ${frozen.snap.wave})`);
+  assert(rebuilt.lives === frozen.snap.lives, `reconstrucción: vidas idénticas (${rebuilt.lives} == ${frozen.snap.lives})`);
+  assert(
+    rebuilt.towers.length === frozen.snap.towers.length,
+    `reconstrucción: mismas torres (${rebuilt.towers.length} == ${frozen.snap.towers.length})`,
+  );
+
+  host.ws.close();
+  bob.ws.close();
+  await sleep(200);
+
+  // --- CARGAR: crear la sala desde el guardado (POST /api/rooms/from-save) ---
+  const res = await fetch(`${HTTP_BASE}/api/rooms/from-save`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(save),
+  });
+  assert(res.ok, `POST /api/rooms/from-save responde OK (${res.status})`);
+  if (!res.ok) return;
+  const loadCode = ((await res.json()) as { code: string }).code;
+  assert(/^[A-Z]{4}$/.test(loadCode), `la sala del guardado tiene código de 4 letras (${loadCode})`);
+
+  // el anfitrión (mismo token) se une → recupera su slot por hash automáticamente
+  const h2 = new TestClient('LoadHost', wsUrl({ code: loadCode }));
+  await h2.open();
+  h2.send({ type: 'join_room', name: 'Sara', token: HOST_TOKEN, code: loadCode });
+  const h2j = await h2.waitFor('room_joined');
+
+  // Bruno (mismo token) se une → recupera el otro slot
+  const b2 = new TestClient('LoadBob', wsUrl({ code: loadCode }));
+  await b2.open();
+  b2.send({ type: 'join_room', name: 'Bruno', token: BOB_TOKEN, code: loadCode });
+  const b2j = await b2.waitFor('room_joined');
+
+  // dar tiempo a los auto-claims (sha256) y leer el último estado del lobby de carga
+  await sleep(900);
+  const lobbies = h2.msgs.filter((m): m is Extract<ServerMsg, { type: 'lobby_state' }> => m.type === 'lobby_state');
+  const lastSaved = [...lobbies].reverse().find((m) => m.saved);
+  assert(!!lastSaved?.saved, 'el lobby de carga trae la info del guardado (mapa/oleada/slots)');
+  const slotsInfo = lastSaved?.saved?.slots ?? [];
+  assert(slotsInfo.some((s) => s.claimedBy === h2j.playerId), 'el anfitrión recuperó su slot por token');
+  assert(slotsInfo.some((s) => s.claimedBy === b2j.playerId), 'el segundo jugador recuperó su slot por token');
+
+  // REANUDAR: cuenta atrás → reconstrucción (fast-forward) → partida en vivo
+  h2.send({ type: 'start_game' });
+  await h2.waitFor('countdown');
+  const rInit = await h2.waitFor('game_started', 8000);
+  assert(rInit.init.players.length === 2, 'la partida reanudada arranca con 2 defensores');
+  await sleep(1500);
+  const resumed = h2.ticks[h2.ticks.length - 1];
+  assert(!!resumed && resumed.t >= save.tick, `la partida reanuda DESDE el tick guardado (${resumed?.t} >= ${save.tick})`);
+  assert(resumed.snap.wave >= frozen.snap.wave, `reanuda en la oleada del guardado o más (${resumed.snap.wave} >= ${frozen.snap.wave})`);
+  assert(
+    resumed.snap.towers.length === frozen.snap.towers.length,
+    `las torres del guardado están en la partida reanudada (${resumed.snap.towers.length} == ${frozen.snap.towers.length})`,
+  );
+
+  h2.ws.close();
+  b2.ws.close();
+  await sleep(200);
 }
 
 main().catch((err) => {

@@ -464,6 +464,41 @@ export interface ReplayData {
   wave: number; // oleada alcanzada
 }
 
+// ---------- Guardar / cargar partida (issue #12) ----------
+//
+// Un GUARDADO es un REPLAY con metadatos para REANUDAR en vivo: el mismo
+// {seed + roster inicial + log de comandos} que reproduce la sim determinista,
+// cortado en `tick` (el momento de guardar), MÁS los datos para que cada jugador
+// recupere su identidad al cargar SIN exponer tokens. El archivo es COMPARTIBLE,
+// así que NUNCA lleva el token en claro: por slot guardamos tokenHash =
+// sha256(token + salt) (hex). Al cargar, el servidor calcula el hash del token de
+// quien se une y, si coincide con un slot, le devuelve esa identidad.
+
+export interface SaveSlot {
+  id: string; // id del jugador en la sim (p1, p2…): controla SUS torres al reanudar
+  name: string;
+  color: string;
+  // sha256(token + salt) en hex. Vacío ('') = slot sin dueño reclamable por hash
+  // (p. ej. un jugador que ya no estaba en la sala): se puede ADOPTAR igual desde
+  // el lobby de carga.
+  tokenHash: string;
+}
+
+export interface SaveData {
+  kind: 'fortaleza-save'; // marca de formato (distingue un guardado de un replay suelto)
+  v: number; // BALANCE_VERSION con el que se grabó (guard de versión al cargar)
+  seed: number;
+  mapId: string;
+  mode: GameMode;
+  difficulty: Difficulty;
+  players: ReplayPlayer[]; // roster INICIAL (para reconstruir con el motor puro)
+  log: ReplayEntry[]; // línea de tiempo de comandos/conn hasta `tick`
+  tick: number; // tick de sim del guardado (el fast-forward reconstruye hasta aquí)
+  wave: number; // oleada alcanzada (para el lobby de carga)
+  salt: string; // sal del hash de tokens (hex; no secreta)
+  slots: SaveSlot[]; // identidades reclamables por token al cargar
+}
+
 // ---------- Eventos (sim -> clientes, efímeros por tick) ----------
 
 export type GameEvent =

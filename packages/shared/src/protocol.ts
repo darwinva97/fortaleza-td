@@ -5,6 +5,7 @@ import type {
   GameMode,
   GameState,
   ReplayData,
+  SaveData,
   TargetMode,
   TowerTypeId,
   WaveComp,
@@ -13,7 +14,7 @@ import { ENEMIES, ENEMY_ORDER } from './balance/enemies.js';
 import { affixMask } from './balance/affixes.js';
 import { TOWER_ORDER } from './balance/towers.js';
 import { MAPS } from './balance/maps.js';
-import { TICK_RATE } from './constants.js';
+import { BALANCE_VERSION, MAX_PLAYERS, TICK_RATE } from './constants.js';
 
 // ---------- Lobby / sala ----------
 
@@ -45,6 +46,25 @@ export function sanitizeSettings(s: Partial<RoomSettings> | undefined): RoomSett
   const mode: GameMode = s?.mode === 'endless' ? 'endless' : s?.mode === 'horde' ? 'horde' : 'classic';
   const difficulty = s?.difficulty === 'easy' || s?.difficulty === 'hard' ? s.difficulty : 'normal';
   return { mapId, mode, difficulty, public: s?.public === true };
+}
+
+// issue #12 · info del lobby de una partida CARGADA (guardado). Viaja en
+// `lobby_state.saved`: el cliente pinta el banner («Partida guardada: mapa ·
+// oleada N · k defensores») y, por slot, quién lo reclamó (o botón «Adoptar»).
+export interface SavedLobbySlot {
+  id: string; // id del SaveSlot (= id del jugador en la sim)
+  name: string;
+  color: string;
+  // id del RoomPlayer que reclama este slot; null = libre (se puede adoptar)
+  claimedBy: string | null;
+}
+export interface SavedLobbyInfo {
+  mapId: string;
+  mode: GameMode;
+  difficulty: Difficulty;
+  wave: number;
+  tick: number;
+  slots: SavedLobbySlot[];
 }
 
 // F5 · entrada del directorio de salas públicas (GET /api/rooms en el Worker).
@@ -271,10 +291,23 @@ export type ClientMsg =
   // del socket, igual que `leave_room`/`pause`/`resume`).
   | { type: 'leave' }
   | { type: 'set_settings'; settings: RoomSettings }
-  // el anfitrión expulsa a un jugador de la sala (solo en el lobby)
+  // el anfitrión EXPULSA a un jugador de la sala (solo en el lobby). Expulsar no
+  // banea: puede volver a entrar con el código, pero solo a la ZONA DE
+  // ESPECTADORES (pineado). Para bloquearle la entrada del todo, ver ban_player.
   | { type: 'kick_player'; playerId: string }
+  // el anfitrión BANEA a un jugador o espectador (solo en el lobby): se le saca
+  // de la sala y su token ya no puede volver a entrar de ninguna forma
+  | { type: 'ban_player'; playerId: string }
   // el anfitrión cede la propiedad de la sala a otro jugador conectado (solo en el lobby)
   | { type: 'transfer_host'; playerId: string }
+  // el anfitrión mueve a un jugador del lobby a la zona de espectadores (solo en
+  // el lobby, sin banear): para quien solo quiere mirar y no jugar la revancha.
+  // Queda PINEADO ahí (ver Spectator.pinned en el servidor): ya no se le vuelve
+  // a promover a jugador solo, ni al terminar futuras partidas.
+  | { type: 'move_to_spectator'; playerId: string }
+  // el anfitrión saca a alguien de la zona de espectadores y lo trae de vuelta
+  // como jugador del lobby (solo en el lobby; falla si la sala está llena)
+  | { type: 'move_to_player'; spectatorId: string }
   // el jugador marca/desmarca «Listo» en el lobby
   | { type: 'set_ready'; ready: boolean }
   | { type: 'start_game' }
@@ -284,6 +317,13 @@ export type ClientMsg =
   | { type: 'resume' }
   | { type: 'set_speed'; speed: number }
   | { type: 'map_ping'; x: number; y: number; towerType?: TowerTypeId } // ping cooperativo (opcional: sugerir una torre)
+  // GUARDAR (issue #12): el jugador pide al servidor construir el guardado usando
+  // ESTA sal (para hashear los tokens server-side; el cliente no tiene los tokens
+  // ajenos). El servidor responde con `save_info`. Solo jugadores (no espectadores).
+  | { type: 'save_request'; salt: string }
+  // CARGAR: en el lobby de un guardado, ADOPTAR un slot libre (identidad de la
+  // partida cuyo token no coincidió con el tuyo). `slot` = id del SaveSlot.
+  | { type: 'claim_slot'; slot: string }
   | { type: 'ping'; t: number };
 
 // ---------- Mensajes servidor -> cliente ----------
@@ -296,10 +336,19 @@ export interface GameInit {
   youAre: string;
 }
 
+// espectador visible en el lobby (p. ej. alguien que el anfitrión movió a la
+// zona de espectadores): solo lo necesario para listarlo y traerlo de vuelta
+export interface LobbySpectator {
+  id: string;
+  name: string;
+}
+
 export type ServerMsg =
   | { type: 'error'; msg: string }
   | { type: 'room_joined'; code: string; playerId: string; isHost: boolean; spectator?: boolean }
-  | { type: 'lobby_state'; players: LobbyPlayer[]; settings: RoomSettings; inGame: boolean }
+  // `saved`: presente solo en el lobby de una partida CARGADA (guardado), para
+  // pintar el banner y los slots reclamables. Opcional → los lobbies normales lo omiten.
+  | { type: 'lobby_state'; players: LobbyPlayer[]; spectators: LobbySpectator[]; settings: RoomSettings; inGame: boolean; saved?: SavedLobbyInfo }
   // cuenta regresiva antes de iniciar ('start') o reanudar ('resume') la partida.
   // El cliente muestra `seconds`..1 en pantalla; el servidor arranca/reanuda al
   // llegar a 0. seconds=0 significa CANCELADA (alguien desmarcó «Listo», entró
@@ -308,9 +357,105 @@ export type ServerMsg =
   | { type: 'game_started'; init: GameInit }
   | { type: 'tick'; t: number; snap: Snap; events: GameEvent[] }
   | { type: 'game_over'; stats: EndStats; replay?: ReplayData }
+  // GUARDAR (issue #12): respuesta a `save_request` con el guardado ya construido
+  // (log hasta el tick actual + tokenHash por slot). El cliente lo descarga como .json.
+  | { type: 'save_info'; save: SaveData }
   | { type: 'chat'; from: string; color: string; text: string }
   | { type: 'paused'; by: string }
   | { type: 'resumed' }
   | { type: 'speed'; speed: number; by: string }
   | { type: 'map_ping'; x: number; y: number; by: string; color: string; towerType?: TowerTypeId }
   | { type: 'pong'; t: number };
+
+// ---------- Validación y hash de guardados (issue #12) ----------
+//
+// La MISMA función valida el .json en el cliente (antes de subirlo), en el borde
+// (Worker /api/rooms/from-save) y en el Durable Object (defensa en profundidad).
+// Comprueba tamaños máximos, formato y —clave— que el BALANCE_VERSION coincida
+// EXACTO: un guardado de otra versión del balance no reproduciría el mismo estado,
+// así que se rechaza con un mensaje claro en vez de reconstruir una partida rota.
+
+const MAX_SAVE_LOG = 500_000; // tope de entradas de log (una partida real son miles)
+const MAX_SAVE_TICK = TICK_RATE * 60 * 60 * 8; // 8 h de sim (tope defensivo)
+
+export type ValidateSaveResult = { ok: true; save: SaveData } | { ok: false; msg: string };
+
+export function validateSaveData(x: unknown): ValidateSaveResult {
+  const bad = (msg: string): ValidateSaveResult => ({ ok: false, msg });
+  if (!x || typeof x !== 'object') return bad('Ese archivo no es una partida guardada de Fortaleza.');
+  const d = x as Record<string, unknown>;
+  if (d.kind !== 'fortaleza-save') return bad('Ese archivo no es una partida guardada de Fortaleza.');
+  if (typeof d.v !== 'number') return bad('Guardado corrupto (sin versión).');
+  if (d.v !== BALANCE_VERSION) {
+    return bad('Esta partida es de una versión anterior del juego y ya no se puede continuar.');
+  }
+  if (typeof d.seed !== 'number' || !Number.isFinite(d.seed)) return bad('Guardado corrupto (semilla).');
+  if (typeof d.mapId !== 'string' || !MAPS.some((m) => m.id === d.mapId)) {
+    return bad('El mapa de este guardado no existe en esta versión del juego.');
+  }
+  if (d.mode !== 'classic' && d.mode !== 'endless' && d.mode !== 'horde') return bad('Guardado corrupto (modo).');
+  if (d.difficulty !== 'easy' && d.difficulty !== 'normal' && d.difficulty !== 'hard') {
+    return bad('Guardado corrupto (dificultad).');
+  }
+  if (typeof d.tick !== 'number' || !Number.isInteger(d.tick) || d.tick < 0 || d.tick > MAX_SAVE_TICK) {
+    return bad('Guardado corrupto (tick).');
+  }
+  if (typeof d.wave !== 'number' || !Number.isInteger(d.wave) || d.wave < 0) return bad('Guardado corrupto (oleada).');
+  if (typeof d.salt !== 'string' || d.salt.length === 0 || d.salt.length > 128) return bad('Guardado corrupto (sal).');
+  if (!Array.isArray(d.players) || d.players.length === 0 || d.players.length > MAX_PLAYERS) {
+    return bad('Guardado corrupto (jugadores).');
+  }
+  for (const p of d.players) {
+    if (!p || typeof p !== 'object') return bad('Guardado corrupto (jugador).');
+    const pp = p as Record<string, unknown>;
+    if (typeof pp.id !== 'string' || typeof pp.name !== 'string' || typeof pp.color !== 'string') {
+      return bad('Guardado corrupto (jugador).');
+    }
+  }
+  if (!Array.isArray(d.slots) || d.slots.length === 0 || d.slots.length > MAX_PLAYERS) {
+    return bad('Guardado corrupto (slots).');
+  }
+  for (const s of d.slots) {
+    if (!s || typeof s !== 'object') return bad('Guardado corrupto (slot).');
+    const ss = s as Record<string, unknown>;
+    if (
+      typeof ss.id !== 'string' ||
+      typeof ss.name !== 'string' ||
+      typeof ss.color !== 'string' ||
+      typeof ss.tokenHash !== 'string'
+    ) {
+      return bad('Guardado corrupto (slot).');
+    }
+  }
+  if (!Array.isArray(d.log) || d.log.length > MAX_SAVE_LOG) return bad('Guardado corrupto (registro de comandos).');
+  for (const e of d.log) {
+    if (!e || typeof e !== 'object') return bad('Guardado corrupto (entrada de registro).');
+    const ee = e as Record<string, unknown>;
+    if (typeof ee.t !== 'number' || !Number.isInteger(ee.t) || ee.t < 0 || ee.t > (d.tick as number)) {
+      return bad('Guardado corrupto (tick de comando).');
+    }
+    if (ee.kind === 'cmd') {
+      if (typeof ee.playerId !== 'string') return bad('Guardado corrupto (comando).');
+      const c = ee.cmd as Record<string, unknown> | undefined;
+      if (!c || typeof c !== 'object' || typeof c.kind !== 'string') return bad('Guardado corrupto (comando).');
+    } else if (ee.kind === 'conn') {
+      if (typeof ee.playerId !== 'string' || typeof ee.connected !== 'boolean') return bad('Guardado corrupto (conexión).');
+    } else if (ee.kind === 'join') {
+      if (!ee.player || typeof ee.player !== 'object' || typeof ee.gold !== 'number') return bad('Guardado corrupto (unión).');
+    } else {
+      return bad('Guardado corrupto (tipo de entrada).');
+    }
+  }
+  return { ok: true, save: x as SaveData };
+}
+
+// sha256 en hex de una cadena. crypto.subtle existe en el navegador, en el Worker
+// de Cloudflare y en Node ≥20 (globalThis.crypto). Se usa SERVER-SIDE para hashear
+// tokens con la sal del guardado — el token JAMÁS viaja en claro ni al archivo.
+export async function sha256Hex(input: string): Promise<string> {
+  const data = new TextEncoder().encode(input);
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}

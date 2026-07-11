@@ -345,6 +345,17 @@ html, body {
 /* cabecera en UNA línea: título + código + cómo invitar */
 .lobby-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 .lobby-head h2 { display: flex; align-items: center; gap: 10px; font-size: 1.35rem; }
+/* issue #12 · banner del lobby de una partida cargada (guardado) */
+.saved-banner {
+  margin: 6px 0 12px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--bg3);
+  border: 1px solid var(--accent);
+  color: var(--text);
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
 .code-chip {
   background: var(--bg3);
   border: 1px dashed var(--accent);
@@ -424,6 +435,32 @@ html, body {
   cursor: pointer;
 }
 .cede-btn:hover { background: var(--accent); color: #0c101a; }
+.spectate-btn {
+  flex-shrink: 0;
+  width: 24px; height: 24px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: rgba(176, 190, 197, 0.12);
+  color: var(--fg-dim);
+  font-size: 0.75rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.spectate-btn:hover { background: #b0bec5; color: #0c101a; }
+/* banear: mismo tamaño que expulsar pero con fondo pleno al pasar, que se
+   distinga del ✕ (kick) — esta acción no tiene vuelta atrás para ese token */
+.ban-btn {
+  flex-shrink: 0;
+  width: 24px; height: 24px;
+  border-radius: 6px;
+  border: 1px solid var(--danger);
+  background: rgba(239, 83, 80, 0.2);
+  color: var(--danger);
+  font-size: 0.75rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.ban-btn:hover { background: var(--danger); color: #0c101a; }
 #btn-ready.active { background: var(--bg3); color: var(--fg); box-shadow: none; }
 
 .chat-log {

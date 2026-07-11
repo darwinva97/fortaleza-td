@@ -4,8 +4,12 @@ import {
   getMap,
   makePlacementContext,
   makeSimContext,
+  replayInit as makeReplaySim,
+  replayStep as stepReplaySim,
   sanitizeSettings,
+  sha256Hex,
   stepGame,
+  validateSaveData,
   BALANCE_VERSION,
   GAME_SPEEDS,
   MAX_PLAYERS,
@@ -21,6 +25,9 @@ import {
   type PublicRoomInfo,
   type ReplayEntry,
   type RoomSettings,
+  type SaveData,
+  type SaveSlot,
+  type SavedLobbyInfo,
   type ServerMsg,
   type SimContext,
   type TowerTypeId,
@@ -48,6 +55,14 @@ interface RoomPlayer {
   // ni por nombre) para volver a jugar; si vuelve con el enlace, entra de
   // espectador. Ver el flujo en addPlayer.
   abandoned?: boolean;
+  // llegó a jugador por promoción automática al terminar una partida donde
+  // estaba de espectador (ver promoteSpectators). Si nunca marca «Listo», el
+  // fallback automático lo regresa solo a espectador (ver demoteIdlePromoted).
+  cameFromSpectator?: boolean;
+  // issue #12 · lobby de una partida CARGADA: id del SaveSlot que este jugador
+  // reclama (por hash de token automático o «Adoptar»). Al reanudar, el jugador
+  // adopta ESA identidad (id/nombre/color) de la sim reconstruida.
+  claimedSlot?: string;
 }
 
 // Espectador: entra con la partida en curso. Ve la partida y puede guiar (chat
@@ -58,6 +73,11 @@ interface Spectator {
   token: string;
   name: string;
   ws: WebSocket;
+  // PINEADO por el anfitrión (o por demoteIdlePromoted): a diferencia de un
+  // espectador normal (que sí se promueve a jugador al terminar la partida en
+  // curso), este NUNCA se promueve solo — se queda en la zona de espectadores
+  // hasta que el anfitrión lo traiga de vuelta a mano (move_to_player).
+  pinned?: boolean;
 }
 
 type JoinResult =
@@ -72,6 +92,10 @@ const COUNTDOWN_SEC = 3;
 // código de cierre de socket cuando el anfitrión expulsa a un jugador (el cliente
 // lo respeta y NO se reconecta, igual que el 4001 de inactividad)
 const KICK_CODE = 4002;
+// tiempo de gracia para marcar «Listo» tras ser promovido de espectador a
+// jugador; pasado esto, se le regresa solo a espectador automáticamente (ver
+// demoteIdlePromoted) en vez de bloquear el lobby para siempre
+const SPECTATOR_GRACE_MS = 45_000;
 
 // F6.1 · Cierre por INACTIVIDAD (control de costes): si en 30 min nadie hace
 // NADA humano (los pings de keepalive NO cuentan), la sala avisa a los 28 y al
@@ -81,6 +105,25 @@ const KICK_CODE = 4002;
 const IDLE_CLOSE_MS = 30 * 60_000;
 const IDLE_WARN_MS = IDLE_CLOSE_MS - 2 * 60_000;
 const IDLE_CLOSE_CODE = 4001;
+
+// issue #12 · saneado de identidades venidas de un archivo de guardado (no
+// confiable): nombre acotado en longitud y sin caracteres de control; color
+// limitado a un patrón hex (evita inyección en style="..."). Igual criterio que
+// el saneado de join_room.
+function cleanName(s: unknown): string {
+  // acota a 16 y descarta caracteres de control (code point < 32 o 127) sin
+  // meter bytes de control en el fuente ni depender de escapes frágiles.
+  let out = '';
+  for (const ch of String(s ?? '')) {
+    const c = ch.codePointAt(0) ?? 0;
+    if (c >= 32 && c !== 127) out += ch;
+    if (out.length >= 16) break;
+  }
+  return out.trim() || 'Jugador';
+}
+function safeColor(s: unknown): string {
+  return typeof s === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(s) ? s : PLAYER_COLORS[0];
+}
 
 // Una sala = un Durable Object. Reutiliza toda la simulación de @td/shared;
 // solo el transporte (WebSocket) y la orquestación son específicos de Cloudflare.
@@ -102,16 +145,33 @@ export class RoomDO {
   // cuentas regresivas de inicio y de reanudación (3 s); no-null = en marcha
   private startTimer: ReturnType<typeof setTimeout> | null = null;
   private resumeTimer: ReturnType<typeof setTimeout> | null = null;
-  // tokens expulsados por el anfitrión: no pueden volver a entrar a ESTA sala
+  // ventana de gracia tras promoteSpectators(): a quien no marque «Listo» a
+  // tiempo se le devuelve solo a espectador (ver demoteIdlePromoted)
+  private demoteTimer: ReturnType<typeof setTimeout> | null = null;
+  // tokens BANEADOS por el anfitrión: no pueden volver a entrar a ESTA sala
   // (el token vive en el storage del navegador; limpiarlo lo evade, pero cubre
-  // el caso real: el expulsado reintentando con el mismo código)
+  // el caso real: el baneado reintentando con el mismo código)
   private banned = new Set<string>();
+  // tokens EXPULSADOS (kick): sí pueden volver, pero solo a la zona de
+  // espectadores, pineados (nunca vuelven a jugador salvo que el anfitrión los
+  // traiga con move_to_player, que además los perdona — ver restoreToPlayer)
+  private kicked = new Set<string>();
   private paused = false;
   private speed = 1;
   // ---- grabación de la repetición (replay) de la partida en curso ----
   private replaySeed = 0;
   private replayInit: { mapId: string; mode: RoomSettings['mode']; difficulty: RoomSettings['difficulty']; players: { id: string; name: string; color: string }[] } | null = null;
   private replayLog: ReplayEntry[] = [];
+  // issue #12 · partida CARGADA de un guardado, esperando en el lobby de carga.
+  // Mientras no-null y sin `game`, la sala está en modo «reanudar guardado».
+  private savedGame: SaveData | null = null;
+  // la partida en curso es una REANUDACIÓN de un guardado: NO envía récord a la
+  // tabla (evita duplicar un highscore que la partida original ya pudo mandar).
+  private resumed = false;
+  // tick/oleada finales retenidos tras game_over para poder guardar desde la
+  // pantalla de FIN (this.game ya es null pero replayInit/replayLog siguen vivos).
+  private finishedTick = 0;
+  private finishedWave = 0;
   private lastPingAt = new Map<string, number>();
   private lastDirReport = 0; // último latido enviado al directorio de salas públicas
   private lastActivity = Date.now(); // última acción HUMANA (para el cierre por inactividad)
@@ -133,6 +193,37 @@ export class RoomDO {
       if (this.initialized || this.reserved) return new Response('taken', { status: 409 });
       this.reserved = true;
       this.code = (url.searchParams.get('code') ?? '').toUpperCase();
+      return new Response('ok');
+    }
+
+    // issue #12 · CARGAR partida guardada: el Worker reserva este DO y le manda el
+    // SaveData ya validado en el borde (revalidamos aquí, defensa en profundidad).
+    // La sala queda en modo «lobby de guardado» (savedGame no-null, sin game) hasta
+    // que alguien se una por WS y el anfitrión pulse empezar (fast-forward + reanudar).
+    if (url.pathname === '/loadsave') {
+      if (this.initialized || this.reserved) return new Response('taken', { status: 409 });
+      let save: unknown;
+      try {
+        save = await request.json();
+      } catch {
+        return new Response('bad save', { status: 400 });
+      }
+      const v = validateSaveData(save);
+      if (!v.ok) return new Response(v.msg, { status: 400 });
+      // el archivo es de origen no confiable: sanear nombres (longitud/control) y
+      // colores (patrón hex) igual que hace join_room, antes de que lleguen a los
+      // clientes (se inyectan en textContent/style). Los ids NO se tocan: los
+      // referencian el log y las tuplas jugador↔slot (romperlos rompería la reconstrucción).
+      const clean: SaveData = {
+        ...v.save,
+        players: v.save.players.map((p) => ({ ...p, name: cleanName(p.name), color: safeColor(p.color) })),
+        slots: v.save.slots.map((s) => ({ ...s, name: cleanName(s.name), color: safeColor(s.color) })),
+      };
+      this.reserved = true;
+      this.initialized = true;
+      this.code = (url.searchParams.get('code') ?? '').toUpperCase();
+      this.savedGame = clean;
+      this.settings = sanitizeSettings({ mapId: clean.mapId, mode: clean.mode, difficulty: clean.difficulty });
       return new Response('ok');
     }
 
@@ -204,10 +295,37 @@ export class RoomDO {
   // ---------- gestión de jugadores ----------
 
   private addPlayer(name: string, token: string, ws: WebSocket, prevToken?: string): JoinResult {
-    // prevToken también: un expulsado con sessionStorage limpio aún presenta su
+    // prevToken también: un baneado con sessionStorage limpio aún presenta su
     // respaldo de localStorage — sin esto evadiría el ban sin querer
     if (this.banned.has(token) || (prevToken && this.banned.has(prevToken))) {
-      return { kind: 'error', msg: 'El anfitrión te expulsó de esta sala' };
+      return { kind: 'error', msg: 'El anfitrión te baneó de esta sala' };
+    }
+    // EXPULSADO (kick, no ban): puede volver, pero SOLO a la zona de espectadores
+    // y pineado (no se auto-promueve al terminar la partida). Va antes que los
+    // rescates de identidad: un expulsado jamás recupera su puesto de jugador solo.
+    if (this.kicked.has(token) || (prevToken && this.kicked.has(prevToken))) {
+      const spec = this.spectators.find((s) => s.token === token);
+      if (spec) {
+        // reconexión del expulsado que ya estaba mirando
+        spec.ws.close();
+        spec.ws = ws;
+        spec.name = (name || spec.name).slice(0, 16);
+        this.reviveLoop();
+        return { kind: 'spectator', spectator: spec };
+      }
+      if (this.spectators.length >= MAX_SPECTATORS) {
+        return { kind: 'error', msg: 'Hay demasiados espectadores, intenta luego' };
+      }
+      const spectator: Spectator = {
+        id: `s${this.nextSpectatorNum++}`,
+        token,
+        name: (name || 'Espectador').slice(0, 16),
+        ws,
+        pinned: true,
+      };
+      this.spectators.push(spectator);
+      this.reviveLoop();
+      return { kind: 'spectator', spectator };
     }
     // un slot ABANDONADO nunca se reclama por token: quien se fue voluntariamente
     // no vuelve a jugar esta partida (cae al camino de espectador más abajo).
@@ -382,6 +500,10 @@ export class RoomDO {
       clearTimeout(this.resumeTimer);
       this.resumeTimer = null;
     }
+    if (this.demoteTimer) {
+      clearTimeout(this.demoteTimer);
+      this.demoteTimer = null;
+    }
   }
 
   private markConnected(playerId: string, connected: boolean): void {
@@ -407,6 +529,10 @@ export class RoomDO {
     }));
   }
 
+  private lobbySpectators(): { id: string; name: string }[] {
+    return this.spectators.map((s) => ({ id: s.id, name: s.name }));
+  }
+
   // ¿están listos TODOS los no-anfitriones conectados? (el anfitrión juega en
   // solitario si no hay nadie más). Bloquea el inicio hasta que el equipo confirme.
   private allReady(): boolean {
@@ -414,14 +540,58 @@ export class RoomDO {
   }
 
   private broadcastLobby(): void {
+    const saved = this.savedLobbyInfo();
     this.broadcast({
       type: 'lobby_state',
       players: this.lobbyPlayers(),
+      spectators: this.lobbySpectators(),
       settings: this.settings,
       inGame: this.game !== null && !this.game.over,
+      ...(saved ? { saved } : {}),
     });
     // cualquier cambio de sala (miembros/ajustes/estado) refresca el directorio
     this.reportPublic(true);
+  }
+
+  // ---------- lobby de una partida CARGADA (issue #12) ----------
+
+  // Info del guardado para el lobby de carga: mapa/oleada/defensores + qué
+  // RoomPlayer reclama cada slot. undefined cuando no hay guardado pendiente.
+  private savedLobbyInfo(): SavedLobbyInfo | undefined {
+    const save = this.savedGame;
+    if (!save || this.game) return undefined;
+    const claimBySlot = new Map<string, string>();
+    for (const p of this.players) if (p.claimedSlot) claimBySlot.set(p.claimedSlot, p.id);
+    return {
+      mapId: save.mapId,
+      mode: save.mode,
+      difficulty: save.difficulty,
+      wave: save.wave,
+      tick: save.tick,
+      slots: save.slots.map((s) => ({
+        id: s.id,
+        name: s.name,
+        color: s.color,
+        claimedBy: claimBySlot.get(s.id) ?? null,
+      })),
+    };
+  }
+
+  // Intenta reclamar automáticamente el slot cuyo tokenHash coincide con el token
+  // del jugador (recupera su identidad de la partida guardada). Async por sha256.
+  private async autoClaim(player: RoomPlayer): Promise<void> {
+    const save = this.savedGame;
+    if (!save || this.game || player.claimedSlot) return;
+    const hash = await sha256Hex(player.token + save.salt);
+    // no robar un slot ya reclamado por otro jugador conectado
+    const taken = new Set(this.players.filter((p) => p !== player && p.claimedSlot).map((p) => p.claimedSlot));
+    const slot = save.slots.find((s) => s.tokenHash && s.tokenHash === hash && !taken.has(s.id));
+    // el jugador pudo desconectarse mientras hasheábamos; comprobar que sigue
+    if (slot && this.players.includes(player) && !player.claimedSlot) {
+      player.claimedSlot = slot.id;
+      this.systemMsg(`✅ ${player.name} recuperó su lugar (${slot.name})`);
+      this.broadcastLobby();
+    }
   }
 
   // ---------- directorio de salas públicas (F5) ----------
@@ -494,10 +664,20 @@ export class RoomDO {
     this.pendingCmds = [];
     this.paused = false;
     this.speed = 1;
+    // partida NUEVA (no reanudada): sin guardado pendiente y sí puntúa récords
+    this.resumed = false;
+    this.savedGame = null;
+    this.finishedTick = 0;
+    this.finishedWave = 0;
     if (this.resumeTimer) {
       clearTimeout(this.resumeTimer);
       this.resumeTimer = null;
     }
+    if (this.demoteTimer) {
+      clearTimeout(this.demoteTimer);
+      this.demoteTimer = null;
+    }
+    for (const p of this.players) p.cameFromSpectator = false;
 
     // arrancar la grabación de la repetición: semilla, roster inicial y log vacío
     this.replaySeed = seed;
@@ -515,6 +695,164 @@ export class RoomDO {
     this.reviveLoop(true);
     // la lista de salas públicas pasa a mostrarla "en partida" (👁 observable)
     this.reportPublic(true);
+  }
+
+  // issue #12 · REANUDAR una partida guardada: reconstruye el estado ejecutando el
+  // registro de comandos hasta el tick guardado (fast-forward EN TROZOS para no
+  // bloquear el event loop del DO ni los pings WS) y arranca el loop en vivo. Los
+  // jugadores toman su slot (el reclamado o, si son pendientes, uno libre); el
+  // resto queda de espectador. La grabación continúa sobre el log del archivo.
+  private async startLoadedGame(): Promise<void> {
+    const save = this.savedGame;
+    if (!save || this.game) return;
+
+    // 1) fast-forward con el MISMO motor puro del replay, en trozos de 2000 ticks
+    const rdata: ReplayData = {
+      v: save.v,
+      seed: save.seed,
+      mapId: save.mapId,
+      mode: save.mode,
+      difficulty: save.difficulty,
+      players: save.players,
+      log: save.log,
+      finalTick: save.tick,
+      victory: false,
+      wave: save.wave,
+    };
+    const sim = makeReplaySim(rdata);
+    const target = save.tick;
+    while (sim.state.tick < target && !sim.state.over) {
+      const end = Math.min(target, sim.state.tick + 2000);
+      while (sim.state.tick < end && !sim.state.over) stepReplaySim(sim, rdata, sim.state.tick);
+      // ceder el event loop entre trozos (deja respirar pings/mensajes WS)
+      await new Promise<void>((r) => setTimeout(r, 0));
+    }
+    // ¿algo cambió mientras reconstruíamos (revancha, otra carga)? abortar sin tocar nada
+    if (this.game || this.savedGame !== save) return;
+
+    this.game = sim.state;
+    this.simCtx = sim.ctx;
+
+    // 2) continuar la GRABACIÓN: el log del archivo + lo nuevo = historial completo
+    this.replaySeed = save.seed;
+    this.replayInit = { mapId: save.mapId, mode: save.mode, difficulty: save.difficulty, players: save.players };
+    this.replayLog = save.log.slice();
+    this.resumed = true; // partida reanudada → no duplicar récord al terminar
+
+    // 3) identidades: cada jugador conectado toma su slot reclamado o, si es
+    //    pendiente, el primer slot libre. Los que no quepan pasan a espectadores.
+    const claimedIds = new Set(this.players.filter((p) => p.claimedSlot).map((p) => p.claimedSlot!));
+    const freeSlots = save.slots.filter((s) => !claimedIds.has(s.id)).map((s) => s.id);
+    const gamePlayers: RoomPlayer[] = [];
+    const newSpectators: Spectator[] = [];
+    for (const p of this.players) {
+      const slotId = p.claimedSlot ?? freeSlots.shift();
+      if (slotId) {
+        const slot = save.slots.find((s) => s.id === slotId)!;
+        p.id = slot.id; // adopta la identidad de la sim (controla sus torres)
+        p.name = slot.name;
+        p.color = slot.color;
+        p.claimedSlot = undefined;
+        gamePlayers.push(p);
+      } else if (p.ws) {
+        // sin slot libre: entra de espectador (la partida ya tiene sus defensores)
+        newSpectators.push({ id: `s${this.nextSpectatorNum++}`, token: p.token, name: p.name, ws: p.ws });
+      }
+    }
+    // el anfitrión debe seguir siendo jugador; si quedó fuera, ceder al primero
+    if (gamePlayers.length > 0 && !gamePlayers.some((p) => p.isHost)) {
+      for (const p of gamePlayers) p.isHost = false;
+      gamePlayers[0].isHost = true;
+    }
+    this.players = gamePlayers;
+    this.spectators.push(...newSpectators);
+
+    // 4) conexión de cada jugador de la sim = ¿hay jugador con ESE id y socket?
+    //    Registrar el delta como `conn` en el tick del guardado para que un futuro
+    //    guardado/replay de la partida reanudada reproduzca el mismo escalado.
+    for (const gp of this.game.players) {
+      const connected = this.players.some((p) => p.id === gp.id && p.ws);
+      if (gp.connected !== connected) {
+        gp.connected = connected;
+        this.replayLog.push({ t: this.game.tick, kind: 'conn', playerId: gp.id, connected });
+      }
+    }
+
+    this.savedGame = null;
+    this.pendingCmds = [];
+    this.paused = false;
+    this.speed = 1;
+
+    // 5) avisar a jugadores (su id cambió al del slot) y espectadores, y arrancar
+    for (const p of this.players) {
+      this.send(p, { type: 'room_joined', code: this.code, playerId: p.id, isHost: p.isHost });
+      this.send(p, { type: 'game_started', init: this.gameInit(p.id) });
+    }
+    for (const s of this.spectators) {
+      this.sendTo(s.ws, { type: 'room_joined', code: this.code, playerId: s.id, isHost: false, spectator: true });
+      this.sendGameStateToSpectator(s);
+    }
+    // un guardado tomado en la pantalla de FIN reconstruye una partida YA terminada:
+    // no hay nada que reanudar (el loop nunca la volvería a cerrar) → mostrar el fin.
+    if (this.game.over) {
+      this.endGame();
+    } else {
+      this.reviveLoop(true);
+      this.systemMsg(`▶ Partida reanudada desde la oleada ${this.game.wave}`);
+    }
+    this.reportPublic(true);
+  }
+
+  // issue #12 · GUARDAR: construye el SaveData y lo envía al que lo pidió. Toma una
+  // FOTO síncrona del tick + log (evita capturar entradas de ticks posteriores si
+  // llega un tick durante los await de sha256) y luego hashea los tokens con la sal.
+  private async handleSaveRequest(ws: WebSocket, saltRaw: string): Promise<void> {
+    const salt = String(saltRaw ?? '')
+      .replace(/[^a-f0-9]/gi, '')
+      .slice(0, 128);
+    if (!salt) {
+      this.sendTo(ws, { type: 'error', msg: 'No se pudo guardar (sal inválida)' });
+      return;
+    }
+    if (!this.replayInit) {
+      this.sendTo(ws, { type: 'error', msg: 'No hay partida para guardar todavía' });
+      return;
+    }
+    const active = this.game !== null && !this.game.over;
+    const tick = active ? this.game!.tick : this.finishedTick;
+    const wave = active ? this.game!.wave : this.finishedWave;
+    if (!active && this.finishedTick === 0) {
+      this.sendTo(ws, { type: 'error', msg: 'No hay partida para guardar' });
+      return;
+    }
+    // foto síncrona ANTES de cualquier await
+    const roster = this.replayInit.players.slice();
+    const logSnapshot = this.replayLog.slice();
+    const tokenById = new Map(this.players.map((p) => [p.id, p.token]));
+    const init = this.replayInit;
+    const seed = this.replaySeed;
+
+    const slots: SaveSlot[] = [];
+    for (const rp of roster) {
+      const token = tokenById.get(rp.id);
+      const tokenHash = token ? await sha256Hex(token + salt) : '';
+      slots.push({ id: rp.id, name: rp.name, color: rp.color, tokenHash });
+    }
+    const save: SaveData = {
+      kind: 'fortaleza-save',
+      v: BALANCE_VERSION,
+      seed,
+      mapId: init.mapId,
+      mode: init.mode,
+      difficulty: init.difficulty,
+      players: roster,
+      log: logSnapshot,
+      tick,
+      wave,
+      salt,
+      slots,
+    };
+    this.sendTo(ws, { type: 'save_info', save });
   }
 
   // arranca (o reanuda) el bucle de simulación si hay partida activa y jugadores
@@ -573,6 +911,10 @@ export class RoomDO {
     if (!this.game) return;
     const g = this.game;
     const replay = this.buildReplay(g);
+    // retener tick/oleada finales: permiten guardar desde la pantalla de FIN
+    // (this.game pasará a null pero replayInit/replayLog siguen vivos hasta la revancha)
+    this.finishedTick = g.tick;
+    this.finishedWave = g.wave;
     const stats: EndStats = {
       victory: g.over?.victory ?? false,
       wave: g.wave,
@@ -591,8 +933,10 @@ export class RoomDO {
         towersBuilt: p.stats.towersBuilt,
       })),
     };
-    // récords: endless (Infinito) y horde (Horda) puntúan por oleada alcanzada
-    if (g.mode === 'endless' || g.mode === 'horde') {
+    // récords: endless (Infinito) y horde (Horda) puntúan por oleada alcanzada.
+    // Una partida REANUDADA de un guardado NO envía récord: la partida original ya
+    // pudo mandarlo, y sumar otro con la misma oleada duplicaría la entrada.
+    if (!this.resumed && (g.mode === 'endless' || g.mode === 'horde')) {
       void saveScore(this.env, {
         names: g.players.map((p) => p.name),
         wave: g.wave,
@@ -619,11 +963,20 @@ export class RoomDO {
 
   // Al terminar la partida, los espectadores pasan a ser jugadores de pleno
   // derecho en el lobby (respetando MAX_PLAYERS). Los que no caben siguen como
-  // espectadores.
+  // espectadores. Quien solo quería mirar y no marca «Listo» a tiempo vuelve
+  // solo a espectador automáticamente (ver demoteIdlePromoted) en vez de quedar
+  // atascado bloqueando el inicio de la revancha.
   private promoteSpectators(): void {
     if (this.spectators.length === 0) return;
     const stayed: Spectator[] = [];
+    let promotedAny = false;
     for (const spec of this.spectators) {
+      // pineado por el anfitrión (o por el fallback de inactividad): se queda
+      // de espectador para siempre, hasta que lo traigan de vuelta a mano
+      if (spec.pinned) {
+        stayed.push(spec);
+        continue;
+      }
       if (this.players.filter((p) => p.ws).length >= MAX_PLAYERS) {
         stayed.push(spec);
         continue;
@@ -639,12 +992,86 @@ export class RoomDO {
         ws: spec.ws,
         isHost,
         ready: isHost,
+        cameFromSpectator: !isHost,
       };
       this.players.push(player);
+      promotedAny = promotedAny || !isHost;
       // avísale que ya es jugador (actualiza spectator/isHost en el cliente)
       this.send(player, { type: 'room_joined', code: this.code, playerId: player.id, isHost: player.isHost, spectator: false });
     }
     this.spectators = stayed;
+    if (promotedAny) {
+      if (this.demoteTimer) clearTimeout(this.demoteTimer);
+      this.demoteTimer = setTimeout(() => {
+        this.demoteTimer = null;
+        this.demoteIdlePromoted();
+      }, SPECTATOR_GRACE_MS);
+    }
+  }
+
+  // pasado el tiempo de gracia, a quien fue promovido de espectador y sigue sin
+  // marcar «Listo» se le regresa solo a espectador (no banea, no lo saca de la
+  // sala): así deja de bloquear el «todos listos» para el resto del equipo.
+  private demoteIdlePromoted(): void {
+    if (this.game) return; // ya empezó otra partida: ya no aplica
+    const idle = this.players.filter((p) => p.cameFromSpectator && !p.ready);
+    for (const p of idle) {
+      this.demoteToSpectator(p, `${p.name} pasó a la zona de espectadores (no marcó «Listo»)`);
+    }
+    if (idle.length > 0) this.broadcastLobby();
+  }
+
+  // Mueve a un jugador del lobby a la lista de espectadores SIN banearlo (a
+  // diferencia de kick_player). Conserva id/token/nombre para que el cliente se
+  // reconozca. Usado por la acción manual del anfitrión y por demoteIdlePromoted.
+  private demoteToSpectator(target: RoomPlayer, announce: string): void {
+    this.players = this.players.filter((p) => p !== target);
+    if (target.isHost) {
+      const next = this.players.find((p) => p.ws);
+      if (next) {
+        next.isHost = true;
+        next.ready = true;
+      }
+    }
+    const ws = target.ws;
+    if (!ws) return; // desconectado: no hay socket que reclasificar
+    const spectator: Spectator = {
+      id: target.id,
+      token: target.token,
+      name: target.name,
+      ws,
+      pinned: true,
+    };
+    this.spectators.push(spectator);
+    this.systemMsg(announce);
+    this.sendTo(ws, { type: 'room_joined', code: this.code, playerId: spectator.id, isHost: false, spectator: true });
+    this.sendGameStateToSpectator(spectator);
+  }
+
+  // El anfitrión trae de vuelta a un espectador (pineado o no) como jugador del
+  // lobby. Falla en silencio si la sala está llena o no hay partida en el lobby.
+  // Sin fallback de gracia: si el restaurado nunca marca «Listo», el anfitrión
+  // puede volver a moverlo a espectadores a mano (fue su decisión traerlo).
+  private restoreToPlayer(spectator: Spectator): void {
+    this.spectators = this.spectators.filter((s) => s !== spectator);
+    this.kicked.delete(spectator.token); // traerlo de vuelta lo perdona del kick
+    const isHost = this.players.length === 0;
+    const player: RoomPlayer = {
+      id: spectator.id,
+      token: spectator.token,
+      name: spectator.name,
+      color: PLAYER_COLORS[this.players.length % PLAYER_COLORS.length],
+      ws: spectator.ws,
+      isHost,
+      ready: isHost,
+    };
+    this.players.push(player);
+    this.systemMsg(`${player.name} volvió a la sala como jugador`);
+    this.send(player, { type: 'room_joined', code: this.code, playerId: player.id, isHost: player.isHost, spectator: false });
+    this.sendGameStateTo(player);
+    // issue #12 · lobby de un guardado: al volver a jugador se perdió su reclamo
+    // (vivía en el RoomPlayer anterior) — reintentar el auto-reclamo por token
+    void this.autoClaim(player);
   }
 
   // ---------- entrada de mensajes ----------
@@ -738,6 +1165,8 @@ export class RoomDO {
       this.sendTo(ws, { type: 'room_joined', code: this.code, playerId: player.id, isHost: player.isHost });
       this.broadcastLobby();
       this.sendGameStateTo(player);
+      // lobby de un guardado: intentar recuperar su slot por hash de token (async)
+      void this.autoClaim(player);
       return;
     }
 
@@ -772,14 +1201,87 @@ export class RoomDO {
         if (this.game && !this.game.over) break; // expulsar solo en el lobby
         const target = this.players.find((p) => p.id === msg.playerId);
         if (!target || target.id === player.id) break;
-        this.systemMsg(`${target.name} fue expulsado por el anfitrión`);
+        this.systemMsg(`${target.name} fue expulsado por el anfitrión (puede volver como espectador)`);
         this.players = this.players.filter((p) => p !== target);
-        this.banned.add(target.token); // expulsado = no puede volver a esta sala
+        this.kicked.add(target.token); // expulsado = si vuelve, solo de espectador (ver addPlayer)
         try {
           target.ws?.close(KICK_CODE, 'kicked');
         } catch {
           // ignore
         }
+        this.broadcastLobby();
+        break;
+      }
+
+      // BANEAR: como expulsar, pero el token ya no puede volver a entrar de
+      // ninguna forma. Funciona sobre jugadores Y sobre espectadores (un troll
+      // en la zona de espectadores también se banea desde ahí).
+      case 'ban_player': {
+        if (!player.isHost) {
+          this.send(player, { type: 'error', msg: 'Solo el anfitrión puede banear' });
+          break;
+        }
+        if (this.game && !this.game.over) break; // banear solo en el lobby
+        const target = this.players.find((p) => p.id === msg.playerId);
+        if (target && target.id !== player.id) {
+          this.systemMsg(`${target.name} fue baneado por el anfitrión`);
+          this.players = this.players.filter((p) => p !== target);
+          this.banned.add(target.token);
+          try {
+            target.ws?.close(KICK_CODE, 'banned');
+          } catch {
+            // ignore
+          }
+          this.broadcastLobby();
+          break;
+        }
+        const spec = this.spectators.find((s) => s.id === msg.playerId);
+        if (spec) {
+          this.systemMsg(`${spec.name} fue baneado por el anfitrión`);
+          this.spectators = this.spectators.filter((s) => s !== spec);
+          this.banned.add(spec.token);
+          try {
+            spec.ws.close(KICK_CODE, 'banned');
+          } catch {
+            // ignore
+          }
+          this.broadcastLobby();
+        }
+        break;
+      }
+
+      case 'move_to_spectator': {
+        if (!player.isHost) {
+          this.send(player, { type: 'error', msg: 'Solo el anfitrión puede mover a espectadores' });
+          break;
+        }
+        if (this.game && !this.game.over) break; // solo en el lobby
+        const target = this.players.find((p) => p.id === msg.playerId);
+        if (!target || target.id === player.id) break;
+        // sin socket no hay a quién reclasificar: demoteToSpectator lo dejaría
+        // FUERA de la sala en silencio (ni jugador ni espectador). Rechazar.
+        if (!target.ws) {
+          this.send(player, { type: 'error', msg: `${target.name} está desconectado` });
+          break;
+        }
+        this.demoteToSpectator(target, `${target.name} pasó a la zona de espectadores`);
+        this.broadcastLobby();
+        break;
+      }
+
+      case 'move_to_player': {
+        if (!player.isHost) {
+          this.send(player, { type: 'error', msg: 'Solo el anfitrión puede traer jugadores' });
+          break;
+        }
+        if (this.game && !this.game.over) break; // solo en el lobby
+        const spectator = this.spectators.find((s) => s.id === msg.spectatorId);
+        if (!spectator) break;
+        if (this.players.filter((p) => p.ws).length >= MAX_PLAYERS) {
+          this.send(player, { type: 'error', msg: 'La sala está llena' });
+          break;
+        }
+        this.restoreToPlayer(spectator);
         this.broadcastLobby();
         break;
       }
@@ -817,6 +1319,16 @@ export class RoomDO {
         }
         if (this.game && !this.game.over) break;
         if (this.startTimer) break; // ya en cuenta atrás
+        // REANUDAR un guardado: sin gate de «Listo» (el anfitrión decide). Al llegar
+        // a 0, reconstruye la sim (fast-forward) y arranca en vivo desde el guardado.
+        if (this.savedGame) {
+          this.broadcast({ type: 'countdown', kind: 'start', seconds: COUNTDOWN_SEC });
+          this.startTimer = setTimeout(() => {
+            this.startTimer = null;
+            if (this.players.some((p) => p.ws)) void this.startLoadedGame();
+          }, COUNTDOWN_SEC * 1000);
+          break;
+        }
         if (!this.allReady()) {
           this.send(player, { type: 'error', msg: 'Espera a que todos marquen «Listo»' });
           break;
@@ -827,6 +1339,29 @@ export class RoomDO {
           this.startTimer = null;
           if (this.players.some((p) => p.ws)) this.startGame();
         }, COUNTDOWN_SEC * 1000);
+        break;
+
+      // issue #12 · CARGAR: adoptar un slot libre del guardado (identidad de la
+      // partida). Solo en el lobby de carga (savedGame y sin partida).
+      case 'claim_slot': {
+        const save = this.savedGame;
+        if (!save || this.game) break;
+        const slot = save.slots.find((s) => s.id === msg.slot);
+        if (!slot) break;
+        const taken = this.players.some((p) => p !== player && p.claimedSlot === slot.id);
+        if (taken) {
+          this.send(player, { type: 'error', msg: 'Ese lugar ya está ocupado' });
+          break;
+        }
+        player.claimedSlot = slot.id;
+        this.broadcastLobby();
+        break;
+      }
+
+      // issue #12 · GUARDAR: construir el guardado con la sal del cliente (hashea los
+      // tokens server-side) y devolverlo. Async por sha256.
+      case 'save_request':
+        void this.handleSaveRequest(ws, msg.salt);
         break;
 
       case 'chat': {

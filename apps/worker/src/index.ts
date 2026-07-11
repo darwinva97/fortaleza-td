@@ -1,6 +1,7 @@
 import { RoomDO, type Env } from './room-do.js';
 import { DirectoryDO } from './directory-do.js';
 import { loadScores } from './scores.js';
+import { validateSaveData } from '@td/shared';
 
 // El runtime necesita ver las clases de los Durable Objects exportadas desde el módulo principal.
 export { RoomDO, DirectoryDO };
@@ -13,8 +14,8 @@ function genCode(): string {
   return c;
 }
 
-const json = (data: unknown): Response =>
-  new Response(JSON.stringify(data), { headers: { 'content-type': 'application/json' } });
+const json = (data: unknown, status = 200): Response =>
+  new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
 
 // Reenvía un upgrade de WebSocket al Durable Object `stub`, con el código en la URL.
 function forwardWs(stub: DurableObjectStub, request: Request, code: string): Promise<Response> {
@@ -36,6 +37,28 @@ export default {
       if (!ns) return json([]);
       const res = await ns.get(ns.idFromName('v1')).fetch('https://do/list');
       return new Response(res.body, { headers: { 'content-type': 'application/json' } });
+    }
+
+    // issue #12 · CARGAR partida guardada: valida el SaveData en el borde, reserva
+    // una sala libre y le entrega el guardado. Devuelve el código para unirse por WS.
+    if (url.pathname === '/api/rooms/from-save' && request.method === 'POST') {
+      let save: unknown;
+      try {
+        save = await request.json();
+      } catch {
+        return json({ error: 'El archivo no es un JSON válido.' }, 400);
+      }
+      const v = validateSaveData(save);
+      if (!v.ok) return json({ error: v.msg }, 400);
+      const body = JSON.stringify(v.save);
+      for (let i = 0; i < 15; i++) {
+        const code = genCode();
+        const stub = env.ROOM.get(env.ROOM.idFromName(code));
+        const res = await stub.fetch(`https://do/loadsave?code=${code}`, { method: 'POST', body });
+        if (res.ok) return json({ code });
+        // 409 = colisión de código (DO ya en uso): probar otro
+      }
+      return json({ error: 'No hay códigos de sala libres, intenta de nuevo.' }, 503);
     }
 
     if (url.pathname === '/ws') {

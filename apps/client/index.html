@@ -82,10 +82,12 @@
         <!-- acciones secundarias: lado a lado y ancladas abajo para que la
              columna derecha no quede con aire muerto bajo la lista de salas -->
         <div class="home-side-actions">
+          <button id="btn-load-save" class="btn ghost small">📥 Continuar partida guardada</button>
           <button id="btn-load-replay" class="btn ghost small">📂 Cargar repetición</button>
           <button id="btn-bestiary" class="btn ghost small">📖 Guía del juego</button>
         </div>
         <input id="replay-file" type="file" accept="application/json,.json" hidden />
+        <input id="save-file" type="file" accept="application/json,.json" hidden />
       </aside>
       </div>
       </div>
@@ -102,41 +104,56 @@
           <p class="hint">Comparte el código o el enlace para que entren los demás</p>
         </header>
 
+        <!-- issue #12 · banner de una partida CARGADA (guardado): mapa, oleada y
+             nº de defensores. Solo visible en el lobby de reanudación. -->
+        <div id="lobby-saved-banner" class="saved-banner" hidden></div>
+
         <div class="lobby-cols">
           <div class="lobby-box lobby-players-box">
-            <h3>Jugadores</h3>
+            <h3 id="lobby-players-title">Jugadores</h3>
             <ul id="lobby-players" class="player-list"></ul>
+            <div id="lobby-spectators-box" hidden>
+              <h3>👁 Espectadores</h3>
+              <ul id="lobby-spectators" class="player-list"></ul>
+            </div>
+            <!-- issue #12 · slots reclamables del guardado (reemplaza la lista de
+                 jugadores en el lobby de reanudación) -->
+            <ul id="lobby-slots" class="player-list" hidden></ul>
+            <p id="lobby-slots-hint" class="hint" hidden>Adopta un defensor libre para controlarlo, o entra de espectador cuando empiece.</p>
           </div>
 
-          <div class="lobby-box lobby-maps-box">
+          <div class="lobby-box lobby-maps-box" id="lobby-maps-box">
             <h3>Mapa</h3>
             <div id="lobby-maps" class="map-grid"></div>
             <p id="lobby-map-desc" class="hint map-desc"></p>
           </div>
 
           <div class="lobby-box lobby-settings-box">
-            <h3>Modo</h3>
-            <div id="lobby-mode" class="seg">
-              <button data-value="classic">Clásico<small>36 oleadas</small></button>
-              <button data-value="endless">Infinito<small>récords</small></button>
-              <button data-value="horde">Horda 🌀<small>récords</small></button>
-            </div>
-            <h3>Dificultad</h3>
-            <div id="lobby-diff" class="seg">
-              <button data-value="easy">😊 Fácil</button>
-              <button data-value="normal">🙂 Normal</button>
-              <button data-value="hard">😈 Difícil</button>
-            </div>
-            <h3>Visibilidad</h3>
-            <div id="lobby-visibility" class="seg">
-              <button data-value="private">🔒 Privada<small>solo con el código</small></button>
-              <button data-value="public">🌐 Pública<small>aparece en la lista</small></button>
+            <div id="lobby-settings-fields">
+              <h3>Modo</h3>
+              <div id="lobby-mode" class="seg">
+                <button data-value="classic">Clásico<small>36 oleadas</small></button>
+                <button data-value="endless">Infinito<small>récords</small></button>
+                <button data-value="horde">Horda 🌀<small>récords</small></button>
+              </div>
+              <h3>Dificultad</h3>
+              <div id="lobby-diff" class="seg">
+                <button data-value="easy">😊 Fácil</button>
+                <button data-value="normal">🙂 Normal</button>
+                <button data-value="hard">😈 Difícil</button>
+              </div>
+              <h3>Visibilidad</h3>
+              <div id="lobby-visibility" class="seg">
+                <button data-value="private">🔒 Privada<small>solo con el código</small></button>
+                <button data-value="public">🌐 Pública<small>aparece en la lista</small></button>
+              </div>
             </div>
 
             <button id="btn-start" class="btn primary big">▶ ¡Empezar partida!</button>
             <button id="btn-ready" class="btn primary big" hidden>✅ Estoy listo</button>
             <p id="lobby-ready-status" class="hint" hidden></p>
             <p id="lobby-wait" class="hint" hidden>Esperando a que el anfitrión inicie…</p>
+            <p id="lobby-spectating" class="hint" hidden>👁 Estás en la zona de espectadores — el anfitrión puede traerte de vuelta como jugador.</p>
             <button id="btn-leave" class="btn ghost">Salir de la sala</button>
           </div>
 
@@ -288,6 +305,7 @@
           <h2>⏸ Pausa</h2>
           <p id="pause-by"></p>
           <button id="btn-resume" class="btn primary" hidden>Reanudar</button>
+          <button id="btn-save-pause" class="btn ghost small">💾 Guardar partida</button>
           <button id="btn-bestiary-pause" class="btn ghost small">📖 Guía</button>
           <button id="btn-abandon-pause" class="btn danger small">🚪 Abandonar partida</button>
         </div>
@@ -301,6 +319,7 @@
           <div id="end-stats"></div>
           <div class="end-actions">
             <button id="btn-watch-replay" class="btn ghost big" hidden>🎬 Ver repetición</button>
+            <button id="btn-save-end" class="btn ghost big" hidden>💾 Guardar partida</button>
             <button id="btn-back-lobby" class="btn primary big">Volver al lobby</button>
           </div>
         </div>

@@ -1,4 +1,12 @@
-import { MAPS, type EndStats, type HighscoreEntry, type MapDef, type PublicRoomInfo, type RoomSettings } from '@td/shared';
+import {
+  MAPS,
+  type EndStats,
+  type HighscoreEntry,
+  type MapDef,
+  type PublicRoomInfo,
+  type RoomSettings,
+  type SavedLobbyInfo,
+} from '@td/shared';
 import { net, wsPathCreate, wsPathJoin } from './net.js';
 import { roomPrevToken, saveName, store } from './store.js';
 
@@ -353,8 +361,21 @@ export function initLobby(): void {
     net.send({ type: 'set_ready', ready: !(me?.ready ?? false) });
   });
 
-  // expulsar / ceder anfitrión (solo anfitrión): delegación en la lista de jugadores
+  // banear pide confirmación (es irreversible para ese token); compartido entre
+  // la lista de jugadores y la zona de espectadores. true si consumió el clic.
+  const handleBanClick = (e: Event): boolean => {
+    const banBtn = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-ban]');
+    if (!banBtn || !store.isHost) return false;
+    const name = banBtn.dataset.name ?? 'este jugador';
+    if (confirm(`¿Banear a ${name}? No podrá volver a entrar a esta sala (expulsar sí le permite volver como espectador).`))
+      net.send({ type: 'ban_player', playerId: banBtn.dataset.ban! });
+    return true;
+  };
+
+  // expulsar / banear / ceder anfitrión / mover a espectadores (solo anfitrión):
+  // delegación en la lista de jugadores
   $('lobby-players').addEventListener('click', (e) => {
+    if (handleBanClick(e)) return;
     const kickBtn = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-kick]');
     if (kickBtn && store.isHost) {
       net.send({ type: 'kick_player', playerId: kickBtn.dataset.kick! });
@@ -365,7 +386,28 @@ export function initLobby(): void {
       const name = cedeBtn.title.replace('Ceder anfitrión a ', '');
       if (confirm(`¿Ceder la sala a ${name}? Ya no podrás iniciar la partida ni cambiar los ajustes.`))
         net.send({ type: 'transfer_host', playerId: cedeBtn.dataset.cede! });
+      return;
     }
+    const spectateBtn = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-spectate]');
+    if (spectateBtn && store.isHost) {
+      net.send({ type: 'move_to_spectator', playerId: spectateBtn.dataset.spectate! });
+    }
+  });
+
+  // traer de vuelta como jugador / banear (solo anfitrión): delegación en la zona
+  // de espectadores (es un <ul> hermano de #lobby-players, no un descendiente)
+  $('lobby-spectators').addEventListener('click', (e) => {
+    if (handleBanClick(e)) return;
+    const toPlayerBtn = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-toplayer]');
+    if (toPlayerBtn && store.isHost) {
+      net.send({ type: 'move_to_player', spectatorId: toPlayerBtn.dataset.toplayer! });
+    }
+  });
+
+  // issue #12 · lobby de una partida CARGADA: adoptar un slot libre (delegación)
+  $('lobby-slots').addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-claim]');
+    if (btn) net.send({ type: 'claim_slot', slot: btn.dataset.claim! });
   });
 
   $('btn-leave').addEventListener('click', () => {
@@ -397,7 +439,21 @@ export function initLobby(): void {
 }
 
 export function renderLobby(): void {
-  const { players, settings } = store.lobby;
+  // issue #12 · lobby de una partida CARGADA: vista distinta (banner + slots)
+  if (store.lobby.saved) {
+    renderSavedLobby(store.lobby.saved);
+    return;
+  }
+  // lobby normal: asegurar que los elementos del modo «guardado» están ocultos
+  $('lobby-saved-banner').hidden = true;
+  $('lobby-slots').hidden = true;
+  $('lobby-slots-hint').hidden = true;
+  $('lobby-players').hidden = false;
+  $('lobby-players-title').textContent = 'Jugadores';
+  $('lobby-maps-box').hidden = false;
+  $('lobby-settings-fields').hidden = false;
+
+  const { players, spectators, settings } = store.lobby;
   $('lobby-code').textContent = store.roomCode;
 
   $('lobby-players').innerHTML = players
@@ -414,8 +470,19 @@ export function renderLobby(): void {
       const cede = store.isHost && !isMe && p.connected
         ? `<button class="cede-btn" data-cede="${p.id}" title="Ceder anfitrión a ${escapeHtml(p.name)}" aria-label="Ceder anfitrión">👑</button>`
         : '';
+      // expulsar (kick): lo saca de la sala, pero puede volver — solo de espectador
       const kick = store.isHost && !isMe
-        ? `<button class="kick-btn" data-kick="${p.id}" title="Expulsar a ${escapeHtml(p.name)}" aria-label="Expulsar">✕</button>`
+        ? `<button class="kick-btn" data-kick="${p.id}" title="Expulsar a ${escapeHtml(p.name)} (podrá volver como espectador)" aria-label="Expulsar">✕</button>`
+        : '';
+      // banear: lo saca y su token ya no puede volver a entrar de ninguna forma
+      const ban = store.isHost && !isMe
+        ? `<button class="ban-btn" data-ban="${p.id}" data-name="${escapeHtml(p.name)}" title="Banear a ${escapeHtml(p.name)} (no podrá volver)" aria-label="Banear">🚫</button>`
+        : '';
+      // mover a la zona de espectadores: para quien no quiere jugar la revancha,
+      // sin sacarlo de la sala. Solo CONECTADOS: sin socket no hay a quién
+      // reclasificar (el server lo rechaza igualmente).
+      const spectate = store.isHost && !isMe && !p.isHost && p.connected
+        ? `<button class="spectate-btn" data-spectate="${p.id}" title="Mover a ${escapeHtml(p.name)} a espectadores" aria-label="Mover a espectadores">👁</button>`
         : '';
       return `
       <li class="${p.connected ? '' : 'offline'}">
@@ -423,10 +490,14 @@ export function renderLobby(): void {
         <span class="player-name">${escapeHtml(p.name)}${isMe ? ' (tú)' : ''}</span>
         ${badge}
         ${cede}
+        ${spectate}
         ${kick}
+        ${ban}
       </li>`;
     })
     .join('');
+
+  renderSpectatorZone();
 
   renderMapCards('lobby-maps', settings.mapId, !store.isHost, (id) => sendSettings({ mapId: id }));
   $('lobby-map-desc').textContent = mapDesc(settings.mapId);
@@ -444,21 +515,112 @@ export function renderLobby(): void {
   const readyBtn = $<HTMLButtonElement>('btn-ready');
   const status = $('lobby-ready-status');
 
+  // en la zona de espectadores del lobby no hay «Listo» que marcar: solo se
+  // espera a que el anfitrión te traiga de vuelta como jugador
   startBtn.hidden = !store.isHost;
-  readyBtn.hidden = store.isHost;
-  $('lobby-wait').hidden = store.isHost;
+  readyBtn.hidden = store.isHost || store.spectator;
+  $('lobby-wait').hidden = store.isHost || store.spectator;
+  $('lobby-spectating').hidden = !store.spectator;
 
   if (store.isHost) {
     startBtn.disabled = !allReady;
     startBtn.textContent = allReady ? '▶ ¡Empezar partida!' : '⏳ Esperando a que todos estén listos…';
     status.hidden = others.length === 0;
     status.textContent = others.length > 0 ? `${readyCount}/${others.length} jugadores listos` : '';
-  } else {
+  } else if (!store.spectator) {
     const iAmReady = me?.ready ?? false;
     readyBtn.classList.toggle('active', iAmReady);
     readyBtn.textContent = iAmReady ? '⏳ Cancelar «Listo»' : '✅ Estoy listo';
     status.hidden = true;
+  } else {
+    status.hidden = true;
   }
+}
+
+// issue #12 · lobby de una partida CARGADA (guardado): banner con el resumen y
+// lista de slots reclamables. Cada jugador recupera su slot por token (auto) o
+// adopta uno libre. El anfitrión (quien cargó) reanuda cuando quiera.
+function renderSavedLobby(saved: SavedLobbyInfo): void {
+  $('lobby-code').textContent = store.roomCode;
+
+  const mapName = MAPS.find((m) => m.id === saved.mapId)?.name ?? saved.mapId;
+  const n = saved.slots.length;
+  const banner = $('lobby-saved-banner');
+  banner.hidden = false;
+  banner.innerHTML = `<b>📥 Partida guardada</b> · 🗺 ${escapeHtml(mapName)} · ${
+    MODE_LABELS[saved.mode] ?? escapeHtml(saved.mode)
+  } · ${DIFF_EMOJI[saved.difficulty] ?? ''} ${DIFF_LABELS[saved.difficulty] ?? escapeHtml(saved.difficulty)} · ⚔️ oleada ${
+    saved.wave
+  } · 🛡 ${n} defensor${n === 1 ? '' : 'es'}`;
+
+  // ocultar la edición de ajustes (mapa/modo/dificultad los fija el guardado)
+  $('lobby-maps-box').hidden = true;
+  $('lobby-settings-fields').hidden = true;
+
+  // slots en lugar de la lista de jugadores
+  $('lobby-players').hidden = true;
+  $('lobby-players-title').textContent = 'Defensores';
+  const slotsEl = $('lobby-slots');
+  slotsEl.hidden = false;
+  $('lobby-slots-hint').hidden = false;
+  const nameById = new Map(store.lobby.players.map((p) => [p.id, p.name]));
+  slotsEl.innerHTML = saved.slots
+    .map((s) => {
+      const mine = s.claimedBy === store.playerId;
+      const claimedName = s.claimedBy ? nameById.get(s.claimedBy) ?? 'alguien' : null;
+      const status = mine
+        ? '<span class="ready-tag on">✅ tú</span>'
+        : claimedName
+          ? `<span class="ready-tag on">👤 ${escapeHtml(claimedName)}</span>`
+          : `<button class="btn small primary" data-claim="${s.id}">Adoptar</button>`;
+      return `<li>
+        <span class="player-dot" style="background:${s.color};color:${s.color}"></span>
+        <span class="player-name">${escapeHtml(s.name)}</span>
+        ${status}
+      </li>`;
+    })
+    .join('');
+
+  // la zona de espectadores también existe aquí (benchados o expulsados que
+  // volvieron): misma lista y botones 🎮/🚫 que en el lobby normal
+  renderSpectatorZone();
+
+  // controles: el anfitrión reanuda; el resto espera
+  const startBtn = $<HTMLButtonElement>('btn-start');
+  const readyBtn = $<HTMLButtonElement>('btn-ready');
+  startBtn.hidden = !store.isHost;
+  startBtn.disabled = false;
+  startBtn.textContent = '▶ ¡Reanudar partida!';
+  readyBtn.hidden = true;
+  $('lobby-ready-status').hidden = true;
+  $('lobby-wait').hidden = store.isHost;
+}
+
+// zona de espectadores del lobby (normal o de guardado): solo visible cuando hay
+// alguien ahí. El anfitrión puede traerlos de vuelta como jugador (🎮, respetando
+// MAX_PLAYERS en el server) o banearlos (🚫).
+function renderSpectatorZone(): void {
+  const spectators = store.lobby.spectators;
+  $('lobby-spectators-box').hidden = spectators.length === 0;
+  $('lobby-spectators').innerHTML = spectators
+    .map((s) => {
+      const isMe = s.id === store.playerId;
+      const toPlayer = store.isHost && !isMe
+        ? `<button class="cede-btn" data-toplayer="${s.id}" title="Traer a ${escapeHtml(s.name)} como jugador" aria-label="Traer como jugador">🎮</button>`
+        : '';
+      // banear también desde la zona de espectadores (p. ej. un expulsado que
+      // volvió de espectador y sigue molestando en el chat)
+      const ban = store.isHost && !isMe
+        ? `<button class="ban-btn" data-ban="${s.id}" data-name="${escapeHtml(s.name)}" title="Banear a ${escapeHtml(s.name)} (no podrá volver)" aria-label="Banear">🚫</button>`
+        : '';
+      return `
+      <li>
+        <span class="player-name">👁 ${escapeHtml(s.name)}${isMe ? ' (tú)' : ''}</span>
+        ${toPlayer}
+        ${ban}
+      </li>`;
+    })
+    .join('');
 }
 
 // ---------- fin de partida ----------
