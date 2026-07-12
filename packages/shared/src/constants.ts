@@ -189,6 +189,21 @@ export const WOOD_PRICE_REVERT = 0.05; // reversión hacia la base al fin de ole
 export const ASSIST_SHARE = 0.25;
 export const ASSIST_MIN_DMG_FRAC = 0.35;
 
+// ---------- MODO TURBO ⚡ (issue #14, "como en Dota 2") ----------
+// Filosofía: el Turbo NO es velocidad de reloj (eso ya lo dan x1/x2/x3). Es LA MISMA
+// partida —mismos enemigos, misma vida, mismo reto— con la ECONOMÍA COMPRIMIDA y
+// menos tiempos muertos: más botín y madera por baja/oleada, e interludios a la
+// mitad. Llegas a los "juguetes" (Rango II, fusiones) hacia la oleada ~12-15 en vez
+// de al final. El HP enemigo se queda INTACTO a propósito: comprimimos el ritmo, no
+// bajamos la dificultad. Solo aplica a CLÁSICO e INFINITO; la HORDA lo ignora (su
+// economía de bucle es otro animal, ver sanitizeSettings). Por defecto OFF, así que
+// no cambia ninguna partida existente ni el BALANCE_VERSION (sigue en 18).
+// Las partidas turbo NO envían récord (más oro = tabla aparte; v1 = nada).
+export const TURBO_BOUNTY_MULT = 1.75; // ×botín por baja (mismo punto que waveBountyMult)
+export const TURBO_WAVE_BONUS_MULT = 1.5; // ×bono de fin de oleada
+export const TURBO_WOOD_MULT = 1.5; // el orco tala más rápido (donde se aplican ORC_RATES)
+export const TURBO_INTERLUDE_MULT = 0.5; // interludios a la mitad (primero y normales)
+
 // oro de entrada para quien se une con la partida ya empezada
 export const midJoinGold = (wave: number) => 180 + wave * 22;
 

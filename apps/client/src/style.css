@@ -560,6 +560,22 @@ html, body {
 @keyframes wood-attn {
   50% { box-shadow: 0 0 12px rgba(255, 213, 79, 0.5); border-color: rgba(255, 213, 79, 0.7); }
 }
+/* MODO TURBO ⚡ (issue #14): distintivo del HUD — pill ámbar con brillo suave para
+   que se lea de un vistazo sin robarle protagonismo a vidas/oleada/oro */
+.stat.turbo {
+  color: #1b1205;
+  background: linear-gradient(180deg, #ffd54f, #ffb300);
+  border-color: rgba(255, 179, 0, 0.85);
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+/* etiqueta ⚡ en la lista de salas públicas (misma píldora que el resto de tags) */
+.room-tag.turbo {
+  color: #1b1205;
+  background: linear-gradient(180deg, #ffd54f, #ffb300);
+  border-color: rgba(255, 179, 0, 0.85);
+  font-weight: 800;
+}
 
 /* ---------- mercado global de madera ---------- */
 #market-panel {

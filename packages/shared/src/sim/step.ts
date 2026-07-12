@@ -39,6 +39,10 @@ import {
   SHRED_RADIUS,
   SPELL_IMMUNE_TESLA_MULT,
   TICK_RATE,
+  TURBO_BOUNTY_MULT,
+  TURBO_INTERLUDE_MULT,
+  TURBO_WAVE_BONUS_MULT,
+  TURBO_WOOD_MULT,
   WAVE_BONUS_BASE,
   WAVE_BONUS_PER_WAVE,
   ORC_RATES,
@@ -99,8 +103,11 @@ function spawnEnemy(
     poisonUntil: 0,
     poisonSrc: 0,
     // F5.1 · el modo viaja al botín: en endless el multiplicador gana su término
-    // superlineal desde la oleada 30 (waveBountyMult lo ignora en classic/horde)
-    bountyMult: waveBountyMult(Math.max(1, state.wave), state.mode),
+    // superlineal desde la oleada 30 (waveBountyMult lo ignora en classic/horde).
+    // MODO TURBO ⚡: ×TURBO_BOUNTY_MULT en el MISMO punto donde se aplica
+    // waveBountyMult, así el bono viaja con el enemigo (lo heredan sus crías y lo
+    // usan por igual killEnemy, el oro de asistencia y el aura del Alquimista).
+    bountyMult: waveBountyMult(Math.max(1, state.wave), state.mode) * (state.turbo ? TURBO_BOUNTY_MULT : 1),
     elite: false,
     affixes: [],
     speedMult: 1,
@@ -1111,8 +1118,13 @@ function stepWaves(state: GameState, ctx: SimContext, events: GameEvent[]): void
   const waveCleared =
     state.spawnQueue.length === 0 && (state.mode === 'horde' || state.enemies.length === 0);
   if (waveCleared) {
-    // el bono se multiplica en las oleadas bendecidas (riesgo/recompensa)
-    const bonus = Math.round((WAVE_BONUS_BASE + state.wave * WAVE_BONUS_PER_WAVE) * state.blessedBonusMult);
+    // el bono se multiplica en las oleadas bendecidas (riesgo/recompensa) y, en el
+    // MODO TURBO ⚡, por TURBO_WAVE_BONUS_MULT (economía comprimida)
+    const bonus = Math.round(
+      (WAVE_BONUS_BASE + state.wave * WAVE_BONUS_PER_WAVE) *
+        state.blessedBonusMult *
+        (state.turbo ? TURBO_WAVE_BONUS_MULT : 1),
+    );
     state.blessedBonusMult = 1;
     for (const p of state.players) {
       p.gold += bonus;
@@ -1149,7 +1161,9 @@ function stepWaves(state: GameState, ctx: SimContext, events: GameEvent[]): void
     }
 
     state.waveState = 'interlude';
-    state.interludeLeft = INTERLUDE_SEC * TICK_RATE;
+    // MODO TURBO ⚡: interludios a la mitad (menos tiempo muerto entre oleadas;
+    // llamar-antes con «¡Ya!» sigue pagando 2🪙/s del restante, que ahora es menor)
+    state.interludeLeft = Math.round(INTERLUDE_SEC * TICK_RATE * (state.turbo ? TURBO_INTERLUDE_MULT : 1));
   }
 }
 
@@ -1349,7 +1363,9 @@ export function stepGame(
   // rápido a más nivel, F5.5). Aritmética pura por tick (determinista); también
   // para desconectados, como el ingreso de las minas.
   for (const p of state.players) {
-    p.wood += ORC_RATES[Math.min(p.orcLevel, ORC_RATES.length) - 1] / TICK_RATE;
+    // MODO TURBO ⚡: el orco tala ×TURBO_WOOD_MULT más rápido (donde se aplican ORC_RATES)
+    const rate = ORC_RATES[Math.min(p.orcLevel, ORC_RATES.length) - 1] * (state.turbo ? TURBO_WOOD_MULT : 1);
+    p.wood += rate / TICK_RATE;
   }
   applyCommands(state, ctx.map, ctx.placement, commands, events);
   stepWaves(state, ctx, events);

@@ -20,6 +20,8 @@ import {
   SENTRY_DURATION_SEC,
   TOWER_ORDER,
   TOWERS,
+  TURBO_BOUNTY_MULT,
+  TURBO_WOOD_MULT,
   WOOD_COST_RANK2,
   WOOD_COST_SPEC,
 } from '@td/shared';
@@ -217,6 +219,13 @@ function buildElites(): void {
         <div class="ecard-head"><span class="eicon">♾️</span><span class="ename">Botín del Infinito</span></div>
         <p class="edesc">En modo <b>Infinito</b>, desde la <b>oleada ${ENDLESS_BOUNTY_FROM}</b> el botín gana un extra que
         crece compuesto por oleada: cuanto más aguantes, más paga cada baja (con tope). Es lo que sostiene la economía tardía.</p>
+      </div>
+      <div class="enemy-card">
+        <div class="ecard-head"><span class="eicon">⚡</span><span class="ename">Modo Turbo</span></div>
+        <p class="edesc">Se activa en el <b>lobby</b> (clásico e infinito; no en horda). Es <b>la misma partida</b>
+        —mismos enemigos, misma vida— con la economía comprimida: <b>botín ×${TURBO_BOUNTY_MULT}</b>, <b>madera ×${TURBO_WOOD_MULT}</b>
+        e <b>interludios a la mitad</b>. Llegas a los "juguetes" (Rango II, fusiones) mucho antes; el reto queda intacto,
+        solo dura la mitad de tiempo. Las partidas turbo <b>no puntúan récords</b>.</p>
       </div>
     </div>
     <div class="guide-intro">

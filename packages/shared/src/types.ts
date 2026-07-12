@@ -391,6 +391,10 @@ export interface GameState {
   mapId: string;
   mode: GameMode;
   difficulty: Difficulty;
+  // MODO TURBO ⚡ (issue #14): economía comprimida e interludios a la mitad. La
+  // fija createGame (normalizada: SIEMPRE false en horda). La sim la lee para los
+  // multiplicadores de botín/bono/madera y los interludios; el HP no cambia.
+  turbo: boolean;
   rng: number; // estado del RNG (mulberry32)
   lives: number;
   maxLives: number;
@@ -490,6 +494,9 @@ export interface ReplayData {
   finalTick: number; // tick en el que la partida terminó (para el seek y el assert)
   victory: boolean;
   wave: number; // oleada alcanzada
+  // MODO TURBO ⚡ (issue #14): la reconstrucción DEBE conocerlo (los multiplicadores
+  // y los interludios cambian el estado). Opcional al final → replays previos = false.
+  turbo?: boolean;
 }
 
 // ---------- Guardar / cargar partida (issue #12) ----------
@@ -525,6 +532,9 @@ export interface SaveData {
   wave: number; // oleada alcanzada (para el lobby de carga)
   salt: string; // sal del hash de tokens (hex; no secreta)
   slots: SaveSlot[]; // identidades reclamables por token al cargar
+  // MODO TURBO ⚡ (issue #14): igual que en ReplayData, el fast-forward al reanudar
+  // tiene que reconstruir con el mismo turbo. Opcional al final → guardados previos = false.
+  turbo?: boolean;
 }
 
 // ---------- Eventos (sim -> clientes, efímeros por tick) ----------

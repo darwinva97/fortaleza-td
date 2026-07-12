@@ -160,7 +160,7 @@ export class RoomDO {
   private speed = 1;
   // ---- grabación de la repetición (replay) de la partida en curso ----
   private replaySeed = 0;
-  private replayInit: { mapId: string; mode: RoomSettings['mode']; difficulty: RoomSettings['difficulty']; players: { id: string; name: string; color: string }[] } | null = null;
+  private replayInit: { mapId: string; mode: RoomSettings['mode']; difficulty: RoomSettings['difficulty']; turbo: boolean; players: { id: string; name: string; color: string }[] } | null = null;
   private replayLog: ReplayEntry[] = [];
   // issue #12 · partida CARGADA de un guardado, esperando en el lobby de carga.
   // Mientras no-null y sin `game`, la sala está en modo «reanudar guardado».
@@ -223,7 +223,9 @@ export class RoomDO {
       this.initialized = true;
       this.code = (url.searchParams.get('code') ?? '').toUpperCase();
       this.savedGame = clean;
-      this.settings = sanitizeSettings({ mapId: clean.mapId, mode: clean.mode, difficulty: clean.difficulty });
+      // conservar el turbo del guardado para que el lobby de carga muestre el ⚡ y la
+      // reanudación arranque en modo turbo (sanitizeSettings lo ignora en horda igual)
+      this.settings = sanitizeSettings({ mapId: clean.mapId, mode: clean.mode, difficulty: clean.difficulty, turbo: clean.turbo });
       return new Response('ok');
     }
 
@@ -622,6 +624,7 @@ export class RoomDO {
       players: connected,
       inGame: this.game !== null && !this.game.over,
       wave: this.game && !this.game.over ? this.game.wave : 0,
+      turbo: this.settings.turbo === true, // MODO TURBO ⚡: distintivo en la lista de salas públicas
     };
     void stub
       .fetch('https://do/report', { method: 'POST', body: JSON.stringify(info) })
@@ -643,6 +646,7 @@ export class RoomDO {
       mapId: this.game!.mapId,
       mode: this.game!.mode,
       difficulty: this.game!.difficulty,
+      turbo: this.game!.turbo, // MODO TURBO ⚡: el cliente pinta el distintivo ⚡ en el HUD
       players: this.game!.players.map((p) => ({ id: p.id, name: p.name, color: p.color })),
       youAre: forPlayerId,
     };
@@ -659,6 +663,9 @@ export class RoomDO {
       this.settings.difficulty,
       seed,
       this.players.map((p) => ({ id: p.id, name: p.name, color: p.color })),
+      // MODO TURBO ⚡: ya normalizado por sanitizeSettings (false en horda); createGame
+      // lo vuelve a normalizar como defensa
+      this.settings.turbo,
     );
     this.simCtx = makeSimContext(map, makePlacementContext(map));
     this.pendingCmds = [];
@@ -685,6 +692,7 @@ export class RoomDO {
       mapId: map.id,
       mode: this.settings.mode,
       difficulty: this.settings.difficulty,
+      turbo: this.game.turbo, // el valor YA normalizado por createGame (false en horda)
       players: this.game.players.map((p) => ({ id: p.id, name: p.name, color: p.color })),
     };
     this.replayLog = [];
@@ -718,6 +726,7 @@ export class RoomDO {
       finalTick: save.tick,
       victory: false,
       wave: save.wave,
+      turbo: save.turbo ?? false, // MODO TURBO ⚡: reconstruir con el mismo turbo del guardado
     };
     const sim = makeReplaySim(rdata);
     const target = save.tick;
@@ -735,7 +744,7 @@ export class RoomDO {
 
     // 2) continuar la GRABACIÓN: el log del archivo + lo nuevo = historial completo
     this.replaySeed = save.seed;
-    this.replayInit = { mapId: save.mapId, mode: save.mode, difficulty: save.difficulty, players: save.players };
+    this.replayInit = { mapId: save.mapId, mode: save.mode, difficulty: save.difficulty, turbo: save.turbo ?? false, players: save.players };
     this.replayLog = save.log.slice();
     this.resumed = true; // partida reanudada → no duplicar récord al terminar
 
@@ -851,6 +860,7 @@ export class RoomDO {
       wave,
       salt,
       slots,
+      turbo: init.turbo, // MODO TURBO ⚡: el guardado conserva el turbo para reanudar igual
     };
     this.sendTo(ws, { type: 'save_info', save });
   }
@@ -904,6 +914,7 @@ export class RoomDO {
       finalTick: g.tick,
       victory: g.over?.victory ?? false,
       wave: g.wave,
+      turbo: g.turbo, // MODO TURBO ⚡: el replay tiene que reconstruir con el mismo turbo
     };
   }
 
@@ -936,7 +947,10 @@ export class RoomDO {
     // récords: endless (Infinito) y horde (Horda) puntúan por oleada alcanzada.
     // Una partida REANUDADA de un guardado NO envía récord: la partida original ya
     // pudo mandarlo, y sumar otro con la misma oleada duplicaría la entrada.
-    if (!this.resumed && (g.mode === 'endless' || g.mode === 'horde')) {
+    // MODO TURBO ⚡: las partidas turbo TAMPOCO puntúan — su economía comprimida da
+    // más oro con el mismo reto, así que compararlas con las normales sería injusto
+    // (irían a una tabla aparte; en v1, sencillamente no envían récord).
+    if (!this.resumed && !g.turbo && (g.mode === 'endless' || g.mode === 'horde')) {
       void saveScore(this.env, {
         names: g.players.map((p) => p.name),
         wave: g.wave,

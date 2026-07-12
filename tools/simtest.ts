@@ -20,6 +20,7 @@ import {
   placementError,
   rank2Cost,
   replayTo,
+  sanitizeSettings,
   stepGame,
   towerFires,
   towerLevel,
@@ -33,15 +34,23 @@ import {
   DIFF_HP_MULT,
   POISON_PCT_CAP_DPS,
   GROWTH_CAP,
+  FIRST_INTERLUDE_SEC,
   FUSION_ORDER,
   FUSIONS,
   HORDE_CAP,
+  INTERLUDE_SEC,
   MAPS,
   SENTRY_DURATION_SEC,
   START_LIVES,
   TICK_RATE,
   TOWERS,
   TOWER_ORDER,
+  TURBO_BOUNTY_MULT,
+  TURBO_INTERLUDE_MULT,
+  TURBO_WAVE_BONUS_MULT,
+  TURBO_WOOD_MULT,
+  WAVE_BONUS_BASE,
+  WAVE_BONUS_PER_WAVE,
   ORC_RATES,
   ORC_UPGRADE_COSTS,
   START_WOOD,
@@ -453,20 +462,28 @@ function botCommands(
     }
 
   }
-  // acelerar: llamar la oleada cuando falten menos de 8 segundos
-  if (state.interludeLeft < TICK_RATE * 8 && state.interludeLeft > TICK_RATE * 2) {
+  // acelerar: llamar la oleada cuando el bot ya "terminó de construir" (le quedan
+  // pocos segundos de interludio). En TURBO ⚡ el interludio ya viene a la MITAD, así
+  // que el umbral debe ser MÁS BAJO: con 8s el bot llamaría la oleada en el PRIMER
+  // tick del interludio turbo (que dura ~6.5s) y se quedaría sin ventana para gastar
+  // su presupuesto (solo hace 3 acciones/tick) — colapsaba su economía y perdía en
+  // el muro del lategame. Un humano no tiene ese problema (construye tocando, no a 3
+  // acciones/tick). Con el umbral turbo-consciente el bot conserva el grueso del
+  // interludio corto para construir y GANA más holgado (más oro, mismo HP).
+  const callBelow = state.turbo ? TICK_RATE * 3 : TICK_RATE * 8;
+  if (state.interludeLeft < callBelow && state.interludeLeft > TICK_RATE * 2) {
     cmds.push({ playerId: state.players[0].id, cmd: { kind: 'call_wave' } });
   }
   return cmds;
 }
 
-function runScenario(mapId = MAP_ID, maxTicks = MAX_TICKS, seed = SEED): { state: GameState; totalKills: number; totalLeaks: number; maxWave: number; eventCounts: Map<string, number>; leaksByWave: Map<number, number>; sentryPlaces: number } {
+function runScenario(mapId = MAP_ID, maxTicks = MAX_TICKS, seed = SEED, turbo = false): { state: GameState; totalKills: number; totalLeaks: number; maxWave: number; eventCounts: Map<string, number>; leaksByWave: Map<number, number>; sentryPlaces: number } {
   const map = getMap(mapId);
   const simCtx = makeSimContext(map, makePlacementContext(map));
   const state = createGame(mapId, 'classic', 'normal', seed, [
     { id: 'p1', name: 'Ana', color: '#4fc3f7' },
     { id: 'p2', name: 'Beto', color: '#f06292' },
-  ]);
+  ], turbo);
   const candidates = buildCellCandidates(mapId);
   const counters = new Map<string, number>();
   const eventCounts = new Map<string, number>();
@@ -3008,6 +3025,115 @@ console.log('— F5.1 · retoques de fusiones: literales del rebalance (guard de
   // el Fragmentador es FÍSICO a propósito (asedio contradiría su rol anti-enjambre)
   assert(attackTypeOf({ type: 'archer', fusion: FUSION_ORDER.indexOf('shredder') }) === 'fisico', 'el Fragmentador hereda físico (rol anti-enjambre)');
   assert(attackTypeOf({ type: 'sniper', fusion: FUSION_ORDER.indexOf('siegeeye') }) === 'perforante', 'el Ojo de Asedio hereda perforante (cazatanques)');
+}
+
+console.log('— MODO TURBO ⚡ (issue #14): multiplicadores exactos, determinismo y victoria —');
+{
+  // (a) MULTIPLICADORES EXACTOS comparando turbo ON vs OFF con la MISMA semilla.
+  const TSEED = 424242;
+  const map = getMap('sendero');
+  const simCtx = makeSimContext(map, makePlacementContext(map));
+
+  // botín: el turbo multiplica bountyMult EN EL MISMO punto que waveBountyMult (al
+  // nacer el enemigo). Generamos un goblin en la oleada 1 y leemos su bountyMult.
+  function spawnBountyMult(turbo: boolean): number {
+    const st = createGame('sendero', 'classic', 'normal', TSEED, [{ id: 'p1', name: 'A', color: '#fff' }], turbo);
+    st.wave = 1;
+    st.waveState = 'active';
+    st.pendingWave = [];
+    st.spawnQueue = [{ type: 'goblin', delay: 0, pathIdx: 0 }];
+    st.spawnCooldown = 0;
+    st.nextId = 5000;
+    stepGame(st, simCtx, []);
+    return st.enemies[0].bountyMult;
+  }
+  const bmOff = spawnBountyMult(false);
+  const bmOn = spawnBountyMult(true);
+  assert(bmOff === 1, `turbo OFF: bountyMult de la oleada 1 es 1 (fue ${bmOff})`);
+  assert(
+    Math.abs(bmOn - bmOff * TURBO_BOUNTY_MULT) < 1e-9,
+    `turbo ON: el botín se multiplica ×${TURBO_BOUNTY_MULT} exacto (${bmOff} → ${bmOn})`,
+  );
+
+  // bono de fin de oleada + interludio NORMAL: forzamos la oleada 1 "vacía" (sin cola
+  // ni enemigos) → un stepGame la da por completada y emite wave_end + reinicia el
+  // interludio. Leemos ambos con turbo ON/OFF.
+  function clearWaveProbe(turbo: boolean): { bonus: number; interlude: number } {
+    const st = createGame('sendero', 'classic', 'normal', TSEED, [{ id: 'p1', name: 'A', color: '#fff' }], turbo);
+    st.wave = 1;
+    st.waveState = 'active';
+    st.pendingWave = [];
+    st.spawnQueue = [];
+    st.enemies = [];
+    const events = stepGame(st, simCtx, []);
+    const we = events.find((e) => e.e === 'wave_end') as Extract<GameEvent, { e: 'wave_end' }> | undefined;
+    return { bonus: we?.bonus ?? -1, interlude: st.interludeLeft };
+  }
+  const clrOff = clearWaveProbe(false);
+  const clrOn = clearWaveProbe(true);
+  const baseBonus = WAVE_BONUS_BASE + 1 * WAVE_BONUS_PER_WAVE; // oleada 1
+  assert(clrOff.bonus === baseBonus, `turbo OFF: bono de fin de oleada 1 = ${baseBonus} (fue ${clrOff.bonus})`);
+  assert(
+    clrOn.bonus === Math.round(baseBonus * TURBO_WAVE_BONUS_MULT),
+    `turbo ON: el bono de fin de oleada se multiplica ×${TURBO_WAVE_BONUS_MULT} (${clrOff.bonus} → ${clrOn.bonus})`,
+  );
+  // interludio NORMAL a la mitad
+  assert(clrOff.interlude === INTERLUDE_SEC * TICK_RATE, `turbo OFF: interludio normal = ${INTERLUDE_SEC * TICK_RATE} ticks (fue ${clrOff.interlude})`);
+  assert(
+    clrOn.interlude === Math.round(INTERLUDE_SEC * TICK_RATE * TURBO_INTERLUDE_MULT),
+    `turbo ON: el interludio normal es a la mitad (${clrOff.interlude} → ${clrOn.interlude} ticks)`,
+  );
+
+  // interludio INICIAL (createGame) también a la mitad
+  const firstOff = createGame('sendero', 'classic', 'normal', TSEED, [{ id: 'p1', name: 'A', color: '#fff' }], false).interludeLeft;
+  const firstOn = createGame('sendero', 'classic', 'normal', TSEED, [{ id: 'p1', name: 'A', color: '#fff' }], true).interludeLeft;
+  assert(firstOff === FIRST_INTERLUDE_SEC * TICK_RATE, `turbo OFF: primer interludio = ${FIRST_INTERLUDE_SEC * TICK_RATE} ticks (fue ${firstOff})`);
+  assert(
+    firstOn === Math.round(FIRST_INTERLUDE_SEC * TICK_RATE * TURBO_INTERLUDE_MULT),
+    `turbo ON: el primer interludio es a la mitad (${firstOff} → ${firstOn} ticks)`,
+  );
+
+  // madera: el orco tala ×TURBO_WOOD_MULT. Corremos 150 ticks sin comandos (dentro del
+  // primer interludio en ambos casos) y comparamos el incremento de madera.
+  function woodDelta(turbo: boolean): number {
+    const st = createGame('sendero', 'classic', 'normal', TSEED, [{ id: 'p1', name: 'A', color: '#fff' }], turbo);
+    const before = st.players[0].wood;
+    for (let i = 0; i < 150; i++) stepGame(st, simCtx, []);
+    return st.players[0].wood - before;
+  }
+  const woodOff = woodDelta(false);
+  const woodOn = woodDelta(true);
+  assert(
+    Math.abs(woodOn - woodOff * TURBO_WOOD_MULT) < 1e-9,
+    `turbo ON: la tala de madera se multiplica ×${TURBO_WOOD_MULT} exacto (${woodOff.toFixed(3)} → ${woodOn.toFixed(3)})`,
+  );
+
+  // (b) DETERMINISMO: dos corridas turbo con la MISMA semilla dan el mismo estado.
+  const turboWin = runScenario(MAP_ID, MAX_TICKS, SEED, true);
+  const turboWin2 = runScenario(MAP_ID, MAX_TICKS, SEED, true);
+  const hashT1 = JSON.stringify([turboWin.state.tick, turboWin.state.wave, turboWin.state.lives, turboWin.state.rng, turboWin.state.players.map((p) => [p.gold, p.wood]), turboWin.state.nextId]);
+  const hashT2 = JSON.stringify([turboWin2.state.tick, turboWin2.state.wave, turboWin2.state.lives, turboWin2.state.rng, turboWin2.state.players.map((p) => [p.gold, p.wood]), turboWin2.state.nextId]);
+  assert(hashT1 === hashT2, `la partida turbo es determinista (misma semilla → mismo estado final, tick ${turboWin.state.tick})`);
+
+  // (c) el bot GANA el clásico TURBO en normal con la MISMA semilla del gate (123456845)
+  // y lo hace MÁS HOLGADO que la normal (más oro, mismo HP): la normal gana con 9 vidas,
+  // la turbo con 30 (llena). Sim más corto (menos ticks): los interludios a la mitad.
+  assert(turboWin.state.over?.victory === true, `el bot GANA el clásico TURBO en normal (oleada ${turboWin.maxWave}, ${turboWin.state.lives} vidas, over=${JSON.stringify(turboWin.state.over)})`);
+  assert(
+    turboWin.state.over?.victory === true && turboWin.state.lives >= a.state.lives,
+    `la victoria turbo es MÁS holgada que la normal (turbo ${turboWin.state.lives} vidas >= normal ${a.state.lives})`,
+  );
+  assert(turboWin.state.tick < a.state.tick, `la partida turbo dura MENOS ticks que la normal (${turboWin.state.tick} < ${a.state.tick})`);
+
+  // (d) la HORDA IGNORA el flag: sanitizeSettings lo descarta y createGame lo normaliza
+  // a false (su economía de bucle no admite la compresión turbo).
+  assert(sanitizeSettings({ mapId: 'sendero', mode: 'horde', difficulty: 'normal', turbo: true }).turbo === false, 'sanitizeSettings descarta el turbo en HORDA');
+  const hordeTurbo = createGame('sendero', 'horde', 'normal', TSEED, [{ id: 'p1', name: 'A', color: '#fff' }], true);
+  assert(hordeTurbo.turbo === false, 'createGame normaliza turbo=false en HORDA aunque se pida true');
+  assert(
+    hordeTurbo.interludeLeft === FIRST_INTERLUDE_SEC * TICK_RATE,
+    `en HORDA el interludio NO se recorta (${hordeTurbo.interludeLeft} == ${FIRST_INTERLUDE_SEC * TICK_RATE}): el flag se ignora`,
+  );
 }
 
 console.log('— Determinismo: misma semilla + mismos comandos → mismo estado —');

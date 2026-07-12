@@ -26,6 +26,11 @@ export interface RoomSettings {
   // curso se puede entrar a mirar). Opcional para no romper clientes viejos;
   // sanitizeSettings lo normaliza (por defecto: privada).
   public?: boolean;
+  // MODO TURBO ⚡ (issue #14): economía comprimida e interludios a la mitad, mismo
+  // reto (el HP no cambia). Aplica a clásico e infinito; en HORDA se IGNORA (su
+  // economía de bucle es otro animal). Opcional; sanitizeSettings lo normaliza
+  // (por defecto OFF, y SIEMPRE OFF en horda). Las partidas turbo no puntúan récords.
+  turbo?: boolean;
 }
 
 export interface LobbyPlayer {
@@ -45,7 +50,12 @@ export function sanitizeSettings(s: Partial<RoomSettings> | undefined): RoomSett
   const mapId = s?.mapId && MAPS.some((m) => m.id === s.mapId) ? s.mapId : MAPS[0].id;
   const mode: GameMode = s?.mode === 'endless' ? 'endless' : s?.mode === 'horde' ? 'horde' : 'classic';
   const difficulty = s?.difficulty === 'easy' || s?.difficulty === 'hard' ? s.difficulty : 'normal';
-  return { mapId, mode, difficulty, public: s?.public === true };
+  // Turbo ⚡ SIEMPRE OFF en horda: su economía es un bucle de saturación (sin fin de
+  // oleada clásico ni fuga), así que comprimir botín/bono/interludios no tiene un
+  // punto de aplicación coherente. Normalizarlo aquí es la fuente única de verdad:
+  // la sala nunca guarda turbo en horda y el lobby/lista pública lo reflejan bien.
+  const turbo = s?.turbo === true && mode !== 'horde';
+  return { mapId, mode, difficulty, public: s?.public === true, turbo };
 }
 
 // issue #12 · info del lobby de una partida CARGADA (guardado). Viaja en
@@ -77,6 +87,7 @@ export interface PublicRoomInfo {
   players: number; // jugadores conectados
   inGame: boolean; // true = partida en curso (se entra como espectador)
   wave: number; // oleada actual (0 en el lobby)
+  turbo: boolean; // MODO TURBO ⚡ activo (distintivo en la lista de salas públicas)
 }
 
 // ---------- Snapshot compacto (arrays para ahorrar bytes) ----------
@@ -332,6 +343,7 @@ export interface GameInit {
   mapId: string;
   mode: GameMode;
   difficulty: Difficulty;
+  turbo: boolean; // MODO TURBO ⚡ (issue #14): el cliente pinta el distintivo ⚡ en el HUD
   players: { id: string; name: string; color: string }[];
   youAre: string;
 }

@@ -305,6 +305,7 @@ function renderRooms(rooms: PublicRoomInfo[]): void {
             <span class="room-tag">🗺 ${escapeHtml(mapName)}</span>
             <span class="room-tag">${MODE_LABELS[r.mode] ?? escapeHtml(r.mode)}</span>
             <span class="room-tag">${DIFF_EMOJI[r.difficulty] ?? ''} ${DIFF_LABELS[r.difficulty] ?? escapeHtml(r.difficulty)}</span>
+            ${r.turbo ? '<span class="room-tag turbo">⚡ Turbo</span>' : ''}
             <span class="room-tag">👥 ${r.players}</span>
           </div>
         </div>
@@ -352,6 +353,8 @@ export function initLobby(): void {
   wireSeg('lobby-mode', (v) => sendSettings({ mode: v as RoomSettings['mode'] }));
   wireSeg('lobby-diff', (v) => sendSettings({ difficulty: v as RoomSettings['difficulty'] }));
   wireSeg('lobby-visibility', (v) => sendSettings({ public: v === 'public' }));
+  // MODO TURBO ⚡ (issue #14): igual patrón; el server lo ignora en horda (sanitizeSettings)
+  wireSeg('lobby-turbo', (v) => sendSettings({ turbo: v === 'on' }));
 
   $('btn-start').addEventListener('click', () => net.send({ type: 'start_game' }));
 
@@ -504,6 +507,13 @@ export function renderLobby(): void {
   setSeg('lobby-mode', settings.mode, !store.isHost);
   setSeg('lobby-diff', settings.difficulty, !store.isHost);
   setSeg('lobby-visibility', settings.public ? 'public' : 'private', !store.isHost);
+  // MODO TURBO ⚡: en HORDA no aplica (economía de bucle) → se deshabilita y se
+  // muestra el porqué. Fuera de horda: editable solo por el anfitrión.
+  const turboHorde = settings.mode === 'horde';
+  setSeg('lobby-turbo', settings.turbo ? 'on' : 'off', !store.isHost || turboHorde);
+  $('lobby-turbo-hint').textContent = turboHorde
+    ? 'El Turbo ⚡ no aplica en Horda (su economía es un bucle de saturación).'
+    : 'Economía ×1.75, madera ×1.5, interludios a la mitad. Mismo reto, la mitad de tiempo. Sin récords.';
 
   // estado de «Listo» del equipo (solo cuentan los no-anfitriones conectados)
   const others = players.filter((p) => p.connected && !p.isHost);

@@ -32,6 +32,9 @@ export function replayInit(data: ReplayData): ReplaySim {
     data.difficulty,
     data.seed,
     data.players.map((p) => ({ id: p.id, name: p.name, color: p.color })),
+    // MODO TURBO ⚡: la reconstrucción debe conocerlo (cambia botín/bono/madera/
+    // interludios); ausente en replays previos → false por defecto.
+    data.turbo ?? false,
   );
   const ctx = makeSimContext(map, makePlacementContext(map));
   return { state, ctx };

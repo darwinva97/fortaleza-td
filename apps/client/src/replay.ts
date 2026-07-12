@@ -47,6 +47,7 @@ function initFromReplay(data: ReplayData): GameInit {
     mapId: data.mapId,
     mode: data.mode,
     difficulty: data.difficulty,
+    turbo: data.turbo ?? false, // MODO TURBO ⚡: el HUD del reproductor pinta el distintivo
     players: data.players.map((p) => ({ id: p.id, name: p.name, color: p.color })),
     youAre: '', // nadie: el espectador de un replay no controla nada
   };

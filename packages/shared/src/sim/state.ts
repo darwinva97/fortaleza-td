@@ -6,6 +6,7 @@ import {
   START_LIVES,
   START_WOOD,
   TICK_RATE,
+  TURBO_INTERLUDE_MULT,
   WOOD_PRICE_BASE,
 } from '../constants.js';
 
@@ -34,12 +35,19 @@ export function createGame(
   difficulty: Difficulty,
   seed: number,
   players: NewPlayerInput[],
+  // MODO TURBO ⚡ (issue #14): opcional para no tocar los call sites que no lo usan
+  // (herramientas, pruebas). Se NORMALIZA aquí (fuente de verdad de la sim): SIEMPRE
+  // false en horda, aunque el llamador pase true. Así toda la sim puede leer
+  // state.turbo sin repetir la excepción de la horda.
+  turbo = false,
 ): GameState {
+  const turboActive = turbo && mode !== 'horde';
   return {
     tick: 0,
     mapId,
     mode,
     difficulty,
+    turbo: turboActive,
     rng: seed | 0,
     lives: START_LIVES,
     maxLives: START_LIVES,
@@ -47,7 +55,8 @@ export function createGame(
     // classic tiene fin por número de oleadas; endless y horde son infinitos (0)
     totalWaves: mode === 'classic' ? CLASSIC_WAVES : 0,
     waveState: 'interlude',
-    interludeLeft: FIRST_INTERLUDE_SEC * TICK_RATE,
+    // el turbo recorta el PRIMER interludio a la mitad (igual que los normales en step.ts)
+    interludeLeft: Math.round(FIRST_INTERLUDE_SEC * TICK_RATE * (turboActive ? TURBO_INTERLUDE_MULT : 1)),
     nextWaveComp: [],
     nextWaveImmune: false,
     nextWaveBlessed: false,

@@ -1256,6 +1256,9 @@ export function onTick(snap: Snap): void {
   const horde = gs.init.mode === 'horde';
   const lives = $('hud-lives');
   const aliveChip = $('hud-alive');
+  // MODO TURBO ⚡ (issue #14): distintivo junto al contador de oleada mientras dura
+  // una partida turbo (viaja en el GameInit, no cambia entre ticks)
+  $('hud-turbo').hidden = !gs.init.turbo;
 
   if (horde) {
     // En horda no hay vidas: se pierde por SATURACIÓN. El chip 👾 pasa a ser la
