@@ -1,7 +1,7 @@
-// Prueba end-to-end contra el servidor real: dos clientes WebSocket crean una
+// Prueba end-to-end contra el backend real: dos clientes WebSocket crean una
 // sala, empiezan la partida, colocan una torre, llaman la oleada y verifican
 // que los enemigos se mueven y el chat funciona.
-// Requiere el servidor corriendo (PORT o 3000).
+// Requiere el WORKER de Cloudflare corriendo (pnpm cf:dev y PORT=8787).
 import WebSocket from 'ws';
 import {
   getMap,
@@ -17,7 +17,7 @@ import {
 
 // Sirve tanto para el servidor Node (ignora el query) como para el Worker de
 // Cloudflare (enruta por ?create=1 / ?code=XXXX al Durable Object de la sala).
-const HOST = `localhost:${process.env.PORT ?? 3000}`;
+const HOST = `localhost:${process.env.PORT ?? 8787}`;
 const BASE = `ws://${HOST}/ws`;
 const HTTP_BASE = `http://${HOST}`;
 const wsUrl = (opts: { create: true } | { code: string }): string =>

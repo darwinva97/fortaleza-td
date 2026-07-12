@@ -2,7 +2,7 @@
 // Uso: tsx tools/proxytest.ts <puertoHttp> [rutaWs]
 import WebSocket from 'ws';
 
-const port = process.argv[2] ?? '3000';
+const port = process.argv[2] ?? '8787';
 const base = `http://localhost:${port}`;
 
 async function main(): Promise<void> {

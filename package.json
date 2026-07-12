@@ -4,10 +4,9 @@
   "version": "1.0.0",
   "description": "Fortaleza — Tower defense cooperativo en tiempo real",
   "scripts": {
-    "dev": "concurrently -n server,client -c blue,green \"pnpm --filter @td/server dev\" \"pnpm --filter @td/client dev\"",
-    "build": "pnpm --filter @td/client build && pnpm --filter @td/server build",
-    "start": "node apps/server/dist/server.js",
-    "check": "tsc -b packages/shared apps/server apps/client apps/worker",
+    "dev": "concurrently -n worker,client -c blue,green \"pnpm --filter @td/worker dev\" \"pnpm --filter @td/client dev\"",
+    "build": "pnpm --filter @td/client build",
+    "check": "tsc -b packages/shared apps/client apps/worker",
     "simtest": "tsx tools/simtest.ts",
     "wstest": "tsx tools/wstest.ts",
     "cf:dev": "pnpm --filter @td/client build && pnpm --filter @td/worker dev",

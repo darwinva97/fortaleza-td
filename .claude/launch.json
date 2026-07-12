@@ -2,11 +2,10 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "fortaleza",
-      "runtimeExecutable": "node",
-      "runtimeArgs": ["apps/server/dist/server.js"],
-      "port": 3000,
-      "autoPort": true
+      "name": "worker-dev",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@td/worker", "dev"],
+      "port": 8787
     },
     {
       "name": "client-dev",
