@@ -89,12 +89,6 @@ export const GROWTH_PER_SHOT = 8; // +8 de daño base por cada disparo, para sie
 // horizonte: la mejor single-target del juego, no un agujero de balance.
 export const GROWTH_CAP = 400;
 
-// F5.1 · Zapador: segundos MÁXIMOS aturdiendo la MISMA torre; después la suelta
-// al instante y no puede re-elegirla (anti-softlock: 4-5 zapadores inmunes
-// podían colgar la partida para siempre aturdiendo las únicas torres en rango —
-// pasaba en el 25% de las semillas de la revisión adversarial).
-export const SAPPER_MAX_SEC = 8;
-
 // ---------- F5.1 · matriz ataque × armadura ----------
 // El daño DIRECTO (impacto/splash/cadena/ráfaga/trampa) se multiplica por esta
 // matriz ANTES de restar la armadura plana: dmg = max(1, round(daño×mult) − armadura).

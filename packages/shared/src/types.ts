@@ -268,14 +268,6 @@ export interface EnemyState {
   // trampa/barril) y el tick de veneno (por poisonSrc). Al morir, killEnemy busca aquí al
   // mayor dañador para el oro de asistencia. Determinista: acumulación en orden estable.
   dmgBy: Record<string, number>;
-  // --- F5.1 · timeout de zapado · AL FINAL ---
-  // Tick en que el zapador empezó a aturdir su torre ACTUAL, y TODAS las torres
-  // que ya SOLTÓ por timeout (jamás re-elegibles: con una sola torre vetada podía
-  // oscilar entre dos para siempre). Cada torre se zapa UNA vez por zapador →
-  // finito por construcción. Sin esto, 4-5 zapadores podían colgar la partida
-  // PARA SIEMPRE (softlock en el 25% de las semillas de la revisión adversarial).
-  sapStartTick: number;
-  sappedIds: number[];
 }
 
 export interface TowerState {

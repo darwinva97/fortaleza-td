@@ -33,7 +33,6 @@ import {
   DIFF_HP_MULT,
   POISON_PCT_CAP_DPS,
   GROWTH_CAP,
-  SAPPER_MAX_SEC,
   FUSION_ORDER,
   FUSIONS,
   HORDE_CAP,
@@ -81,16 +80,17 @@ const MAP_ID = 'sendero';
 // colosal): 22 GANAN vs 17 con el código previo — la matriz MEJORA la winnability
 // global del bot, no la empeora. Elegida 123456821: gana con 21 vidas y toda su
 // vecindad (821/822/823/825) también gana.
-// F5.1 · revisión adversarial: el TOPE del crecimiento (GROWTH_CAP) recortó al
-// carry del bot y 123456821 pasó a morir en la o30 (gólem inmune). Barrido de la
-// vecindad 815-830 con el código FINAL (cap + timeout de zapado + exención del
-// Behemot): ganan 123456815 (36 oleadas, 3 vidas) y 123456830 (36, 3). Elegida
-// 123456815 — la MISMA semilla histórica pre-matriz: el timeout de zapado arregló
-// exactamente el sapper-lock que la había matado. El margen fino (3 vidas) es del
-// BOT (no vende/recoloca/usa mercado): cota inferior, no dificultad humana.
+// F5.1 (revisado) · el TIMEOUT de zapado se REVIRTIÓ por diseño (el zapador debe
+// obligar a reaccionar, no aburrirse solo), así que el bot ganó el CONTRAPLAY
+// humano en botCommands (plantar arquero junto al zapador a los 6s, vender a los
+// 20s, y romper el ATASCO real vendiendo las aferradas). Con ese reflejo, barrido
+// de la vecindad 815-845: gana 123456845 (36 oleadas, 9 vidas — mejor margen que
+// los 3 del timeout); 815/830 llegan a o30-31 (mueren en el muro del gólem
+// inmune, límite económico del bot post-GROWTH_CAP, no sapper-lock: CERO cuelgues
+// en 14 semillas barridas). El margen es cota inferior: el bot no usa mercado.
 // El SEED admite override por env (SIMTEST_SEED=n pnpm simtest) para sweeps sin
 // editar el archivo; el valor fijado aquí es el que corre en el gate.
-const SEED = Number(process.env.SIMTEST_SEED ?? 123456815);
+const SEED = Number(process.env.SIMTEST_SEED ?? 123456845);
 const MAX_TICKS = TICK_RATE * 60 * 40; // 40 minutos de juego (el clásico ahora son 36 oleadas)
 
 // Fábricas para pruebas dirigidas (construir estado a mano sin repetir 25 campos).
@@ -102,7 +102,7 @@ function mkEnemy(type: EnemyTypeId, over: Partial<EnemyState> = {}): EnemyState 
     poisonSrc: 0, bountyMult: 1, elite: false, affixes: [], speedMult: 1, armorBonus: 0, regenBonus: 0,
     dodgeBonus: 0, slowResist: 0, radiusMult: 1, auraRadius: 0, auraHps: 0, deathSpawn: 0, laps: 0,
     spellImmune: def.spellImmune ?? false, stunTowerId: 0, lastWpIdx: 1, armorShredUntil: 0,
-    invisible: false, detected: false, dmgBy: {}, sapStartTick: 0, sappedIds: [],
+    invisible: false, detected: false, dmgBy: {},
     ...over,
   };
 }
@@ -168,6 +168,85 @@ function botCommands(
   spawn: { x: number; y: number } = { x: 0.5, y: 0.5 },
 ): PlayerCommand[] {
   const cmds: PlayerCommand[] = [];
+  // CONTRAPLAY ANTI-ZAPADOR (el mismo que usa un humano): el zapado NO caduca por
+  // diseño (decisión F5.1 revisada) — el zapador OBLIGA a reaccionar. El reflejo
+  // del bot imita al jugador: si una torre lleva ≥6s aturdida en plena oleada,
+  // (1) PLANTA un arquero pegado al zapador para matarlo (una vez por torre);
+  // (2) si a los 14s sigue aturdida, la VENDE como último recurso (rompe el
+  // agarre; se repone en el interludio con el refund). Sin este reflejo, el bot
+  // —que solo construye en interludios— quedaba COLGADO para siempre con las
+  // únicas torres en rango aturdidas (sapper-lock). Determinista: `counters`.
+  // CONTRAPLAY ANTI-ZAPADOR (el reflejo humano completo): el zapado NO caduca
+  // por diseño (decisión F5.1 revisada) — el zapador OBLIGA a reaccionar.
+  // Tres capas deterministas, de menor a mayor drama:
+  //  (1) torre aturdida >=6s -> PLANTA un arquero pegado al zapador (una vez por
+  //      torre; nunca en la celda RESERVADA del Sentry — okuparla rompía su
+  //      refresco), pagando de un presupuesto local del tick;
+  //  (2) torre aturdida >=20s -> la VENDE (último recurso; a los 10s era suicida
+  //      en oleadas de jefe);
+  //  (3) ATASCO real (solo quedan zapadores aferrados, nada por spawnear) ->
+  //      a los 5s vende todas las aturdidas: rompe el sapper-lock que dejaba al
+  //      bot -que solo construye en interludios- colgado para siempre.
+  if (state.waveState === 'active') {
+    const reserved = nearestCellToSpawn(candidates, spawn);
+    const spent = new Map<string, number>();
+    const claimed = new Set(state.towers.map((tw) => `${tw.cx},${tw.cy}`));
+    if (reserved) claimed.add(`${reserved[0]},${reserved[1]}`);
+    for (const t of state.towers) {
+      const key = `stun:${t.id}`;
+      if (t.stunnedUntil > state.tick) {
+        if (!counters.has(key)) counters.set(key, state.tick);
+        const since = state.tick - counters.get(key)!;
+        if (since >= TICK_RATE * 6 && !counters.has(`stunbuild:${t.id}`)) {
+          const sapper = state.enemies.find((e) => e.stunTowerId === t.id && e.hp > 0);
+          if (sapper) {
+            let best: [number, number] | null = null;
+            let bestD = 2.6; // a rango de arquero L1 del zapador
+            for (const [cx, cy] of candidates) {
+              if (claimed.has(`${cx},${cy}`)) continue;
+              const d = Math.hypot(cx + 0.5 - sapper.x, cy + 0.5 - sapper.y);
+              if (d < bestD) {
+                bestD = d;
+                best = [cx, cy];
+              }
+            }
+            const owner = state.players.find((p) => p.id === t.owner);
+            if (best && owner && owner.gold - (spent.get(t.owner) ?? 0) >= 50) {
+              cmds.push({ playerId: t.owner, cmd: { kind: 'place', towerType: 'archer', cx: best[0], cy: best[1] } });
+              claimed.add(`${best[0]},${best[1]}`);
+              spent.set(t.owner, (spent.get(t.owner) ?? 0) + 50);
+              counters.set(`stunbuild:${t.id}`, state.tick);
+            }
+          }
+        }
+        if (since >= TICK_RATE * 20) {
+          cmds.push({ playerId: t.owner, cmd: { kind: 'sell', towerId: t.id } });
+          counters.delete(key);
+          counters.delete(`stunbuild:${t.id}`);
+        }
+      } else if (counters.has(key)) {
+        counters.delete(key);
+        counters.delete(`stunbuild:${t.id}`);
+      }
+    }
+    const alive = state.enemies.filter((e) => e.hp > 0);
+    const stalled =
+      alive.length > 0 &&
+      alive.every((e) => ENEMIES[e.type].sapper && e.stunTowerId > 0) &&
+      (state.spawnQueue?.length ?? 0) === 0 &&
+      (state.pendingWave?.length ?? 0) === 0;
+    if (stalled) {
+      if (!counters.has('stall')) counters.set('stall', state.tick);
+      if (state.tick - counters.get('stall')! >= TICK_RATE * 5) {
+        for (const t of state.towers) {
+          if (t.stunnedUntil > state.tick) cmds.push({ playerId: t.owner, cmd: { kind: 'sell', towerId: t.id } });
+        }
+        counters.delete('stall');
+      }
+    } else if (counters.has('stall')) {
+      counters.delete('stall');
+    }
+  }
   if (state.waveState !== 'interlude') return cmds;
 
   // celdas ya ocupadas + las que se reclaman dentro de este mismo tick
@@ -2884,31 +2963,24 @@ console.log('— F5.1 · Curva del infinito y botín superlineal del endless —
   assert(Math.abs(endlessMult - waveBountyMult(40, 'endless')) < 1e-9, `en endless la oleada 40 nace con el bounty superlineal (${endlessMult.toFixed(3)})`);
 }
 
-console.log('— F5.1 · revisión adversarial: timeout de zapado y tope de crecimiento —');
+console.log('— F5.1 · revisión adversarial: tope de crecimiento (y zapado SIN caducidad) —');
 {
   const map = getMap('sendero');
   const simCtx = makeSimContext(map, makePlacementContext(map));
-  // (a) TIMEOUT DE ZAPADO: el zapador aturde su torre un máximo de SAPPER_MAX_SEC,
-  // la suelta AL INSTANTE, la veta para siempre y reanuda la marcha. Sin esto,
-  // 4-5 zapadores inmunes podían colgar la partida eternamente (softlock del 25%
-  // de las semillas del informe adversarial).
+  // (a) el ZAPADO NO CADUCA (decisión de diseño: se probó un timeout de 8s y se
+  // REVIRTIÓ — el zapador debe OBLIGAR al equipo a reaccionar). Este assert
+  // protege esa decisión: tras un buen rato, el zapador sigue aferrado.
   {
     const st = createGame('sendero', 'endless', 'normal', 5500, [{ id: 'p1', name: 'A', color: '#fff' }]);
     st.nextId = 8000; st.wave = 1; st.waveState = 'active'; st.spawnQueue = []; st.pendingWave = [];
-    // zapador inmortal a rango de la ÚNICA torre (spellImmune: el arquero igual le
-    // pega, pero con 1e9 de vida el timeout llega mucho antes que su muerte)
     const sap = mkEnemy('sapper', { id: 5501, hp: 1e9, maxHp: 1e9, x: 5.5, y: 2.5, travelled: 5, wpIdx: 1, dodgeBonus: -1 });
     st.enemies.push(sap);
     const t = mkTower('archer', { id: 5502, cx: 5, cy: 1, level: 3, invested: 300 });
     st.towers.push(t);
     stepGame(st, simCtx, []);
     assert(sap.stunTowerId === t.id && t.stunnedUntil > st.tick, 'el zapador toma la única torre en rango y la aturde');
-    for (let i = 0; i < SAPPER_MAX_SEC * TICK_RATE + 2; i++) stepGame(st, simCtx, []);
-    assert(sap.sappedIds.includes(t.id), `tras ${SAPPER_MAX_SEC}s la torre queda VETADA para ese zapador`);
-    assert(t.stunnedUntil <= st.tick, 'la torre se libera al instante (vuelve a disparar)');
-    const xAfter = sap.x;
-    for (let i = 0; i < TICK_RATE; i++) stepGame(st, simCtx, []);
-    assert(sap.x > xAfter, 'el zapador reanuda la marcha (no re-elige la torre vetada)');
+    for (let i = 0; i < TICK_RATE * 20; i++) stepGame(st, simCtx, []);
+    assert(sap.stunTowerId === t.id && t.stunnedUntil > st.tick, 'a los 20s SIGUE aturdiéndola (el zapado no caduca: reacciona o sufre)');
   }
   // (b) TOPE DE CRECIMIENTO: el Arco Largo II deja de crecer en GROWTH_CAP (sin
   // tope divergía cuadráticamente: +13.000 de daño por flecha en endless o50).

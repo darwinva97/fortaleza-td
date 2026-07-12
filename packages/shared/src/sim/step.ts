@@ -35,7 +35,6 @@ import {
   INVISIBLE_FROM,
   LEAK_WAVE_DIV,
   POISON_PCT_CAP_DPS,
-  SAPPER_MAX_SEC,
   SHRED_DURATION,
   SHRED_RADIUS,
   SPELL_IMMUNE_TESLA_MULT,
@@ -121,8 +120,6 @@ function spawnEnemy(
     invisible: false,
     detected: false,
     dmgBy: {},
-    sapStartTick: 0,
-    sappedIds: [],
   };
   state.enemies.push(enemy);
   return enemy;
@@ -832,13 +829,11 @@ function nearestSappableTower(
   y: number,
   maxDist: number,
   claimed: Set<number>,
-  sapped?: number[], // F5.1 · torres que este zapador SOLTÓ por timeout: no re-elegibles
 ): TowerState | null {
   let best: TowerState | null = null;
   let bestD = maxDist;
   for (const t of state.towers) {
     if (claimed.has(t.id)) continue;
-    if (sapped && sapped.includes(t.id)) continue; // vetadas por el timeout de zapado
     if (!towerFires(t)) continue; // aturdir una mina/aura/trampa no hace nada
     const d = dist(x, y, t.cx + 0.5, t.cy + 0.5);
     if (d < bestD) {
@@ -916,12 +911,13 @@ function stepEnemies(state: GameState, ctx: SimContext, events: GameEvent[]): vo
     // en `stunTicks`). Si todas las torres cercanas ya están tomadas, SIGUE
     // CAMINANDO en busca de otra. Prefiere quedarse con su torre actual para no
     // saltar entre torres. Determinista: orden estable + set de reclamadas.
-    // F5.1 · TIMEOUT DE ZAPADO: tras SAPPER_MAX_SEC sobre la MISMA torre la suelta
-    // al instante y reanuda la marcha sin poder re-elegirla. Sin esto, 4-5
-    // zapadores inmunes podían aturdir para siempre las únicas torres en rango y
-    // COLGAR la partida (softlock verificado en el 25% de las semillas de la
-    // revisión adversarial: ni derrota ni victoria, sala zombi). 8 s × zapador
-    // sigue siendo presión real; el softlock pasa a ser daño temporal.
+    // DECISIÓN DE DISEÑO (F5.1, revisada): el zapado NO caduca. Se probó un
+    // timeout de 8s y se REVIRTIÓ a pedido del diseño: la gracia del zapador es
+    // OBLIGAR al equipo a reaccionar (construir junto a él, tirarle un barril,
+    // vender y replantar). El precio asumido: una partida donde NADIE reacciona
+    // puede quedarse trabada con las únicas torres en rango aturdidas — para el
+    // bot del simtest eso obliga a elegir semillas sin sapper-lock (documentado
+    // en tools/simtest.ts); a un humano siempre le queda contraplay.
     let sapping = false;
     if (def.sapper) {
       let tower: TowerState | null = null;
@@ -933,21 +929,10 @@ function stepEnemies(state: GameState, ctx: SimContext, events: GameEvent[]): vo
           towerFires(cur) &&
           dist(enemy.x, enemy.y, cur.cx + 0.5, cur.cy + 0.5) <= sapRange
         ) {
-          if (state.tick - enemy.sapStartTick >= SAPPER_MAX_SEC * TICK_RATE) {
-            // tiempo agotado: libera la torre YA (contraplay inmediato) y la veta
-            // PARA SIEMPRE para este zapador (una lista, no un solo id: con un
-            // único veto podía oscilar entre dos torres eternamente)
-            enemy.sappedIds.push(cur.id);
-            cur.stunnedUntil = state.tick;
-          } else {
-            tower = cur;
-          }
+          tower = cur;
         }
       }
-      if (!tower) {
-        tower = nearestSappableTower(state, enemy.x, enemy.y, sapRange, sapClaimed, enemy.sappedIds);
-        if (tower) enemy.sapStartTick = state.tick; // empieza a zapar una torre nueva
-      }
+      if (!tower) tower = nearestSappableTower(state, enemy.x, enemy.y, sapRange, sapClaimed);
       if (tower) {
         sapClaimed.add(tower.id);
         tower.stunnedUntil = state.tick + stunTicks;
