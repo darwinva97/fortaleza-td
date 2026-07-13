@@ -389,6 +389,13 @@ export type ServerMsg =
 
 const MAX_SAVE_LOG = 500_000; // tope de entradas de log (una partida real son miles)
 const MAX_SAVE_TICK = TICK_RATE * 60 * 60 * 8; // 8 h de sim (tope defensivo)
+// Tope de oro/madera de una entrada `join` (mid-join) del log. El guardado es un
+// REPLAY: los comandos los re-valida el sim (no se puede fabricar oro colocando
+// torres), PERO el oro/madera de entrada de un mid-join se cargan DIRECTOS del
+// archivo (replay.ts → makePlayer). Un mid-join legítimo da `180 + oleada*22`
+// (~11K ni en endless profundo); este tope generoso corta la inyección
+// («gold: 999999999») sin rechazar jamás un guardado real. No cambia el sim.
+const MAX_JOIN_ECON = 1_000_000;
 
 export type ValidateSaveResult = { ok: true; save: SaveData } | { ok: false; msg: string };
 
@@ -453,7 +460,19 @@ export function validateSaveData(x: unknown): ValidateSaveResult {
     } else if (ee.kind === 'conn') {
       if (typeof ee.playerId !== 'string' || typeof ee.connected !== 'boolean') return bad('Guardado corrupto (conexión).');
     } else if (ee.kind === 'join') {
-      if (!ee.player || typeof ee.player !== 'object' || typeof ee.gold !== 'number') return bad('Guardado corrupto (unión).');
+      // el `player` (id/name/color) y el oro/madera de entrada se cargan DIRECTOS
+      // del archivo al reconstruir → validar forma Y ACOTAR la economía (anti
+      // inyección de oro; ver MAX_JOIN_ECON). El name/color además se sanean
+      // server-side en room-do (XSS), como los de players[]/slots[].
+      const pl = ee.player as Record<string, unknown> | undefined;
+      if (!pl || typeof pl !== 'object' || typeof pl.id !== 'string' || typeof pl.name !== 'string' || typeof pl.color !== 'string') {
+        return bad('Guardado corrupto (unión).');
+      }
+      const econOk = (n: unknown) => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= MAX_JOIN_ECON;
+      // `wood` es opcional (default en makePlayer); si viene, debe estar acotado
+      if (!econOk(ee.gold) || (ee.wood !== undefined && !econOk(ee.wood))) {
+        return bad('Guardado corrupto (economía de unión fuera de rango).');
+      }
     } else {
       return bad('Guardado corrupto (tipo de entrada).');
     }

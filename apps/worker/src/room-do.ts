@@ -214,10 +214,18 @@ export class RoomDO {
       // colores (patrón hex) igual que hace join_room, antes de que lleguen a los
       // clientes (se inyectan en textContent/style). Los ids NO se tocan: los
       // referencian el log y las tuplas jugador↔slot (romperlos rompería la reconstrucción).
+      // Cubre players[], slots[] Y el `player` de las entradas `join` del LOG (un
+      // mid-join reconstruido aparece en el marcador con ESE nombre; sin este saneo
+      // se saltaba la limpieza y solo lo frenaba el escape del cliente al pintar).
       const clean: SaveData = {
         ...v.save,
         players: v.save.players.map((p) => ({ ...p, name: cleanName(p.name), color: safeColor(p.color) })),
         slots: v.save.slots.map((s) => ({ ...s, name: cleanName(s.name), color: safeColor(s.color) })),
+        log: v.save.log.map((e) =>
+          e.kind === 'join'
+            ? { ...e, player: { ...e.player, name: cleanName(e.player.name), color: safeColor(e.player.color) } }
+            : e,
+        ),
       };
       this.reserved = true;
       this.initialized = true;

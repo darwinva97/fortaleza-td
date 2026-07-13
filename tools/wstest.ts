@@ -656,6 +656,16 @@ async function saveLoadScenario(): Promise<void> {
   bob.ws.close();
   await sleep(200);
 
+  // --- SEGURIDAD: un guardado ADULTERADO con oro inyectado en un mid-join se
+  // rechaza en el BORDE (el mismo validateSaveData que corre el cliente y el DO).
+  const hacked = { ...save, log: [...save.log, { t: 30, kind: 'join', player: { id: 'phack', name: 'Intruso', color: '#fff' }, gold: 999999999, wood: 0 }] };
+  const hackRes = await fetch(`${HTTP_BASE}/api/rooms/from-save`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(hacked),
+  });
+  assert(hackRes.status === 400, `el guardado con oro inyectado se rechaza en el borde (${hackRes.status} == 400)`);
+
   // --- CARGAR: crear la sala desde el guardado (POST /api/rooms/from-save) ---
   const res = await fetch(`${HTTP_BASE}/api/rooms/from-save`, {
     method: 'POST',

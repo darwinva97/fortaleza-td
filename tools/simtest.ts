@@ -1026,6 +1026,20 @@ console.log('— Guardar/Cargar (issue #12): SaveData válido y el fast-forward 
   const tamper = { ...parsed, log: [...parsed.log, { t: parsed.tick + 5, kind: 'cmd', playerId: 'p1', cmd: { kind: 'call_wave' } }] };
   assert(!validateSaveData(tamper).ok, 'un comando con tick > guardado se rechaza');
 
+  // INYECCIÓN DE ORO: una entrada `join` del log con oro fuera de rango → rechazo
+  // (el oro/madera de un mid-join se cargan DIRECTOS del archivo; sin este tope,
+  // un JSON adulterado inyectaría un jugador con oro arbitrario). Ver MAX_JOIN_ECON.
+  const joinBase = { t: 30, kind: 'join', player: { id: 'p9', name: 'Intruso', color: '#fff' }, gold: 1500, wood: 0 };
+  assert(validateSaveData({ ...parsed, log: [...parsed.log, joinBase] }).ok, 'un mid-join con oro legítimo (1500) pasa');
+  const goldHack = { ...parsed, log: [...parsed.log, { ...joinBase, gold: 999999999 }] };
+  assert(!validateSaveData(goldHack).ok, 'un mid-join con ORO INYECTADO (999.999.999) se rechaza');
+  const woodHack = { ...parsed, log: [...parsed.log, { ...joinBase, wood: 999999999 }] };
+  assert(!validateSaveData(woodHack).ok, 'un mid-join con MADERA inyectada se rechaza');
+  const negHack = { ...parsed, log: [...parsed.log, { ...joinBase, gold: -50 }] };
+  assert(!validateSaveData(negHack).ok, 'un mid-join con oro NEGATIVO se rechaza');
+  const shapeHack = { ...parsed, log: [...parsed.log, { t: 30, kind: 'join', player: { id: 'p9' }, gold: 100 }] };
+  assert(!validateSaveData(shapeHack).ok, 'un mid-join con `player` mal formado (sin name/color) se rechaza');
+
   // FAST-FORWARD: reconstruir con el motor puro hasta el tick guardado (como el DO
   // al reanudar) y comparar con el estado vivo en ese mismo tick.
   const rdata: ReplayData = {
