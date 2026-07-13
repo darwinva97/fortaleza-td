@@ -663,8 +663,14 @@ function wireHudButtons(): void {
 
   const muteBtn = $('btn-mute');
   // solo se toca el ICONO (span #mute-icon): escribir textContent en el botón
-  // destruiría la etiqueta de texto de escritorio (.blabel)
-  const syncMute = () => ($('mute-icon').textContent = store.muted ? '🔇' : '🔊');
+  // destruiría la etiqueta de texto de escritorio (.blabel). Se sincroniza también
+  // el icono del menú hamburguesa, que refleja el mismo estado de mute.
+  const syncMute = () => {
+    const icon = store.muted ? '🔇' : '🔊';
+    $('mute-icon').textContent = icon;
+    const hamIcon = document.getElementById('hamburger-mute-icon');
+    if (hamIcon) hamIcon.textContent = icon;
+  };
   syncMute();
   muteBtn.addEventListener('click', () => {
     // setMuted baja el MASTER a 0: calla también la música y la reverb en vuelo
@@ -712,6 +718,56 @@ function wireHudButtons(): void {
   panel.addEventListener('click', (e) => e.stopPropagation());
   document.addEventListener('click', () => {
     if (!panel.hidden) closePanel();
+  });
+
+  // ---------- menú hamburguesa ☰ (móvil apaisado) ----------
+  // Agrupa los botones de acción del HUD en un desplegable para no tapar el mapa.
+  // Cada opción DELEGA en el botón original ($(origId).click()), así toda la
+  // lógica sigue viviendo en un solo sitio; aquí solo se abre/cierra el menú.
+  const hamBtn = $('btn-hamburger');
+  const hamMenu = $('hamburger-menu');
+  const closeHam = () => {
+    hamMenu.hidden = true;
+    hamBtn.setAttribute('aria-expanded', 'false');
+  };
+  const hamMap: [string, string][] = [
+    ['hamburger-ping', 'btn-ping'],
+    ['hamburger-scoreboard', 'btn-scoreboard'],
+    ['hamburger-shop', 'btn-shop'],
+    ['hamburger-guide', 'btn-guide'],
+    ['hamburger-minimap', 'btn-minimap'],
+    ['hamburger-mute', 'btn-mute'],
+    ['hamburger-settings', 'btn-settings'],
+  ];
+  for (const [hamId, origId] of hamMap) {
+    $(hamId).addEventListener('click', () => {
+      closeHam();
+      $(origId).click();
+    });
+  }
+  hamBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const open = hamMenu.hidden;
+    hamMenu.hidden = !open;
+    hamBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  });
+  // clic dentro del menú no lo cierra; clic fuera sí (mismo patrón que ⚙).
+  hamMenu.addEventListener('click', (e) => e.stopPropagation());
+  document.addEventListener('click', () => {
+    if (!hamMenu.hidden) closeHam();
+  });
+
+  // ---------- pantalla completa ⛶ ----------
+  // Solo botón (sin atajo: la 'F' es Fijar objetivo en el keymap). El estado se
+  // refleja con la clase .fs-active mediante el evento fullscreenchange, que
+  // cubre también salir con Esc o F11.
+  const fsBtn = $('btn-fullscreen');
+  const syncFs = () => fsBtn.classList.toggle('fs-active', !!document.fullscreenElement);
+  document.addEventListener('fullscreenchange', syncFs);
+  document.addEventListener('webkitfullscreenchange', syncFs);
+  fsBtn.addEventListener('click', () => {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else document.documentElement.requestFullscreen().catch(() => {});
   });
 
   // 📱 Continuar en otro dispositivo (issue #6): enlace con el código de sala +

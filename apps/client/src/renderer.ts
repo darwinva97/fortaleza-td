@@ -1401,7 +1401,14 @@ function drawTowers(gs: GameStore, interp: InterpResult | null, now: number, dt:
   }
   const alive = new Set<number>();
 
-  for (const tw of snap.towers) {
+  // Algoritmo del pintor: dibujar las torres ordenadas por fila (Y, luego X) para
+  // que las de abajo queden ENCIMA de las de arriba y no tapen sus cañones ni sus
+  // proyectiles. El orden de `snap.towers` es indiferente para el resto del bucle
+  // (el Set `alive` se rellena por id y `towerAnim` se indexa por id), así que
+  // reordenar aquí es seguro.
+  const sortedTowers = [...snap.towers].sort((a, b) => a[3] - b[3] || a[2] - b[2]);
+
+  for (const tw of sortedTowers) {
     const [id, typeIdx, cx, cy, level, ownerIdx] = tw;
     const spec = tw[9] ?? -1;
     const fusionIdx = tw[13] ?? -1;
@@ -3877,11 +3884,20 @@ function drawPlacement(gs: GameStore, now: number): void {
   g.fillStyle = ok ? `rgba(120,220,120,${pulse})` : `rgba(240,80,80,${pulse})`;
   g.fillRect(toX(cx), toY(cy), s, s);
 
-  // torre fantasma (arte real, semitransparente)
+  // torre fantasma: si la torre tiene sprite (PNG), se dibuja semitransparente y
+  // anclado IGUAL que las torres reales (base en el borde inferior, ancho
+  // s*SPRITE_W); si no lo tiene, cae al arte vectorial de siempre.
   g.save();
   g.globalAlpha = 0.75;
   g.translate(toX(cx) + s / 2, toY(cy) + s / 2);
-  drawTowerArt(type, s, 1, now / 1000, { angle: -Math.PI / 2, recoil: 0, flash: 0 }, ok ? '#a5d6a7' : '#ef9a9a', false);
+  const spr = getTowerSprite(type, 1, -1);
+  if (spr) {
+    const w = s * SPRITE_W;
+    const h = (spr.naturalHeight / spr.naturalWidth) * w;
+    g.drawImage(spr, -w / 2, s * 0.5 - h, w, h);
+  } else {
+    drawTowerArt(type, s, 1, now / 1000, { angle: -Math.PI / 2, recoil: 0, flash: 0 }, ok ? '#a5d6a7' : '#ef9a9a', false);
+  }
   g.restore();
 }
 

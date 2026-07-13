@@ -206,7 +206,23 @@
           <button id="btn-pause" class="btn small ghost" hidden>⏸<span class="blabel">Pausa</span></button>
           <button id="btn-mute" class="btn small ghost" title="Silenciar todo (efectos y música)"><span id="mute-icon">🔊</span><span class="blabel">Sonido</span></button>
           <button id="btn-settings" class="btn small ghost" title="Ajustes de sonido" aria-haspopup="true" aria-expanded="false">⚙<span class="blabel">Ajustes</span></button>
+          <!-- móvil apaisado: agrupa los botones de acción para no tapar el mapa
+               (se muestra solo en su @media; delega en los botones originales) -->
+          <button id="btn-hamburger" class="btn small ghost hamburger" title="Más opciones" aria-haspopup="true" aria-expanded="false">☰</button>
         </div>
+      </div>
+
+      <!-- menú desplegable de la hamburguesa (solo móvil apaisado). Cada botón
+           delega en su equivalente del HUD ($(origId).click()), así el
+           comportamiento vive en un único sitio. -->
+      <div id="hamburger-menu" class="hamburger-dropdown" hidden role="menu">
+        <button id="hamburger-ping" class="btn ghost" role="menuitem">📍 Ping</button>
+        <button id="hamburger-scoreboard" class="btn ghost" role="menuitem">📊 Jugadores</button>
+        <button id="hamburger-shop" class="btn ghost" role="menuitem">🛒 Tienda</button>
+        <button id="hamburger-guide" class="btn ghost" role="menuitem">📖 Guía</button>
+        <button id="hamburger-minimap" class="btn ghost" role="menuitem">🗺 Minimapa</button>
+        <button id="hamburger-mute" class="btn ghost" role="menuitem"><span id="hamburger-mute-icon">🔊</span> Sonido</button>
+        <button id="hamburger-settings" class="btn ghost" role="menuitem">⚙ Ajustes</button>
       </div>
 
       <div id="settings-panel" hidden role="dialog" aria-label="Ajustes de sonido">
@@ -336,6 +352,9 @@
           </div>
         </div>
       </div>
+      <!-- pantalla completa: botón en la esquina inferior derecha (sin atajo de
+           teclado: la 'F' ya es Fijar objetivo en el keymap) -->
+      <button id="btn-fullscreen" class="btn-fullscreen" title="Pantalla completa" aria-label="Pantalla completa">⛶</button>
     </section>
 
     <div id="overlay-reconnect" class="overlay" hidden>

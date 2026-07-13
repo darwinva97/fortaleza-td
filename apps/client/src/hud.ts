@@ -249,16 +249,17 @@ function processPremoves(snap: Snap): void {
 const BAR_GROUPS: TowerTypeId[][] = [
   ['archer', 'cannon', 'frost', 'poison', 'tesla', 'sniper', 'mortar', 'flak'],
   ['banner', 'bank', 'alchemist'],
-  ['trap', 'boom'],
+  ['trap', 'boom', 'sentry'],
 ];
 
 export function buildTowerBar(): void {
   const bar = $('hud-towers');
   bar.innerHTML = '';
   const flat = BAR_GROUPS.flat();
-  // el Sentry NO va en la barra (se compra en la 🛒 Tienda): se excluye también de
-  // la red de seguridad de "extras" que recoge cualquier torre no agrupada.
-  const extras = TOWER_ORDER.filter((t) => !flat.includes(t) && t !== 'sentry');
+  // el Sentry vive en el grupo de camino de la barra Y sigue estando en la 🛒
+  // Tienda (accesible en ambos sitios). La red de seguridad de "extras" recoge
+  // cualquier torre nueva que aún no se haya agrupado a mano.
+  const extras = TOWER_ORDER.filter((t) => !flat.includes(t));
   const groups = extras.length > 0 ? [...BAR_GROUPS, extras] : BAR_GROUPS;
   for (let gi = 0; gi < groups.length; gi++)
   for (let ti = 0; ti < groups[gi].length; ti++) {
