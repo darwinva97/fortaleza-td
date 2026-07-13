@@ -64,6 +64,9 @@ jobs:
     needs: sync
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
+    # el contexto `secrets` no se puede usar en los `if:` de los steps; vía env sí
+    env:
+      ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
     steps:
       - name: Checkout fork
         uses: actions/checkout@v4
@@ -92,9 +95,7 @@ jobs:
       # `|| echo`: si el worker desplegado aún no tiene el endpoint (primer
       # deploy) o no responde, el deploy sigue igualmente.
       - name: Avisar a los jugadores conectados
-        if: ${{ inputs.aviso && secrets.ADMIN_TOKEN != '' }}
-        env:
-          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+        if: ${{ inputs.aviso && env.ADMIN_TOKEN != '' }}
         run: |
           announce() {
             curl -fsS -X POST "https://fortaleza-td.bezenti.com/api/admin/announce" \
@@ -117,9 +118,8 @@ jobs:
       # Mantiene el secreto del worker igual al de GitHub: solo hay que
       # gestionar ADMIN_TOKEN en un sitio (Settings → Secrets del repo).
       - name: Sincronizar ADMIN_TOKEN en el worker
-        if: ${{ secrets.ADMIN_TOKEN != '' }}
+        if: ${{ env.ADMIN_TOKEN != '' }}
         env:
-          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: printf '%s' "$ADMIN_TOKEN" | pnpm --filter @td/worker exec wrangler secret put ADMIN_TOKEN
