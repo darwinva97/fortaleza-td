@@ -166,9 +166,6 @@ export class RoomDO {
   // issue #12 · partida CARGADA de un guardado, esperando en el lobby de carga.
   // Mientras no-null y sin `game`, la sala está en modo «reanudar guardado».
   private savedGame: SaveData | null = null;
-  // la partida en curso es una REANUDACIÓN de un guardado: NO envía récord a la
-  // tabla (evita duplicar un highscore que la partida original ya pudo mandar).
-  private resumed = false;
   // tick/oleada finales retenidos tras game_over para poder guardar desde la
   // pantalla de FIN (this.game ya es null pero replayInit/replayLog siguen vivos).
   private finishedTick = 0;
@@ -704,8 +701,7 @@ export class RoomDO {
     this.pendingCmds = [];
     this.paused = false;
     this.speed = 1;
-    // partida NUEVA (no reanudada): sin guardado pendiente y sí puntúa récords
-    this.resumed = false;
+    // partida NUEVA: sin guardado pendiente
     this.savedGame = null;
     this.finishedTick = 0;
     this.finishedWave = 0;
@@ -779,7 +775,6 @@ export class RoomDO {
     this.replaySeed = save.seed;
     this.replayInit = { mapId: save.mapId, mode: save.mode, difficulty: save.difficulty, turbo: save.turbo ?? false, players: save.players };
     this.replayLog = save.log.slice();
-    this.resumed = true; // partida reanudada → no duplicar récord al terminar
 
     // 3) identidades: cada jugador conectado toma su slot reclamado o, si es
     //    pendiente, el primer slot libre. Los que no quepan pasan a espectadores.
@@ -978,12 +973,15 @@ export class RoomDO {
       })),
     };
     // récords: endless (Infinito) y horde (Horda) puntúan por oleada alcanzada.
-    // Una partida REANUDADA de un guardado NO envía récord: la partida original ya
-    // pudo mandarlo, y sumar otro con la misma oleada duplicaría la entrada.
-    // MODO TURBO ⚡: las partidas turbo TAMPOCO puntúan — su economía comprimida da
-    // más oro con el mismo reto, así que compararlas con las normales sería injusto
+    // Una partida REANUDADA de un guardado SÍ puntúa: guardar y retomar es una
+    // feature, no un descalificador — si partes de un guardado y empujas hasta la
+    // oleada 70, es un logro real. El riesgo de duplicados (recargar el MISMO
+    // guardado varias veces y reenviar la misma marca) lo corta el dedup de
+    // saveScore (misma gente + oleada + modo/dificultad/mapa = una sola entrada).
+    // MODO TURBO ⚡: las partidas turbo NO puntúan — su economía comprimida da más
+    // oro con el mismo reto, así que compararlas con las normales sería injusto
     // (irían a una tabla aparte; en v1, sencillamente no envían récord).
-    if (!this.resumed && !g.turbo && (g.mode === 'endless' || g.mode === 'horde')) {
+    if (!g.turbo && (g.mode === 'endless' || g.mode === 'horde')) {
       void saveScore(this.env, {
         names: g.players.map((p) => p.name),
         wave: g.wave,
