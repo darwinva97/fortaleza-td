@@ -50,7 +50,16 @@ jobs:
           git remote add upstream https://github.com/EijunnN/fortaleza-td.git || true
           git fetch upstream
           BEFORE=$(git rev-parse HEAD)
-          git merge --no-edit upstream/main
+          if ! git merge --no-edit upstream/main; then
+            # Conflicto: el upstream manda en todo salvo nuestro workflow propio.
+            git checkout --theirs -- .
+            # deploy.yml es exclusivo del fork (el upstream no lo tiene), así que
+            # normalmente NO está en conflicto; el `|| true` evita romper el step
+            # (los `run:` corren con `bash -e`) cuando no hay «our version» que restaurar.
+            git checkout --ours -- .github/workflows/deploy.yml 2>/dev/null || true
+            git add -A
+            git commit --no-edit
+          fi
           AFTER=$(git rev-parse HEAD)
           if [ "$BEFORE" != "$AFTER" ]; then
             git push origin main
