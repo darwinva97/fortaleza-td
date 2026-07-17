@@ -40,6 +40,12 @@ export interface Env {
   DIRECTORY?: DurableObjectNamespace; // directorio de salas públicas (F5)
   SCORES?: KVNamespace;
   ADMIN_TOKEN?: string; // secreto (wrangler secret) para /api/admin/announce
+  // Discord Activity (Embedded App): el Client ID es una var pública (wrangler.jsonc
+  // vars → /api/discord/config; configurarlo NO exige recompilar el cliente); el
+  // Client Secret es un secreto (wrangler secret) y JAMÁS sale al cliente. Ambos
+  // opcionales: sin ellos la integración de Discord queda apagada.
+  DISCORD_CLIENT_ID?: string;
+  DISCORD_CLIENT_SECRET?: string;
 }
 
 interface RoomPlayer {
@@ -192,6 +198,24 @@ export class RoomDO {
       this.reserved = true;
       this.code = (url.searchParams.get('code') ?? '').toUpperCase();
       return new Response('ok');
+    }
+
+    // Discord Activity: reclamo ATÓMICO de la sala determinista de una instancia.
+    // Reusa la semántica de /reserve (los Durable Objects serializan requests, así
+    // que exactamente UNA de las llamadas concurrentes reserva): la PRIMERA es el
+    // host, el resto ven la sala ya reservada/activa y son invitados. Devuelve
+    // { host } en vez de 200/409 para que el Worker sepa a quién toca crear la sala
+    // (create_room) y a quién unirse (join_room). Sin esta atomicidad, dos jugadores
+    // que abren la Activity a la vez crearían dos salas distintas.
+    if (url.pathname === '/discord-claim') {
+      const claimed = !this.initialized && !this.reserved;
+      if (claimed) {
+        this.reserved = true;
+        this.code = (url.searchParams.get('code') ?? '').toUpperCase();
+      }
+      return new Response(JSON.stringify({ host: claimed }), {
+        headers: { 'content-type': 'application/json' },
+      });
     }
 
     // issue #12 · CARGAR partida guardada: el Worker reserva este DO y le manda el

@@ -14,6 +14,26 @@ function genCode(): string {
   return c;
 }
 
+// Deriva un código de sala de 4 letras (mismo alfabeto CODE_CHARS y regex
+// ^[A-Z]{4}$ que valida /ws) de forma DETERMINISTA del instanceId de una Activity
+// de Discord: hash FNV-1a de 32 bits y luego 4 dígitos en base 24. Así dos
+// jugadores que abren la MISMA Activity derivan el MISMO código sin coordinarse
+// (quién es host lo decide `discord-claim`, atómico). El espacio es 24^4 = 331 776
+// códigos: dos instancias distintas casi nunca colisionan.
+function codeFromInstance(instanceId: string): string {
+  let h = 0x811c9dc5; // offset basis de FNV-1a 32 bits
+  for (let i = 0; i < instanceId.length; i++) {
+    h ^= instanceId.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0; // × primo 16777619, acotado a 32 bits sin signo
+  }
+  let code = '';
+  for (let i = 0; i < 4; i++) {
+    code += CODE_CHARS[h % CODE_CHARS.length];
+    h = Math.floor(h / CODE_CHARS.length);
+  }
+  return code;
+}
+
 const json = (data: unknown, status = 200): Response =>
   new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
 
@@ -30,6 +50,80 @@ export default {
 
     if (url.pathname === '/api/highscores') return json(await loadScores(env));
     if (url.pathname === '/api/health') return json({ ok: true });
+
+    // ---------- Discord Activity (Embedded App) ----------
+
+    // Client ID: ÚNICA fuente de verdad (el cliente lo lee de aquí, así configurarlo
+    // NO exige recompilar el cliente). Vacío = la integración de Discord está apagada.
+    if (url.pathname === '/api/discord/config') {
+      return json({ clientId: env.DISCORD_CLIENT_ID ?? '' });
+    }
+
+    // Intercambio OAuth: el cliente manda el `code` de sdk.commands.authorize y aquí
+    // se canjea por un access_token usando el Client Secret (secreto wrangler, nunca
+    // en el cliente). Se devuelve SOLO el access_token (jamás el refresh ni el secret).
+    if (url.pathname === '/api/discord/token' && request.method === 'POST') {
+      const clientId = env.DISCORD_CLIENT_ID ?? '';
+      const clientSecret = env.DISCORD_CLIENT_SECRET ?? '';
+      // sin config no hay integración posible: 503 claro (no es culpa del cliente)
+      if (!clientId || !clientSecret) {
+        return json({ error: 'Discord no está configurado en el servidor' }, 503);
+      }
+      let code = '';
+      try {
+        const body = (await request.json()) as { code?: unknown };
+        code = typeof body.code === 'string' ? body.code : '';
+      } catch {
+        /* cuerpo inválido → code vacío */
+      }
+      // el code de OAuth es corto (~30 chars); acotarlo evita mandar basura a Discord
+      if (!code || code.length > 512) return json({ error: 'falta code' }, 400);
+      let discordRes: Response;
+      try {
+        discordRes = await fetch('https://discord.com/api/oauth2/token', {
+          method: 'POST',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            client_id: clientId,
+            client_secret: clientSecret,
+            grant_type: 'authorization_code',
+            code,
+          }),
+        });
+      } catch {
+        return json({ error: 'No se pudo contactar con Discord' }, 502);
+      }
+      if (!discordRes.ok) return json({ error: 'Discord rechazó el code' }, 502);
+      const data = (await discordRes.json()) as { access_token?: string };
+      if (!data.access_token) return json({ error: 'Respuesta inesperada de Discord' }, 502);
+      return json({ access_token: data.access_token });
+    }
+
+    // Sala determinista por instancia de Activity: deriva el código del instanceId y
+    // resuelve de forma ATÓMICA quién crea la sala (host) vs quién se une (invitado).
+    // La atomicidad la garantiza el Durable Object (serializa requests): su handler
+    // interno `discord-claim` RESERVA en la primera llamada (host:true) y responde
+    // host:false a las siguientes (invitado, incl. una segunda llamada de la misma
+    // instancia). Devuelve { code, host }.
+    if (url.pathname === '/api/discord/room' && request.method === 'POST') {
+      let instanceId = '';
+      try {
+        const body = (await request.json()) as { instanceId?: unknown };
+        instanceId = typeof body.instanceId === 'string' ? body.instanceId : '';
+      } catch {
+        /* cuerpo inválido → instanceId vacío */
+      }
+      // instanceId de Discord: cadena acotada y de charset razonable (letras,
+      // dígitos y separadores típicos de ids). Fuera de eso → 400.
+      if (!instanceId || instanceId.length > 100 || !/^[A-Za-z0-9._:-]+$/.test(instanceId)) {
+        return json({ error: 'instanceId inválido' }, 400);
+      }
+      const code = codeFromInstance(instanceId);
+      const stub = env.ROOM.get(env.ROOM.idFromName(code));
+      const res = await stub.fetch(`https://do/discord-claim?code=${code}`, { method: 'POST' });
+      const { host } = (await res.json()) as { host: boolean };
+      return json({ code, host });
+    }
 
     // Aviso administrativo a TODOS los conectados (lo usa el workflow de deploy
     // para anunciar «Se desplegará en 1 minuto»). Protegido por el secreto

@@ -32,6 +32,13 @@
 
   "observability": { "enabled": true },
 
+  // Discord Activity (Embedded App): Client ID de la app (es PÚBLICO; el cliente lo
+  // lee de /api/discord/config, así cambiarlo NO exige recompilar el cliente). El
+  // Client Secret NO va aquí jamás — se guarda como secreto (ya configurado en el
+  // dashboard de Cloudflare; en dev local, apps/worker/.dev.vars, gitignoreado).
+  // Vacío = integración apagada.
+  "vars": { "DISCORD_CLIENT_ID": "1527507899075526666" },
+
   // Récords (leaderboard) en KV.
   "kv_namespaces": [{ "binding": "SCORES", "id": "2d8014cf2bfd49ab8a8372c69985ac86" }]
 }

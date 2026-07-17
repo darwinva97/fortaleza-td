@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@discord/embedded-app-sdk": "^2.5.0",
     "@td/shared": "workspace:*"
   },
   "devDependencies": {

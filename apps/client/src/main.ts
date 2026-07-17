@@ -942,8 +942,17 @@ initReplayHome();
 initLoadSaveHome();
 switchScreen('home');
 
-// enlace directo ?n=Nombre#SALA: entra a la sala sin pasar por el formulario
-{
+// Discord Activity (Embedded App): si venimos EMBEBIDOS en Discord (?frame_id=…),
+// delega el arranque al módulo perezoso ./discord (auto-nombre + auto-join por
+// instancia de Activity). Se carga aparte con import dinámico para no engordar el
+// bundle de los jugadores web. En ese caso NO corremos el flujo normal de home
+// (deep-link): el módulo de Discord resuelve la sala por su cuenta.
+if (new URLSearchParams(location.search).has('frame_id')) {
+  void import('./discord.js')
+    .then((m) => m.initDiscord())
+    .catch((err) => console.error('[discord] no se pudo cargar el módulo', err));
+} else {
+  // enlace directo ?n=Nombre#SALA: entra a la sala sin pasar por el formulario
   const qName = new URLSearchParams(location.search).get('n');
   if (qName && !store.name) saveName(qName.slice(0, 16));
   const hashCode = location.hash.replace('#', '').trim().toUpperCase();

@@ -6,6 +6,10 @@ data/
 .DS_Store
 .wrangler/
 
+# secretos de dev local del worker (Client Secret de Discord, etc.)
+.dev.vars
+.dev.vars.*
+
 # symlinks por agente (los reales viven en .agents/skills/)
 .claude/skills/
 

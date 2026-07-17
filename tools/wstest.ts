@@ -259,6 +259,12 @@ async function main(): Promise<void> {
   //     partida CONSERVA turbo (y reconstruye el estado congelado con ese turbo).
   await turboScenario();
 
+  // 13. Discord Activity (Embedded App): los endpoints /api/discord/*. En dev local
+  //     (wrangler dev) el Client ID viene de `vars` pero NO el Client Secret (que es
+  //     un secreto): config devuelve el clientId configurado, token falla controlado
+  //     (503), y la sala determinista por instanceId resuelve host/invitado atómico.
+  await discordScenario();
+
   if (failures.length > 0) {
     console.error(`\n💥 ${failures.length} fallos`);
     process.exit(1);
@@ -808,6 +814,70 @@ async function turboScenario(): Promise<void> {
   host.ws.close();
   bob.ws.close();
   await sleep(200);
+}
+
+// Escenario dedicado: Discord Activity (Embedded App). Verifica los tres endpoints
+// nuevos SIN necesidad de Discord real. En dev local (wrangler dev) existe el Client
+// ID (viene de `vars` en wrangler.jsonc) pero NO el Client Secret (secreto): por eso
+// config devuelve el clientId y token falla con 503. La sala determinista se prueba
+// de punta a punta (host atómico, idempotente por instancia, códigos distintos).
+async function discordScenario(): Promise<void> {
+  console.log('\n— Discord Activity: config / token / sala determinista —');
+  // el mismo Client ID configurado en apps/worker/wrangler.jsonc (`vars`)
+  const EXPECTED_CLIENT_ID = '1527507899075526666';
+
+  // config: el Client ID (público) sale de las vars del worker, sin recompilar cliente
+  const cfg = (await (await fetch(`${HTTP_BASE}/api/discord/config`)).json()) as { clientId?: string };
+  assert(cfg.clientId === EXPECTED_CLIENT_ID, `GET /api/discord/config devuelve el clientId configurado (${cfg.clientId})`);
+
+  // token: en local falta el Client Secret (es un secreto, no está en dev) → 503 claro
+  const tokRes = await fetch(`${HTTP_BASE}/api/discord/token`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ code: 'x'.repeat(20) }),
+  });
+  assert(tokRes.status === 503, `POST /api/discord/token sin Client Secret responde 503 (${tokRes.status})`);
+
+  // sala: instanceId inválido (vacío) → 400
+  const badRes = await fetch(`${HTTP_BASE}/api/discord/room`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ instanceId: '' }),
+  });
+  assert(badRes.status === 400, `POST /api/discord/room con instanceId inválido responde 400 (${badRes.status})`);
+
+  // sala: instanceId válido → { code de 4 letras, host:true } (esta llamada la RESERVA)
+  const inst = `disc-test-${Date.now()}`;
+  const r1 = (await (
+    await fetch(`${HTTP_BASE}/api/discord/room`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ instanceId: inst }),
+    })
+  ).json()) as { code: string; host: boolean };
+  assert(/^[A-Z]{4}$/.test(r1.code), `la primera llamada da un código de 4 letras (${r1.code})`);
+  assert(r1.host === true, 'la primera llamada de una instancia nueva es el host');
+
+  // MISMA instancia → MISMO código y host:false (idempotente: el segundo es invitado)
+  const r2 = (await (
+    await fetch(`${HTTP_BASE}/api/discord/room`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ instanceId: inst }),
+    })
+  ).json()) as { code: string; host: boolean };
+  assert(r2.code === r1.code, `la misma instancia deriva el mismo código (${r2.code} == ${r1.code})`);
+  assert(r2.host === false, 'la segunda llamada de la misma instancia entra como invitado (host:false)');
+
+  // instancia DISTINTA → código distinto (casi seguro; 24^4 = 331 776 combinaciones)
+  const r3 = (await (
+    await fetch(`${HTTP_BASE}/api/discord/room`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ instanceId: `${inst}-otra` }),
+    })
+  ).json()) as { code: string; host: boolean };
+  assert(r3.code !== r1.code, `una instancia distinta deriva un código distinto (${r3.code} != ${r1.code})`);
 }
 
 main().catch((err) => {
