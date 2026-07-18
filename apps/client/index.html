@@ -228,23 +228,38 @@
     <!-- ============ PANTALLA: JUEGO ============ -->
     <section id="screen-game" class="screen" hidden>
       <canvas id="game-canvas"></canvas>
+      <!-- viñeta de encuadre (INMERSIVO MINIMAL): div inerte propio, NO el canvas,
+           insertado justo encima de él en el DOM para heredar su z-index:auto de
+           forma natural (pinta por encima del lienzo y por debajo de todo el HUD,
+           que viene después) sin tocar renderer.ts ni pelear con z-index manual.
+           El propio canvas YA dibuja su viñeta de juego (contraste); esta es solo
+           el marco del VIEWPORT, constante pase lo que pase con cámara/zoom. -->
+      <div class="hud-vignette" aria-hidden="true"></div>
 
       <div id="hud-top">
         <div class="hud-group">
           <span id="hud-lives" class="stat">❤️ 20</span>
           <span id="hud-wave" class="stat"><span class="wv-word">Oleada</span><span class="wv-icon" aria-hidden="true">🌊</span> 0</span>
-          <!-- MODO TURBO ⚡ (issue #14): distintivo visible mientras dura una partida turbo -->
-          <span id="hud-turbo" class="stat turbo" title="Modo Turbo ⚡: economía comprimida, mismo reto. Sin récords." hidden>⚡ Turbo</span>
+          <!-- MODO TURBO ⚡ (issue #14): distintivo visible mientras dura una partida
+               turbo. hud.ts solo alterna [hidden] aquí (nunca reescribe el texto),
+               así que el rayo SVG + "Turbo" sobreviven a los renders. -->
+          <span id="hud-turbo" class="stat turbo" title="Modo Turbo ⚡: economía comprimida, mismo reto. Sin récords." hidden><svg class="i" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="M13.2 2.8 5.6 13.6a.6.6 0 0 0 .5 1h4.9l-1.1 6.6a.6.6 0 0 0 1.1.5l7.6-10.8a.6.6 0 0 0-.5-1h-4.9l1.1-6.6a.6.6 0 0 0-1.1-.5Z"/></svg>Turbo</span>
           <span id="hud-gold" class="stat gold">🪙 0</span>
           <button id="hud-wood" class="stat wood" title="Madera: tu orco leñador la tala sin parar. Especializar (★) cuesta 🪵45 y el Rango II (★★) 🪵60. Toca para abrir el MERCADO. Atajos: C compra · V vende.">🪵 0</button>
           <span id="hud-alive" class="stat" hidden>👾 0</span>
         </div>
         <div class="hud-group">
-          <button id="btn-callwave" class="btn small primary" hidden>⚔️ ¡Ya! <span id="callwave-timer"></span></button>
+          <!-- hud.ts solo toca #callwave-timer (innerHTML) y btn.hidden — el prefijo
+               SVG + " ¡Ya! " es texto/markup estático, sobrevive a cada render -->
+          <button id="btn-callwave" class="btn small primary" hidden><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m7 5 7 7-7 7M14 5l7 7-7 7"/></svg> ¡Ya! <span id="callwave-timer"></span></button>
           <!-- .blabel: texto legible del botón — visible en escritorio, oculto en
-               móvil por CSS (que en pantalla chica los iconos ya luchan por sitio) -->
-          <button id="btn-ping" class="btn small ghost" title="Marcar un punto para tu equipo (ALT+clic, mantener pulsado el mapa, o arma este botón)">📍<span class="blabel">Ping</span></button>
-          <button id="btn-scoreboard" class="btn small ghost" title="Tabla de jugadores: oro, madera, daño y bajas de la partida" aria-haspopup="true" aria-expanded="false">📊<span class="blabel">Jugadores</span></button>
+               móvil por CSS (que en pantalla chica los iconos ya luchan por sitio).
+               Guía/Tienda/Minimapa/Sonido/Ajustes viven SOLO en el menú «⋯» (ver
+               #hamburger-menu): sus botones aquí siguen existiendo y funcionando
+               (hud.ts/main.ts los usan tal cual), solo que el CSS los oculta de esta
+               barra en TODOS los anchos, no solo en móvil apaisado como antes. -->
+          <button id="btn-ping" class="btn small ghost" title="Marcar un punto para tu equipo (ALT+clic, mantener pulsado el mapa, o arma este botón)" aria-label="Ping"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="10.2" r="2.9"/><path d="M12 21S5.2 13.8 5.2 9.4a6.8 6.8 0 0 1 13.6 0C18.8 13.8 12 21 12 21Z"/></svg><span class="blabel">Ping</span></button>
+          <button id="btn-scoreboard" class="btn small ghost" title="Tabla de jugadores: oro, madera, daño y bajas de la partida" aria-haspopup="true" aria-expanded="false" aria-label="Jugadores"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 20v-8.5M12 20V4M19 20v-6"/></svg><span class="blabel">Jugadores</span></button>
           <button id="btn-shop" class="btn small ghost" title="Tienda: items especiales (Sentry para revelar invisibles)" aria-haspopup="true" aria-expanded="false">🛒<span class="blabel">Tienda</span></button>
           <button id="btn-guide" class="btn small ghost" title="Guía: enemigos, élites y fusiones">📖<span class="blabel">Guía</span></button>
           <button id="btn-minimap" class="btn small ghost" title="Mostrar/ocultar el minimapa">🗺<span class="blabel">Minimapa</span></button>
@@ -252,23 +267,28 @@
           <button id="btn-pause" class="btn small ghost" hidden>⏸<span class="blabel">Pausa</span></button>
           <button id="btn-mute" class="btn small ghost" title="Silenciar todo (efectos y música)"><span id="mute-icon">🔊</span><span class="blabel">Sonido</span></button>
           <button id="btn-settings" class="btn small ghost" title="Ajustes de sonido" aria-haspopup="true" aria-expanded="false">⚙<span class="blabel">Ajustes</span></button>
-          <!-- móvil apaisado: agrupa los botones de acción para no tapar el mapa
-               (se muestra solo en su @media; delega en los botones originales) -->
-          <button id="btn-hamburger" class="btn small ghost hamburger" title="Más opciones" aria-haspopup="true" aria-expanded="false">☰</button>
+          <!-- botón «⋯»: MISMO botón/lógica que antes tenía la hamburguesa ☰ de
+               móvil apaisado (main.ts ya la abre/cierra y delega en cada botón
+               original vía .click() — código intacto). Ahora es SIEMPRE visible
+               (el CSS deja de esconderlo fuera de ese único breakpoint) y agrupa
+               Tienda/Guía/Minimapa/Sonido/Ajustes: sin tocar TS, el desplegable
+               «gratis» que ya existía se convierte en el menú de esta variante. -->
+          <button id="btn-hamburger" class="btn small ghost hamburger" title="Más opciones: tienda, guía, minimapa, sonido y ajustes" aria-haspopup="true" aria-expanded="false" aria-label="Más opciones"><svg class="i" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg></button>
         </div>
       </div>
 
-      <!-- menú desplegable de la hamburguesa (solo móvil apaisado). Cada botón
-           delega en su equivalente del HUD ($(origId).click()), así el
-           comportamiento vive en un único sitio. -->
+      <!-- menú desplegable del botón «⋯»: cada botón delega en su equivalente del
+           HUD ($(origId).click()), así el comportamiento sigue viviendo en un
+           único sitio (main.ts, sin tocar). Ping/Jugadores quedan también aquí
+           como acceso alterno (no estorba: el menú nace cerrado). -->
       <div id="hamburger-menu" class="hamburger-dropdown" hidden role="menu">
-        <button id="hamburger-ping" class="btn ghost" role="menuitem">📍 Ping</button>
-        <button id="hamburger-scoreboard" class="btn ghost" role="menuitem">📊 Jugadores</button>
-        <button id="hamburger-shop" class="btn ghost" role="menuitem">🛒 Tienda</button>
-        <button id="hamburger-guide" class="btn ghost" role="menuitem">📖 Guía</button>
-        <button id="hamburger-minimap" class="btn ghost" role="menuitem">🗺 Minimapa</button>
+        <button id="hamburger-ping" class="btn ghost" role="menuitem"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="10.2" r="2.9"/><path d="M12 21S5.2 13.8 5.2 9.4a6.8 6.8 0 0 1 13.6 0C18.8 13.8 12 21 12 21Z"/></svg>Ping</button>
+        <button id="hamburger-scoreboard" class="btn ghost" role="menuitem"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 20v-8.5M12 20V4M19 20v-6"/></svg>Jugadores</button>
+        <button id="hamburger-shop" class="btn ghost" role="menuitem"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.2 5h2.1l1.4 10.4A2 2 0 0 0 9.7 17h7.6a2 2 0 0 0 2-1.7L20.5 8H6.6"/><circle cx="10" cy="20.3" r="1.3"/><circle cx="17" cy="20.3" r="1.3"/></svg>Tienda</button>
+        <button id="hamburger-guide" class="btn ghost" role="menuitem"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 6.3C10.3 4.8 7.6 4 3.7 4v14.8c3.9 0 6.6.8 8.3 2.3 1.7-1.5 4.4-2.3 8.3-2.3V4c-3.9 0-6.6.8-8.3 2.3Z"/><path d="M12 6.3v14.8"/></svg>Guía</button>
+        <button id="hamburger-minimap" class="btn ghost" role="menuitem"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4.2 3.5 6v13.8L9 18l6 2 5.5-1.8V4.4L15 6.2 9 4.2Z"/><path d="M9 4.2v13.8M15 6.2V20"/></svg>Minimapa</button>
         <button id="hamburger-mute" class="btn ghost" role="menuitem"><span id="hamburger-mute-icon">🔊</span> Sonido</button>
-        <button id="hamburger-settings" class="btn ghost" role="menuitem">⚙ Ajustes</button>
+        <button id="hamburger-settings" class="btn ghost" role="menuitem"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 4v2.4M12 17.6V20M20 12h-2.4M6.4 12H4M17.3 6.7l-1.7 1.7M8.4 15.6l-1.7 1.7M17.3 17.3l-1.7-1.7M8.4 8.4 6.7 6.7"/></svg>Ajustes</button>
       </div>
 
       <div id="settings-panel" hidden role="dialog" aria-label="Ajustes de sonido">
@@ -343,7 +363,7 @@
            esconde por defecto para no robar media pantalla; este botón flotante
            la muestra/esconde. Solo existe (vía CSS) por debajo del breakpoint
            móvil y solo se ve siendo espectador (hud.ts lo controla). -->
-      <button id="btn-towers-toggle" class="btn small ghost" hidden title="Mostrar/ocultar la barra de construcción">🏗</button>
+      <button id="btn-towers-toggle" class="btn small ghost" hidden title="Mostrar/ocultar la barra de construcción" aria-label="Mostrar/ocultar la barra de construcción"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 20h15M6.5 20V9.5l5.5-3.8 5.5 3.8V20M10 20v-5.5h4V20"/></svg></button>
 
       <div id="hud-panel" hidden></div>
 
@@ -400,7 +420,7 @@
       </div>
       <!-- pantalla completa: botón en la esquina inferior derecha (sin atajo de
            teclado: la 'F' ya es Fijar objetivo en el keymap) -->
-      <button id="btn-fullscreen" class="btn-fullscreen" title="Pantalla completa" aria-label="Pantalla completa">⛶</button>
+      <button id="btn-fullscreen" class="btn-fullscreen" title="Pantalla completa" aria-label="Pantalla completa"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 9V6.8a2.3 2.3 0 0 1 2.3-2.3H9M15 4.5h2.2a2.3 2.3 0 0 1 2.3 2.3V9M19.5 15v2.2a2.3 2.3 0 0 1-2.3 2.3H15M9 19.5H6.8a2.3 2.3 0 0 1-2.3-2.3V15"/></svg></button>
     </section>
 
     <div id="overlay-reconnect" class="overlay" hidden>
