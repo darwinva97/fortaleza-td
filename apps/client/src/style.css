@@ -184,27 +184,133 @@ html, body {
 
 /* ---------- inicio ---------- */
 
-/* Portada en DOS columnas (escritorio): a la izquierda el flujo de jugar
+/* Rediseño moderno en CSS puro: paleta neutra zinc casi-negra con UN acento
+   ámbar reservado al CTA de crear sala y a los récords — todo lo demás vive
+   en escalas de gris. Los tokens --h-* son LOCALES a #screen-home a
+   propósito (regla dura #4): el lobby y el HUD siguen con su paleta cálida
+   de fantasía sin que este rediseño los toque. Toda regla que reutiliza una
+   clase compartida con otras pantallas (.btn, .panel, .seg, .tab, .field)
+   va prefijada con #screen-home para no filtrarse fuera de la portada.
+   Portada en DOS columnas (escritorio): a la izquierda el flujo de jugar
    (crear/unirse), a la derecha las salas públicas ARRIBA (lo primero que ves),
    récords y repeticiones. En móvil se apilan (jugar primero). */
-#screen-home { display: flex; flex-direction: column; align-items: center; padding: 18px 16px; }
-.home-wrap { width: min(1060px, 100%); }
-.home-hero { text-align: center; margin: 2px 0 16px; }
+#screen-home {
+  --h-bg: #09090b;
+  --h-card: rgba(19, 19, 21, 0.92);
+  --h-card-2: rgba(255, 255, 255, 0.03);
+  --h-border: rgba(255, 255, 255, 0.09);
+  --h-border-hover: rgba(255, 255, 255, 0.18);
+  --h-fg: #fafafa;
+  --h-muted: #a1a1aa;
+  --h-muted-2: #88888f;
+  --h-accent: #f2b100;
+  --h-accent-hi: #ffcd45;
+  --h-accent-fg: #201700;
+  --h-ring: rgba(244, 244, 245, 0.55);
+  --h-radius-sm: 8px;
+  --h-radius: 10px;
+  --h-radius-lg: 12px;
+  --h-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 40px 20px 28px;
+  background:
+    radial-gradient(900px 420px at 50% -8%, rgba(242, 177, 0, 0.06), transparent 60%),
+    var(--h-bg);
+  color: var(--h-fg);
+}
+/* foco de teclado: anillo NEUTRO de 2px con hueco de 2px (offset) — nunca
+   ámbar, el color se reserva al CTA/récords, el foco es puramente funcional */
+#screen-home *:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--h-bg), 0 0 0 4px var(--h-ring);
+  border-radius: var(--h-radius-sm);
+}
+.home-wrap { width: min(1080px, 100%); }
+
+/* ---------- hero ---------- */
+.home-hero { text-align: center; margin: 0 0 40px; }
+.home-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 12px 5px 10px;
+  border: 1px solid var(--h-border);
+  border-radius: 999px;
+  background: var(--h-card-2);
+  color: var(--h-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin: 0 0 20px;
+}
+.home-eyebrow-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--h-accent);
+  box-shadow: 0 0 6px rgba(242, 177, 0, 0.7);
+}
+.logo {
+  font-size: 2.5rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  color: var(--h-fg);
+}
+/* la mascota de la fortaleza como "icono de app": ancla el wordmark en un
+   lenguaje de producto (tile redondeado con borde y sombra) en vez de un
+   emoji suelto flotando junto al texto */
+.logo-icon {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  font-size: 1.5rem;
+  line-height: 1;
+  border-radius: var(--h-radius-lg);
+  background: linear-gradient(160deg, #1c1c20, #101012);
+  border: 1px solid var(--h-border);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06) inset, 0 10px 24px rgba(0, 0, 0, 0.45);
+}
+.logo-text { font-weight: 700; }
+.tagline { text-align: center; color: var(--h-muted); margin: 12px 0 0; font-size: 1rem; }
+
 /* datos reales del juego bajo el eslogan: dan sustancia al hero sin altura */
 .hero-meta {
+  list-style: none;
   display: flex;
   justify-content: center;
   flex-wrap: wrap;
-  gap: 5px 22px;
-  margin-top: 8px;
-  color: var(--fg-dim);
-  font-size: 0.8rem;
-  font-weight: 600;
+  gap: 8px 10px;
+  margin: 22px 0 0;
+  padding: 0;
 }
+.hero-meta li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--h-border);
+  border-radius: 999px;
+  background: var(--h-card-2);
+  color: var(--h-muted);
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+.hero-meta .i { color: var(--h-muted-2); }
+
 .home-cols {
   display: grid;
   grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
-  gap: 18px;
+  gap: 16px;
   /* stretch: ambas tarjetas miden lo mismo — la columna corta no deja un
      hueco muerto al lado de la larga (queja #1) */
   align-items: stretch;
@@ -212,127 +318,265 @@ html, body {
 @media (max-width: 900px) {
   .home-cols { grid-template-columns: 1fr; }
 }
-.home-card {
-  padding: 20px 24px;
-  margin: 0;
-}
-.home-side { padding: 18px 20px; display: flex; flex-direction: column; }
-/* dentro de su propia tarjeta, la sección de salas no necesita separador */
-.home-side .rooms { margin-top: 0; border-top: none; padding-top: 0; }
-/* acciones secundarias lado a lado, ancladas al fondo de la tarjeta */
-.home-side-actions { display: flex; gap: 8px; margin-top: auto; padding-top: 14px; }
-.home-side-actions .btn { flex: 1; }
-/* pie legal (términos/privacidad): visible pero sin robar atención */
-.home-legal { margin-top: 14px; text-align: center; font-size: 11px; opacity: 0.55; }
-.home-legal a { color: inherit; }
-.create-hint { margin: 12px 0 2px; line-height: 1.45; }
-/* mientras falte nombre o visibilidad, el hint explica el bloqueo en dorado */
-.create-hint.blocked { color: var(--accent-hi); }
-/* puntito "en vivo": la lista se refresca sola */
-.live-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--ok);
-  box-shadow: 0 0 8px var(--ok);
-  animation: pulse 1.6s infinite;
-  vertical-align: 2px;
-  margin-right: 2px;
-}
-.logo {
-  font-size: 2.6rem;
-  text-align: center;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-}
-.logo-icon { filter: drop-shadow(0 4px 14px rgba(255, 179, 0, 0.4)); }
-.logo-text {
-  background: linear-gradient(180deg, #ffe082, #ffb300);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  font-weight: 800;
-  letter-spacing: 0.02em;
-}
-.tagline { text-align: center; color: var(--fg-dim); margin: 6px 0 16px; }
 
-.home-tabs { display: flex; gap: 8px; margin: 16px 0 10px; }
-.tab {
+/* ---------- tarjetas (Card moderna: header + descripción + contenido,
+   sombra suave en capas en vez del glow dorado que usa el resto del juego) ---------- */
+#screen-home .panel {
+  background: var(--h-card);
+  border: 1px solid var(--h-border);
+  border-radius: var(--h-radius-lg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 16px 40px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+.home-card { padding: 24px; margin: 0; }
+.home-side { padding: 22px; display: flex; flex-direction: column; }
+.card-head { margin-bottom: 20px; }
+.card-title { font-size: 1.05rem; font-weight: 600; letter-spacing: -0.01em; }
+.card-desc { color: var(--h-muted); font-size: 0.84rem; margin-top: 3px; line-height: 1.4; }
+
+/* icono de línea SVG (16px, currentColor) — reemplaza al emoji en la parte
+   ESTÁTICA de la portada (botones, seg, hero); las listas dinámicas que
+   pinta screens.ts/replay.ts conservan su emoji, no son de este archivo */
+#screen-home .i { width: 15px; height: 15px; flex-shrink: 0; }
+
+/* ---------- campos ---------- */
+#screen-home .field { margin: 0 0 18px; gap: 6px; }
+#screen-home .field span, #screen-home .field-label {
+  color: var(--h-muted);
+  font-size: 0.72rem;
+  text-transform: none;
+  letter-spacing: 0.01em;
+  font-weight: 500;
+}
+#screen-home .field-label { margin: 0 0 8px; display: block; }
+#screen-home .field input {
+  height: 38px;
+  padding: 0 12px;
+  background: var(--h-card-2);
+  border: 1px solid var(--h-border);
+  border-radius: var(--h-radius-sm);
+  color: var(--h-fg);
+  font-size: 0.875rem;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+#screen-home .field input::placeholder { color: var(--h-muted-2); }
+#screen-home .field input:focus { border-color: var(--h-border-hover); background: rgba(24, 24, 27, 0.9); }
+#screen-home .code-input {
+  font-family: var(--h-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.35em;
+  font-weight: 600;
+  text-align: center;
+  font-size: 1.1rem !important;
+}
+
+/* ---------- pestañas Crear sala / Unirse (segmentado moderno) ---------- */
+.home-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  margin: 0 0 18px;
+  background: var(--h-card-2);
+  border: 1px solid var(--h-border);
+  border-radius: var(--h-radius-sm);
+}
+#screen-home .tab {
   flex: 1;
   background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  color: var(--fg-dim);
-  padding: 10px;
-  font-weight: 700;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--h-muted);
+  padding: 7px 10px;
+  font-weight: 500;
+  font-size: 0.85rem;
   cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
 }
-.tab.active { background: var(--bg3); color: var(--fg); border-color: var(--accent2); }
+#screen-home .tab:hover { color: var(--h-fg); }
+#screen-home .tab.active {
+  background: #232326;
+  color: var(--h-fg);
+  border-color: var(--h-border-hover);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+.home-tabpanel { padding-top: 2px; }
+
+/* ---------- controles segmentados (Visibilidad): activo NEUTRO a propósito,
+   el ámbar se reserva al CTA/récords, ver comentario de tokens arriba ---------- */
+#screen-home .seg { display: flex; gap: 8px; }
+#screen-home .seg button {
+  flex: 1;
+  background: var(--h-card-2);
+  border: 1px solid var(--h-border);
+  border-radius: var(--h-radius-sm);
+  color: var(--h-muted);
+  padding: 10px 8px;
+  font-weight: 500;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+#screen-home .seg button .i { color: var(--h-muted-2); transition: color 0.15s ease; }
+#screen-home .seg button small { font-size: 0.68rem; font-weight: 400; color: var(--h-muted-2); opacity: 1; }
+#screen-home .seg button:hover { border-color: var(--h-border-hover); color: var(--h-fg); }
+#screen-home .seg button.active {
+  background: #202023;
+  color: var(--h-fg);
+  border-color: var(--h-border-hover);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+#screen-home .seg button.active .i { color: var(--h-fg); }
+#screen-home .seg button:disabled { opacity: 0.5; cursor: default; }
+
+/* ---------- botones (altura 36-40px, radio contenido, transición 150ms) ---------- */
+#screen-home .btn {
+  height: 38px;
+  padding: 0 16px;
+  border-radius: var(--h-radius-sm);
+  font-size: 0.86rem;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  background: #1c1c1f;
+  color: var(--h-fg);
+  border: 1px solid var(--h-border);
+  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease, transform 0.06s ease;
+}
+#screen-home .btn:hover { background: #232326; border-color: var(--h-border-hover); filter: none; }
+#screen-home .btn:active { transform: scale(0.98); }
+/* único lugar (junto a los récords) donde vive el ámbar: el CTA primario */
+#screen-home .btn.primary {
+  background: linear-gradient(180deg, var(--h-accent-hi), var(--h-accent));
+  color: var(--h-accent-fg);
+  border-color: rgba(0, 0, 0, 0.15);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 20px rgba(242, 177, 0, 0.18);
+}
+#screen-home .btn.primary:hover { filter: brightness(1.06); }
+#screen-home .btn.big { width: 100%; height: 44px; font-size: 0.92rem; margin-top: 18px; }
+#screen-home .btn.ghost { background: transparent; border-color: var(--h-border); color: var(--h-muted); }
+#screen-home .btn.ghost:hover { background: var(--h-card-2); color: var(--h-fg); border-color: var(--h-border-hover); }
+#screen-home .btn.small { height: 32px; padding: 0 12px; font-size: 0.78rem; }
+#screen-home .btn:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; transform: none; }
+
+.create-hint { margin: 12px 0 0; line-height: 1.45; color: var(--h-muted-2); }
+/* mientras falte nombre o visibilidad, el hint explica el bloqueo en ámbar */
+.create-hint.blocked { color: var(--h-accent-hi); }
+#screen-home .error { color: #f87171; font-size: 0.82rem; font-weight: 500; margin-top: 10px; }
+
+/* acciones secundarias lado a lado, ancladas al fondo de la tarjeta */
+.home-side-actions { display: flex; gap: 8px; margin-top: auto; padding-top: 16px; }
+.home-side-actions .btn { flex: 1; }
+
+/* pie legal (términos/privacidad): visible pero sin robar atención */
+.home-legal { margin-top: 20px; text-align: center; font-size: 11px; color: var(--h-muted-2); }
+.home-legal a { color: var(--h-muted); text-decoration: none; border-bottom: 1px solid transparent; transition: border-color 0.15s ease, color 0.15s ease; }
+.home-legal a:hover { color: var(--h-fg); border-color: var(--h-border-hover); }
+
+/* puntito "en vivo": la lista se refresca sola (semántico, no es el acento) */
+.live-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #34d399;
+  box-shadow: 0 0 7px rgba(52, 211, 153, 0.75);
+  animation: pulse 1.6s infinite;
+  vertical-align: 1px;
+  margin-right: 6px;
+}
+#screen-home h3 {
+  display: flex;
+  align-items: center;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  font-weight: 600;
+  color: var(--h-muted);
+  margin: 0 0 12px;
+}
+.section-sub { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--h-muted-2); font-size: 0.72rem; }
+
+/* dentro de su propia tarjeta, la sección de salas no necesita separador */
+.home-side .rooms { margin-top: 0; border-top: none; padding-top: 0; }
 
 /* ---------- salas públicas (portada) ---------- */
-.rooms { margin-top: 20px; border-top: 1px solid var(--border); padding-top: 14px; }
-.rooms h3 { font-size: 1rem; margin-bottom: 10px; }
+.rooms { margin-top: 20px; border-top: 1px solid var(--h-border); padding-top: 16px; }
 /* con muchas salas la lista hace scroll INTERNO: la portada nunca crece */
-.room-list { list-style: none; display: flex; flex-direction: column; gap: 8px; max-height: min(48vh, 430px); overflow-y: auto; padding-right: 2px; }
+.room-list { list-style: none; display: flex; flex-direction: column; gap: 6px; max-height: min(44vh, 400px); overflow-y: auto; padding-right: 2px; margin: 0; }
 /* fila escaneable: miniatura · quién/estado + etiquetas · acción */
 .room-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  background: var(--bg2);
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  background: var(--h-card-2);
+  border: 1px solid var(--h-border);
+  border-radius: var(--h-radius);
   padding: 8px 10px;
+  transition: border-color 0.15s ease;
 }
+.room-row:hover { border-color: var(--h-border-hover); }
 /* miniatura REAL del mapa (mismo dibujado que las tarjetas del lobby):
    se reconoce la sala de un vistazo */
 .room-thumb {
-  width: 62px;
-  height: 40px;
+  width: 56px;
+  height: 36px;
   object-fit: cover;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--bg3);
+  border-radius: 6px;
+  border: 1px solid var(--h-border);
+  background: #000;
   flex-shrink: 0;
 }
-.room-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
+.room-info { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
 .room-top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.room-host { font-size: 0.92rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.room-state { font-size: 0.7rem; font-weight: 800; letter-spacing: 0.03em; white-space: nowrap; }
-.room-state.lobby { color: var(--ok); }
-.room-state.ingame { color: var(--accent-hi); }
+.room-host { font-size: 0.86rem; font-weight: 500; color: var(--h-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.room-state { font-size: 0.66rem; font-weight: 600; letter-spacing: 0.02em; white-space: nowrap; }
+.room-state.lobby { color: #34d399; }
+.room-state.ingame { color: var(--h-muted); }
 .room-tags { display: flex; flex-wrap: wrap; gap: 4px; }
+/* etiquetas en mono: lectura de "datos" (mapa/modo/dificultad/jugadores),
+   coherente con el resto del sistema (código de sala, récords) */
 .room-tag {
-  font-size: 0.68rem;
-  color: var(--fg-dim);
-  background: rgba(10, 14, 24, 0.55);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 1px 8px;
+  font-family: var(--h-mono);
+  font-size: 0.64rem;
+  color: var(--h-muted);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--h-border);
+  border-radius: 5px;
+  padding: 1px 6px;
   white-space: nowrap;
 }
 .room-row .btn { flex-shrink: 0; }
 /* estado vacío: invita a crear la primera sala pública */
 .rooms-empty {
-  border: 1px dashed var(--border);
-  border-radius: 12px;
-  padding: 18px 14px;
+  border: 1px dashed var(--h-border);
+  border-radius: var(--h-radius);
+  padding: 20px 16px;
   text-align: center;
-  line-height: 1.5;
+  line-height: 1.55;
+  color: var(--h-muted);
+  font-size: 0.82rem;
 }
 @media (max-width: 700px) {
   .room-row { flex-wrap: wrap; }
-  .room-thumb { width: 52px; height: 34px; }
+  .room-thumb { width: 48px; height: 32px; }
 }
 
-.scores { margin-top: 22px; border-top: 1px solid var(--border); padding-top: 14px; }
-.scores h3 { font-size: 1rem; margin-bottom: 8px; }
-.scores ol { padding-left: 22px; color: var(--fg-dim); font-size: 0.9rem; }
-.scores li { margin: 3px 0; }
-.scores b { color: var(--accent); }
+/* récords: único lugar (junto al CTA) donde el número lleva ámbar + mono,
+   como un marcador — el resto de la fila queda neutro */
+.scores { margin-top: 22px; border-top: 1px solid var(--h-border); padding-top: 16px; }
+.scores ol { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; }
+.scores li { font-size: 0.82rem; color: var(--h-muted); display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.scores b { color: var(--h-accent); font-family: var(--h-mono); font-weight: 600; }
+.scores .hint { color: var(--h-muted-2); font-size: 0.76rem; }
 
 /* ---------- lobby ---------- */
 
@@ -1525,9 +1769,13 @@ html, body {
   }
   .lobby-chat-box .chat-log { height: 150px; }
   .home-card, .lobby-card { padding: 16px; }
-  .logo { font-size: 2.1rem; }
+  #screen-home { padding: 28px 16px 20px; }
+  .home-hero { margin-bottom: 28px; }
+  .logo { font-size: 2rem; gap: 10px; }
+  .logo-icon { width: 38px; height: 38px; font-size: 1.25rem; }
   .tagline { font-size: 0.9rem; }
-  .hero-meta { font-size: 0.72rem; gap: 4px 14px; }
+  .hero-meta { font-size: 0.74rem; gap: 6px 8px; margin-top: 16px; }
+  .hero-meta li { padding: 5px 10px; }
   /* miniaturas de mapa aún más bajas: 3 por fila también a 390px */
   .map-grid { gap: 6px; }
   .map-card canvas { height: 44px; }
@@ -1733,21 +1981,24 @@ html, body {
   white-space: nowrap;
 }
 
-/* lista de repeticiones guardadas en la home */
-.replays { margin-top: 18px; }
-.replay-list { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+/* lista de repeticiones guardadas en la home (tokens --h-* del rediseño
+   moderno: solo existe dentro de #screen-home, ver bloque "inicio" arriba) */
+.replays { margin-top: 22px; border-top: 1px solid var(--h-border, var(--border)); padding-top: 16px; }
+.replay-list { list-style: none; display: flex; flex-direction: column; gap: 6px; margin: 0; }
 .replay-list li {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  background: var(--bg2);
-  border: 1px solid var(--border);
-  border-radius: 10px;
+  background: var(--h-card-2, var(--bg2));
+  border: 1px solid var(--h-border, var(--border));
+  border-radius: var(--h-radius, 10px);
   padding: 8px 12px;
+  transition: border-color 0.15s ease;
 }
-.replay-info { display: flex; flex-direction: column; gap: 2px; font-size: 0.9rem; }
-.replay-info .hint { font-size: 0.76rem; }
+.replay-list li:hover { border-color: var(--h-border-hover, var(--border)); }
+.replay-info { display: flex; flex-direction: column; gap: 2px; font-size: 0.86rem; color: var(--h-fg, var(--fg)); }
+.replay-info .hint { font-size: 0.76rem; color: var(--h-muted-2, var(--fg-dim)); }
 .replay-actions { display: flex; gap: 6px; flex-shrink: 0; }
 /* nota: #btn-load-replay ya NO lleva margin-top propio — vive dentro de
    .home-side-actions (fila con los otros dos botones) y ese margen extra
