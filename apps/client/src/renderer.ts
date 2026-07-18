@@ -175,6 +175,18 @@ let mapLayer: HTMLCanvasElement | null = null;
 let mapLayerKey = '';
 let mapLayerScale = 40; // px por celda dentro de la capa estática
 
+// ---------- terreno decorativo fuera del mapa ----------
+// Capa estática que EXTIENDE el suelo del tema más allá del borde del mapa, así
+// que al alejar el zoom o panear al borde nunca se ve negro puro. Se oscurece y
+// dessatura hacia fuera (mezcla hacia `surroundFar`) y esparce decoración del
+// tema con hash determinista (estable entre frames). Cacheada como el mapLayer;
+// se dibuja con UN solo drawImage barato bajo el mapa.
+let surroundLayer: HTMLCanvasElement | null = null;
+let surroundLayerKey = '';
+let surroundScale = 24; // px por celda dentro de la capa (resolución modesta)
+let surroundFar = '#0b0c12'; // tono "lejano": borde del decorado y fondo del canvas
+const SURROUND_CELLS = 10; // celdas de marco decorativo alrededor del mapa
+
 // ---------- minimapa ----------
 // recuadro en coordenadas de PANTALLA calculado en cada frame (o null si oculto)
 let miniRect: { x: number; y: number; w: number; h: number; s: number } | null = null;
@@ -228,6 +240,7 @@ export function zoomAt(px: number, py: number, factor: number): void {
   if (!gs) return;
   const worldX = (px - view.ox) / view.scale;
   const worldY = (py - view.oy) / view.scale;
+  autoFrame = false; // el jugador toma el control: ya no reencuadramos solos
   zoom = Math.min(MAX_ZOOM, Math.max(1, zoom * factor));
   const s2 = baseScale * zoom;
   const w = canvas.clientWidth;
@@ -242,43 +255,60 @@ export function zoomAt(px: number, py: number, factor: number): void {
 }
 
 export function panBy(dx: number, dy: number): void {
+  autoFrame = false; // paneo manual: respetar la vista del jugador
   panX += dx;
   panY += dy;
   view.ox += dx;
   view.oy += dy;
 }
 
-// Cámara inicial estilo Green TD: en TÁCTIL no se muestra todo el mapa de golpe
-// — se arranca ACERCADO (×1.6) sobre la entrada de los enemigos, que es donde se
-// construye al principio. El resto del mapa se explora paneando, con pellizco/
-// rueda (el zoom mínimo sigue mostrando el mapa entero) o con el minimapa, que
-// así recupera su razón de ser. El doble tap vuelve a ESTA vista.
+// Cámara inicial estilo "cover": en vez de ENCAJAR el mapa entero (fit) —que en
+// monitores anchos dejaba enormes bandas negras y el mapa parecía un sello
+// flotando— LLENAMOS el viewport ajustando al EJE LIMITANTE, dejando solo un
+// margen mínimo (~medio tile) de terreno decorativo como marco. El eje que no
+// cabe se recorta y se centra en la ZONA DE ACCIÓN (centroide del recorrido).
+// El pan/zoom manual y el minimapa siguen para explorar lo que no cabe; y como
+// el zoom mínimo (1) = fit = mapa entero, alejar la rueda un paso lo muestra
+// todo (ahora con terreno decorativo en las bandas, ya no negro). Doble tap =
+// volver a ESTE encuadre.
 //
-// En ESCRITORIO (ratón con hover fino) este arranque acercado resultó ser mala
-// UX real (issue: "siempre que entro por desktop hay que hacer antizoom"): el
-// jugador tenía que alejar el zoom a mano en CADA partida para ver el tablero
-// completo. Ahí el reset muestra el mapa entero de una vez (zoom 1 = el fit
-// calculado en computeView), que es exactamente lo que el jugador quería.
-const START_ZOOM = 1.6;
-const HAS_HOVER = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
-// centro pendiente de aplicar: computeView lo consume cuando ya conoce el
-// baseScale real del frame (aplicarlo aquí usaría una escala desfasada)
-let pendingCenter: { x: number; y: number } | null = null;
+// `autoFrame` = la cámara sigue el encuadre cover automáticamente (arranque y
+// re-encuadre al redimensionar el viewport). En cuanto el jugador toca la cámara
+// (zoom/pan/minimapa) se apaga y respetamos su vista hasta el próximo reset.
+let pendingFrame: { x: number; y: number } | null = null;
+let autoFrame = true;
+// último tamaño CSS con el que encuadramos: detecta resize/rotación (no DPR) para
+// re-encuadrar mientras autoFrame siga activo
+let lastFrameW = 0;
+let lastFrameH = 0;
+
+// centroide del recorrido = "zona de acción": por donde caminan los enemigos y
+// se construye. Punto siempre interior y estable; al recortar en cover deja el
+// camino lo más visible posible. Solo geometría del mapa (sin dims ni zoom), así
+// que resetCamera puede fijarlo aunque el canvas siga oculto (0×0).
+function actionCenter(map: MapDef): { x: number; y: number } {
+  let sx = 0;
+  let sy = 0;
+  let n = 0;
+  for (const path of map.paths) {
+    for (const [c, r] of path) {
+      sx += c + 0.5;
+      sy += r + 0.5;
+      n++;
+    }
+  }
+  if (n === 0) return { x: map.gridW / 2, y: map.gridH / 2 };
+  return { x: sx / n, y: sy / n };
+}
 
 export function resetCamera(): void {
   const gs = store.game;
-  if (!gs || HAS_HOVER) {
-    zoom = 1;
-    panX = 0;
-    panY = 0;
-    pendingCenter = null;
-    return;
-  }
-  zoom = START_ZOOM;
+  zoom = 1; // baseline; computeView lo sube al zoom "cover" al aplicar pendingFrame
   panX = 0;
   panY = 0;
-  const [c, r] = gs.map.paths[0][0];
-  pendingCenter = { x: c + 0.5, y: r + 0.5 };
+  autoFrame = true;
+  // computeView consume esto con el baseScale/dims frescos del próximo frame
+  pendingFrame = gs ? actionCenter(gs.map) : null;
 }
 
 // Centra la cámara sobre un punto del mundo (celdas). Ajusta panX/panY; el
@@ -287,6 +317,7 @@ export function resetCamera(): void {
 export function centerOn(worldX: number, worldY: number): void {
   const gs = store.game;
   if (!gs) return;
+  autoFrame = false; // recentrado por minimapa: control manual del jugador
   const s = baseScale * zoom;
   const mapW = gs.map.gridW * s;
   const mapH = gs.map.gridH * s;
@@ -520,6 +551,23 @@ function shade(hex: string, f: number): string {
   return out;
 }
 
+// mezcla lineal de dos colores hex (#rrggbb). Cacheada: `t` viene cuantizado por
+// distancia (d/M), así que el número de claves es pequeño.
+const mixCache = new Map<string, string>();
+function mix(hexA: string, hexB: string, t: number): string {
+  const key = `${hexA}|${hexB}|${t.toFixed(3)}`;
+  const hit = mixCache.get(key);
+  if (hit) return hit;
+  const a = parseInt(hexA.slice(1), 16);
+  const b = parseInt(hexB.slice(1), 16);
+  const r = Math.round(((a >> 16) & 255) + (((b >> 16) & 255) - ((a >> 16) & 255)) * t);
+  const gr = Math.round(((a >> 8) & 255) + (((b >> 8) & 255) - ((a >> 8) & 255)) * t);
+  const bl = Math.round((a & 255) + ((b & 255) - (a & 255)) * t);
+  const out = `rgb(${r},${gr},${bl})`;
+  mixCache.set(key, out);
+  return out;
+}
+
 function roundRect(c: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
   c.beginPath();
   c.moveTo(x + r, y);
@@ -562,15 +610,32 @@ function computeView(map: MapDef): void {
   const h = canvas.clientHeight;
   const availW = w - PAD_SIDE * 2;
   const availH = h - PAD_TOP - PAD_BOTTOM;
+  // baseScale = FIT (mapa entero). zoom=1 = fit; el encuadre "cover" se logra con
+  // un zoom > 1 (calculado abajo), de modo que alejar hasta zoom 1 sigue mostrando
+  // el mapa completo y el resto del código (clamps, minimapa, buckets) no cambia.
   baseScale = Math.max(6, Math.min(availW / map.gridW, availH / map.gridH));
-  // centro diferido de resetCamera: se aplica con el baseScale fresco de ESTE
-  // frame (el clampeo de abajo lo recorta a los bordes del mapa)
-  if (pendingCenter) {
+
+  // Re-encuadre "cover": al arrancar/resetear (pendingFrame) o al cambiar el
+  // TAMAÑO del viewport mientras la cámara está en modo automático. Si el jugador
+  // ya movió la cámara (autoFrame=false) respetamos su zoom/pan y solo reclampamos.
+  const sizeChanged = w !== lastFrameW || h !== lastFrameH;
+  if (pendingFrame || (autoFrame && sizeChanged)) {
+    // coverScale = escala que LLENA el eje limitante dejando ~medio tile de
+    // margen a cada lado (de ahí el +1 en la dimensión: gridN celdas de mapa +
+    // 1 celda repartida como marco). El eje que sobra desborda y se recorta.
+    const coverScale = Math.max(availW / (map.gridW + 1), availH / (map.gridH + 1));
+    // como zoom relativo al fit; clamp a [1, MAX_ZOOM] (1 = ya cabe entero;
+    // MAX_ZOOM = tope, aspectos extremos dejan bandas que rellena el decorado).
+    zoom = Math.min(MAX_ZOOM, Math.max(1, coverScale / baseScale));
+    const c = pendingFrame ?? actionCenter(map);
     const s0 = baseScale * zoom;
-    panX = (map.gridW * s0) / 2 - pendingCenter.x * s0;
-    panY = (map.gridH * s0) / 2 - pendingCenter.y * s0;
-    pendingCenter = null;
+    panX = (map.gridW * s0) / 2 - c.x * s0;
+    panY = (map.gridH * s0) / 2 - c.y * s0;
+    pendingFrame = null;
   }
+  lastFrameW = w;
+  lastFrameH = h;
+
   const s = baseScale * zoom;
   const mapW = map.gridW * s;
   const mapH = map.gridH * s;
@@ -732,6 +797,69 @@ function buildMapLayer(map: MapDef): void {
   }
 
   mapLayer = layer;
+}
+
+// Capa de terreno decorativo que rodea el mapa (SURROUND_CELLS celdas de marco).
+// Precomputada por mapa/tamaño (nada de Math.random en el bucle de dibujo: todo
+// sale de hash2 determinista) y cacheada en un canvas offscreen, igual que el
+// suelo base. Resolución modesta (se dibuja oscura y ampliada, se ve suave), con
+// las dimensiones capadas para no castigar la memoria móvil.
+function buildSurroundLayer(map: MapDef): void {
+  const M = SURROUND_CELLS;
+  const cellsW = map.gridW + M * 2;
+  const cellsH = map.gridH + M * 2;
+  const MAXD = 1400; // px máx. por lado del canvas offscreen
+  let ss = Math.min(baseScale, MAXD / Math.max(cellsW, cellsH));
+  ss = Math.max(8, ss);
+  const key = `${map.id}:${Math.round(ss)}`;
+  if (surroundLayerKey === key && surroundLayer) return;
+  surroundLayerKey = key;
+  surroundScale = ss;
+
+  const theme = THEMES[map.theme];
+  const seed = strSeed(map.id);
+  // tono "lejano": el borde exterior del decorado mezcla hacia aquí, y el fondo
+  // del canvas se rellena con este mismo color → transición sin costura, sin negro
+  const far = mix(theme.tones[0], theme.sky, 0.82);
+  surroundFar = far;
+
+  const layer = document.createElement('canvas');
+  layer.width = Math.max(1, Math.round(cellsW * ss));
+  layer.height = Math.max(1, Math.round(cellsH * ss));
+  const m = layer.getContext('2d')!;
+
+  // suelo extendido: tono del tema mezclado hacia `far` según la distancia
+  // Chebyshev fuera del mapa (dentro queda el tono base; lo tapa el mapLayer, pero
+  // así el borde encaja sin salto). Origen del canvas = mundo (-M, -M).
+  for (let cy = -M; cy < map.gridH + M; cy++) {
+    for (let cx = -M; cx < map.gridW + M; cx++) {
+      const dx = cx < 0 ? -cx : cx >= map.gridW ? cx - map.gridW + 1 : 0;
+      const dy = cy < 0 ? -cy : cy >= map.gridH ? cy - map.gridH + 1 : 0;
+      const d = Math.max(dx, dy);
+      const tone = theme.tones[Math.floor(hash2(cx, cy, seed) * 3) % 3];
+      m.fillStyle = d === 0 ? tone : mix(tone, far, Math.min(1, d / M));
+      m.fillRect((cx + M) * ss, (cy + M) * ss, ss + 1, ss + 1);
+    }
+  }
+
+  // decoración del tema esparcida SOLO fuera del mapa, atenuándose con la
+  // distancia (se hunde en la penumbra). Densidad ~16%; hash determinista.
+  for (let cy = -M; cy < map.gridH + M; cy++) {
+    for (let cx = -M; cx < map.gridW + M; cx++) {
+      if (cx >= 0 && cx < map.gridW && cy >= 0 && cy < map.gridH) continue;
+      if (hash2(cx * 7 + 3, cy * 5 + 1, seed + 11) > 0.16) continue;
+      const dx = cx < 0 ? -cx : cx >= map.gridW ? cx - map.gridW + 1 : 0;
+      const dy = cy < 0 ? -cy : cy >= map.gridH ? cy - map.gridH + 1 : 0;
+      const t = Math.min(1, Math.max(dx, dy) / M);
+      const kind = theme.decor[Math.floor(hash2(cx, cy, seed + 5) * theme.decor.length) % theme.decor.length];
+      m.save();
+      m.globalAlpha = (1 - t) * 0.7;
+      drawDecor(m, kind, (cx + M + 0.5) * ss, (cy + M + 0.5) * ss, ss, hash2(cx, cy, seed + 6));
+      m.restore();
+    }
+  }
+
+  surroundLayer = layer;
 }
 
 function drawGroundDetail(m: CanvasRenderingContext2D, theme: MapDef['theme'], x: number, y: number, s: number, r: number): void {
@@ -4120,11 +4248,13 @@ function loop(): void {
 
   computeView(gs.map);
   buildMapLayer(gs.map);
+  buildSurroundLayer(gs.map);
   spawnAmbient(gs.map, dt);
 
-  const theme = THEMES[gs.map.theme];
   g.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
-  g.fillStyle = theme.sky;
+  // fondo = tono "lejano" del decorado (no negro): así, más allá de la capa de
+  // terreno decorativo, el vacío es tierra en penumbra y encaja con su borde.
+  g.fillStyle = surroundFar;
   g.fillRect(0, 0, canvas.clientWidth, canvas.clientHeight);
 
   // sacudida de pantalla
@@ -4136,6 +4266,18 @@ function loop(): void {
     shake = 0;
   }
 
+  // terreno decorativo alrededor del mapa (bajo el mapa; el mapLayer lo tapa en
+  // el centro). Un solo drawImage de la capa cacheada, escalada a mundo.
+  if (surroundLayer) {
+    const M = SURROUND_CELLS;
+    g.drawImage(
+      surroundLayer,
+      view.ox - M * view.scale,
+      view.oy - M * view.scale,
+      (gs.map.gridW + M * 2) * view.scale,
+      (gs.map.gridH + M * 2) * view.scale,
+    );
+  }
   if (mapLayer) {
     g.drawImage(mapLayer, view.ox, view.oy, gs.map.gridW * view.scale, gs.map.gridH * view.scale);
   }
