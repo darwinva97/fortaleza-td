@@ -130,12 +130,24 @@
     <!-- ============ PANTALLA: LOBBY ============ -->
     <!-- Tres zonas en escritorio (equipo+chat · mapa · ajustes+CTA) repartidas
          con grid-areas para que TODO quepa sin scroll a 1366×768; en pantallas
-         medianas y en móvil las áreas se reapilan (ver style.css). -->
+         medianas y en móvil las áreas se reapilan (ver style.css). Mismo
+         lenguaje visual que #screen-home (tokens --h-* compartidos, iconos de
+         línea SVG inline): las listas que pinta screens.ts (jugadores,
+         espectadores, chat) conservan su emoji, solo se restilizan por CSS. -->
     <section id="screen-lobby" class="screen" hidden>
       <div class="lobby-card panel">
         <header class="lobby-head">
-          <h2>Sala <button id="lobby-code" class="code-chip" title="Copiar enlace">----</button></h2>
-          <p class="hint">Comparte el código o el enlace para que entren los demás</p>
+          <div class="lobby-head-text">
+            <h2>Sala</h2>
+            <p class="hint">Comparte el código o el enlace para que entren los demás</p>
+          </div>
+          <!-- el ícono de copiar vive FUERA de #lobby-code a propósito: screens.ts
+               hace textContent = código/¡Copiado!/código en ese botón, y un hijo
+               SVG se borraría en cada render (ver comentario en style.css) -->
+          <span class="code-chip-wrap">
+            <button id="lobby-code" class="code-chip" type="button" title="Copiar enlace">----</button>
+            <svg class="i code-chip-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8.6" y="8.6" width="10.9" height="10.9" rx="2.2"/><path d="M15 8.6V6.8A2.3 2.3 0 0 0 12.7 4.5H6.8A2.3 2.3 0 0 0 4.5 6.8v5.9a2.3 2.3 0 0 0 2.3 2.3H8.6"/></svg>
+          </span>
         </header>
 
         <!-- issue #12 · banner de una partida CARGADA (guardado): mapa, oleada y
@@ -147,7 +159,7 @@
             <h3 id="lobby-players-title">Jugadores</h3>
             <ul id="lobby-players" class="player-list"></ul>
             <div id="lobby-spectators-box" hidden>
-              <h3>👁 Espectadores</h3>
+              <h3><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.2 12S6 5.8 12 5.8 21.8 12 21.8 12 18 18.2 12 18.2 2.2 12 2.2 12Z"/><circle cx="12" cy="12" r="3"/></svg>Espectadores</h3>
               <ul id="lobby-spectators" class="player-list"></ul>
             </div>
             <!-- issue #12 · slots reclamables del guardado (reemplaza la lista de
@@ -157,7 +169,7 @@
           </div>
 
           <div class="lobby-box lobby-maps-box" id="lobby-maps-box">
-            <h3>Mapa</h3>
+            <h3><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4.2 3.5 6v13.8L9 18l6 2 5.5-1.8V4.4L15 6.2 9 4.2Z"/><path d="M9 4.2v13.8M15 6.2V20"/></svg>Mapa</h3>
             <div id="lobby-maps" class="map-grid"></div>
             <p id="lobby-map-desc" class="hint map-desc"></p>
           </div>
@@ -166,28 +178,28 @@
             <div id="lobby-settings-fields">
               <h3>Modo</h3>
               <div id="lobby-mode" class="seg">
-                <button data-value="classic">Clásico<small>36 oleadas</small></button>
-                <button data-value="endless">Infinito<small>récords</small></button>
-                <button data-value="horde">Horda 🌀<small>récords</small></button>
+                <button data-value="classic" type="button"><span class="seg-row"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.3 19 6v5.6c0 4.8-3 8.3-7 9.3-4-1-7-4.5-7-9.3V6l7-2.7Z"/></svg>Clásico</span><small>36 oleadas</small></button>
+                <button data-value="endless" type="button"><span class="seg-row"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 12c-1.7-2.8-3.2-4.2-5.2-4.2a4.2 4.2 0 0 0 0 8.4c2 0 3.5-1.4 5.2-4.2Zm0 0c1.7 2.8 3.2 4.2 5.2 4.2a4.2 4.2 0 0 0 0-8.4c-2 0-3.5 1.4-5.2 4.2Z"/></svg>Infinito</span><small>récords</small></button>
+                <button data-value="horde" type="button"><span class="seg-row"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M12 12a2.3 2.3 0 1 0 2.3 2.3"/><path d="M12 12a5 5 0 1 0 5 5"/><path d="M12 12a7.8 7.8 0 1 1-7.8 7.8"/></svg>Horda</span><small>récords</small></button>
               </div>
               <h3>Dificultad</h3>
               <div id="lobby-diff" class="seg">
-                <button data-value="easy">😊 Fácil</button>
-                <button data-value="normal">🙂 Normal</button>
-                <button data-value="hard">😈 Difícil</button>
+                <button data-value="easy" type="button"><span class="seg-row"><svg class="i" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4.5" y="14" width="3.6" height="6" rx="1" fill="currentColor"/><rect x="10.2" y="10" width="3.6" height="10" rx="1" fill="currentColor" fill-opacity=".3"/><rect x="15.9" y="6" width="3.6" height="14" rx="1" fill="currentColor" fill-opacity=".3"/></svg>Fácil</span></button>
+                <button data-value="normal" type="button"><span class="seg-row"><svg class="i" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4.5" y="14" width="3.6" height="6" rx="1" fill="currentColor"/><rect x="10.2" y="10" width="3.6" height="10" rx="1" fill="currentColor"/><rect x="15.9" y="6" width="3.6" height="14" rx="1" fill="currentColor" fill-opacity=".3"/></svg>Normal</span></button>
+                <button data-value="hard" type="button"><span class="seg-row"><svg class="i" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4.5" y="14" width="3.6" height="6" rx="1" fill="currentColor"/><rect x="10.2" y="10" width="3.6" height="10" rx="1" fill="currentColor"/><rect x="15.9" y="6" width="3.6" height="14" rx="1" fill="currentColor"/></svg>Difícil</span></button>
               </div>
               <h3>Visibilidad</h3>
               <div id="lobby-visibility" class="seg">
-                <button data-value="private">🔒 Privada<small>solo con el código</small></button>
-                <button data-value="public">🌐 Pública<small>aparece en la lista</small></button>
+                <button data-value="private" type="button"><span class="seg-row"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4.5" y="11" width="15" height="9" rx="2.2"/><path d="M8 11V7.5a4 4 0 0 1 8 0V11"/></svg>Privada</span><small>solo con el código</small></button>
+                <button data-value="public" type="button"><span class="seg-row"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M3.7 12h16.6M12 3.5c2.3 2.4 2.3 14.6 0 17M12 3.5c-2.3 2.4-2.3 14.6 0 17"/></svg>Pública</span><small>aparece en la lista</small></button>
               </div>
               <!-- MODO TURBO ⚡ (issue #14): solo clásico/infinito; en horda se
                    deshabilita (ver renderLobby). Mismo patrón de segs que los demás. -->
               <div id="lobby-turbo-box">
-                <h3>Turbo ⚡</h3>
+                <h3>Turbo</h3>
                 <div id="lobby-turbo" class="seg">
-                  <button data-value="off">🐢 Normal</button>
-                  <button data-value="on">⚡ Turbo</button>
+                  <button data-value="off" type="button"><span class="seg-row"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.3"/><path d="M12 7.6V12l3 2.1"/></svg>Normal</span></button>
+                  <button data-value="on" type="button"><span class="seg-row"><svg class="i" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="M13.2 2.8 5.6 13.6a.6.6 0 0 0 .5 1h4.9l-1.1 6.6a.6.6 0 0 0 1.1.5l7.6-10.8a.6.6 0 0 0-.5-1h-4.9l1.1-6.6a.6.6 0 0 0-1.1-.5Z"/></svg>Turbo</span></button>
                 </div>
                 <p id="lobby-turbo-hint" class="hint">Economía ×1.75, madera ×1.5, interludios a la mitad. Mismo reto, la mitad de tiempo. Sin récords.</p>
               </div>
