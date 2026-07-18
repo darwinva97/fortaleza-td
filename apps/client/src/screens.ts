@@ -150,7 +150,64 @@ const homeSel: RoomSettings = { mapId: MAPS[0].id, mode: 'classic', difficulty: 
 // «Crear sala» queda deshabilitado (con hint del porqué) hasta que se elige.
 let homeVisibility: 'private' | 'public' | null = null;
 
+// ---------- pestañas del panel lateral (Salas · Récords · Repeticiones) ----------
+// Antes las tres secciones se apilaban siempre (mostraban/ocultaban según si
+// había datos), tapándose entre sí. Ahora es una sola visible a la vez; el
+// "hay datos o no" pasa a ser el estado VACÍO propio de cada panel, ya no
+// controla si la sección se ve. Se recuerda la última pestaña elegida.
+
+type SideTab = 'rooms' | 'scores' | 'replays';
+const SIDE_TABS: SideTab[] = ['rooms', 'scores', 'replays'];
+const SIDE_PANEL_ID: Record<SideTab, string> = { rooms: 'home-rooms', scores: 'home-scores', replays: 'home-replays' };
+const SIDE_TAB_STORAGE_KEY = 'td_home_tab';
+
+function isSideTab(v: string | null): v is SideTab {
+  return v === 'rooms' || v === 'scores' || v === 'replays';
+}
+
+function setSideTab(tab: SideTab): void {
+  for (const t of SIDE_TABS) {
+    const active = t === tab;
+    const btn = $(`side-tab-${t}`);
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-selected', String(active));
+    btn.tabIndex = active ? 0 : -1;
+    $(SIDE_PANEL_ID[t]).hidden = !active;
+  }
+  localStorage.setItem(SIDE_TAB_STORAGE_KEY, tab);
+}
+
+// chip numérico en una pestaña (p. ej. «Salas 2»); oculto en 0 para no
+// ensuciar la barra cuando el panel está vacío. Lo llaman renderRooms,
+// loadHighscores (aquí abajo) y renderReplayList (replay.ts).
+export function setSideTabCount(tab: SideTab, count: number): void {
+  const el = $(`side-tab-${tab}-count`);
+  el.textContent = String(count);
+  el.hidden = count <= 0;
+}
+
+function initSideTabs(): void {
+  const stored = localStorage.getItem(SIDE_TAB_STORAGE_KEY);
+  setSideTab(isSideTab(stored) ? stored : 'rooms');
+
+  for (const t of SIDE_TABS) {
+    $(`side-tab-${t}`).addEventListener('click', () => setSideTab(t));
+  }
+
+  // navegación con flechas ←/→ dentro del tablist (roving tabindex, patrón
+  // estándar de ARIA: solo la pestaña activa es alcanzable con Tab)
+  $('home-side-tabs').addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    const current = SIDE_TABS.findIndex((t) => $(`side-tab-${t}`).classList.contains('active'));
+    const next = SIDE_TABS[(current + (e.key === 'ArrowRight' ? 1 : -1) + SIDE_TABS.length) % SIDE_TABS.length];
+    setSideTab(next);
+    $(`side-tab-${next}`).focus();
+  });
+}
+
 export function initHome(): void {
+  initSideTabs();
   const nameInput = $<HTMLInputElement>('home-name');
   nameInput.value = store.name;
 
@@ -272,13 +329,11 @@ async function loadRooms(): Promise<void> {
   if (store.screen !== 'home' || document.hidden) return;
   try {
     const res = await fetch('/api/rooms');
-    if (!res.ok) {
-      // backend sin directorio (p. ej. el servidor Node): ocultar la sección
-      $('home-rooms').hidden = true;
-      return;
-    }
+    // el `hidden` del panel es TERRITORIO EXCLUSIVO de las pestañas (setSideTab):
+    // tocarlo aquí re-mostraba Salas cada 4 s aunque estuvieras en Récords. Un
+    // !ok es transitorio (el worker siempre tiene directorio): conservar lo visible.
+    if (!res.ok) return;
     const rooms = (await res.json()) as PublicRoomInfo[];
-    $('home-rooms').hidden = false;
     renderRooms(Array.isArray(rooms) ? rooms : []);
   } catch {
     // error transitorio de red: conservar lo que hubiera en pantalla
@@ -287,6 +342,7 @@ async function loadRooms(): Promise<void> {
 
 function renderRooms(rooms: PublicRoomInfo[]): void {
   $('home-rooms-empty').hidden = rooms.length > 0;
+  setSideTabCount('rooms', rooms.length);
   const list = $('home-rooms-list');
   list.innerHTML = rooms
     .slice(0, 12)
@@ -325,22 +381,29 @@ async function loadHighscores(): Promise<void> {
   try {
     const res = await fetch('/api/highscores');
     const scores = (await res.json()) as HighscoreEntry[];
-    if (!Array.isArray(scores) || scores.length === 0) return;
-    $('home-scores').hidden = false;
-    $('home-scores-list').innerHTML = scores
-      .slice(0, 8)
-      .map(
-        (s) =>
-          `<li><b>Oleada ${s.wave}</b> — ${s.names.map(escapeHtml).join(', ')} <span class="hint">(${
-            MODE_LABELS[s.mode ?? 'endless']
-          } · ${MAPS.find((m) => m.id === s.mapId)?.name ?? s.mapId}, ${
-            DIFF_LABELS[s.difficulty] ?? s.difficulty
-          })</span></li>`,
-      )
-      .join('');
+    renderHighscores(Array.isArray(scores) ? scores : []);
   } catch {
-    // sin récords todavía
+    // error transitorio: conservar lo que hubiera en pantalla (el estado
+    // vacío del panel, si aún no había cargado nada, ya lo cubre el HTML)
   }
+}
+
+// panel de récords: SIEMPRE se pinta (lista o estado vacío) — la visibilidad
+// de la sección la decide la pestaña activa, no si hay datos (ver setSideTab)
+function renderHighscores(scores: HighscoreEntry[]): void {
+  $('home-scores-empty').hidden = scores.length > 0;
+  setSideTabCount('scores', scores.length);
+  $('home-scores-list').innerHTML = scores
+    .slice(0, 8)
+    .map(
+      (s) =>
+        `<li><b>Oleada ${s.wave}</b> — ${s.names.map(escapeHtml).join(', ')} <span class="hint">(${
+          MODE_LABELS[s.mode ?? 'endless']
+        } · ${MAPS.find((m) => m.id === s.mapId)?.name ?? s.mapId}, ${
+          DIFF_LABELS[s.difficulty] ?? s.difficulty
+        })</span></li>`,
+    )
+    .join('');
 }
 
 // ---------- lobby ----------

@@ -24,7 +24,7 @@ import { startGameStore, pushFrame } from './store.js';
 import { onTick, applySpectatorUI, buildTowerBar, hidePanel } from './hud.js';
 import { resetRenderer } from './renderer.js';
 import { clearParticles } from './particles.js';
-import { hideEnd, switchScreen } from './screens.js';
+import { hideEnd, setSideTabCount, switchScreen } from './screens.js';
 import { tell } from './dialog.js';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -346,14 +346,13 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
+// panel de repeticiones: SIEMPRE se pinta (lista o estado vacío) — la
+// visibilidad de la sección la decide la pestaña activa (ver setSideTab en
+// screens.ts), ya no si hay repeticiones guardadas.
 export function renderReplayList(): void {
-  const section = $('home-replays');
   const list = loadSavedReplays();
-  if (list.length === 0) {
-    section.hidden = true;
-    return;
-  }
-  section.hidden = false;
+  $('home-replays-empty').hidden = list.length > 0;
+  setSideTabCount('replays', list.length);
   const ul = $('home-replays-list');
   ul.innerHTML = list
     .map((r) => {
