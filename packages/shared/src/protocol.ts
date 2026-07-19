@@ -520,6 +520,14 @@ export function validateSaveData(x: unknown): ValidateSaveResult {
     }
   }
   if (!Array.isArray(d.log) || d.log.length > MAX_SAVE_LOG) return bad('Guardado corrupto (registro de comandos).');
+  // ANTI-ADULTERACIÓN: el log reconstruye la partida desde el tick 0, y sus
+  // entradas `join` CREAN jugadores directos del archivo. players[] está capado
+  // a MAX_PLAYERS, pero sin contar los joins del log alguien inyectó 80 nombres
+  // en un guardado real y el récord salió con 88 jugadores (visto en producción:
+  // «Migracion1..80»). Replicamos la regla del juego en vivo: nunca más de
+  // MAX_PLAYERS SIMULTÁNEOS — el churn legítimo (uno se va, entra otro) pasa por
+  // entradas `conn`, y eso sigue permitido.
+  const aboard = new Set<string>();
   for (const e of d.log) {
     if (!e || typeof e !== 'object') return bad('Guardado corrupto (entrada de registro).');
     const ee = e as Record<string, unknown>;
@@ -532,6 +540,10 @@ export function validateSaveData(x: unknown): ValidateSaveResult {
       if (!c || typeof c !== 'object' || typeof c.kind !== 'string') return bad('Guardado corrupto (comando).');
     } else if (ee.kind === 'conn') {
       if (typeof ee.playerId !== 'string' || typeof ee.connected !== 'boolean') return bad('Guardado corrupto (conexión).');
+      // el churn legítimo descuenta: quien se desconecta libera su cupo simultáneo
+      if (ee.connected === false) aboard.delete(ee.playerId as string);
+      else aboard.add(ee.playerId as string);
+      if (aboard.size > MAX_PLAYERS) return bad('Guardado corrupto (más jugadores simultáneos que el máximo).');
     } else if (ee.kind === 'join') {
       // el `player` (id/name/color) y el oro/madera de entrada se cargan DIRECTOS
       // del archivo al reconstruir → validar forma Y ACOTAR la economía (anti
@@ -545,6 +557,10 @@ export function validateSaveData(x: unknown): ValidateSaveResult {
       // `wood` es opcional (default en makePlayer); si viene, debe estar acotado
       if (!econOk(ee.gold) || (ee.wood !== undefined && !econOk(ee.wood))) {
         return bad('Guardado corrupto (economía de unión fuera de rango).');
+      }
+      aboard.add(pl.id as string);
+      if (aboard.size > MAX_PLAYERS) {
+        return bad('Guardado corrupto (más jugadores simultáneos que el máximo).');
       }
     } else {
       return bad('Guardado corrupto (tipo de entrada).');

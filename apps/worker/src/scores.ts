@@ -1,4 +1,4 @@
-import type { HighscoreEntry } from '@td/shared';
+import { MAX_PLAYERS, type HighscoreEntry } from '@td/shared';
 import type { Env } from './room-do.js';
 
 const KEY = 'highscores';
@@ -27,6 +27,11 @@ function scoreKey(e: HighscoreEntry): string {
 
 export async function saveScore(env: Env, entry: HighscoreEntry): Promise<void> {
   if (!env.SCORES) return;
+  // DEFENSA EN PROFUNDIDAD: una sala jamás tiene más de MAX_PLAYERS simultáneos;
+  // si llegan más nombres es que algo (p. ej. un guardado adulterado con joins
+  // inyectados — visto en producción: 80 «MigracionN») se coló aguas arriba.
+  // La validación del guardado ya lo rechaza en el borde; aquí capamos igual.
+  if (entry.names.length > MAX_PLAYERS) entry = { ...entry, names: entry.names.slice(0, MAX_PLAYERS) };
   const list = await loadScores(env);
   // dedup: si ya existe una entrada idéntica (misma gente/oleada/modo/dif/mapa),
   // no la dupliques — cubre recargar el mismo guardado varias veces.
