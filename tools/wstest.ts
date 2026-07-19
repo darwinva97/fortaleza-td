@@ -288,6 +288,10 @@ async function main(): Promise<void> {
   //   expulsar (puede volver, solo de espectador) vs banear (no vuelve jamás)
   await spectatorZoneScenario();
 
+  // 9.7 · F9b · SELECCIÓN DE PUERTA POR COLOR (mapa multi-ruta): reclamar libre OK,
+  //   reclamar ocupada rechazada, liberación al salir, y el reclamo viaja al GameInit.
+  await doorScenario();
+
   // 10. Repetición (replay): partida corta que TERMINA (sin defensa) e incluye la
   //     reconexión de Beto. Al recibir game_over con `replay`, reconstruimos con el
   //     motor puro y comparamos el estado final con el de la partida real (leído de
@@ -406,6 +410,92 @@ async function spectatorZoneScenario(): Promise<void> {
   ivan2.ws.close();
   ivan3.ws.close();
   hugo2.ws.close();
+  await sleep(200);
+}
+
+// Escenario dedicado: F9b · SELECCIÓN DE PUERTA POR COLOR. En un mapa multi-ruta
+// (ochopuertas, 8 rutas): (1) reclamar una puerta libre viaja en lobby_state; (2)
+// reclamar una puerta ocupada por otro se rechaza; (3) al salir el jugador su
+// puerta se LIBERA (otro la reclama después); (4) el reclamo viaja al GameInit
+// (para el estandarte del color del dueño en el spawn durante la partida).
+async function doorScenario(): Promise<void> {
+  console.log('\n— F9b · Selección de puerta por color —');
+  const ana = new TestClient('DoorAna', wsUrl({ create: true }));
+  await ana.open();
+  ana.send({
+    type: 'create_room',
+    name: 'Ana',
+    token: 'tok-door-ana',
+    settings: { mapId: 'ochopuertas', mode: 'classic', difficulty: 'normal' },
+  });
+  const aj = await ana.waitFor('room_joined');
+  await ana.waitFor('lobby_state');
+
+  const ben = new TestClient('DoorBen', wsUrl({ code: aj.code }));
+  await ben.open();
+  ben.send({ type: 'join_room', name: 'Ben', token: 'tok-door-ben', code: aj.code });
+  const bj = await ben.waitFor('room_joined');
+  await ana.waitFor('lobby_state');
+
+  // (1) reclamar una puerta LIBRE → aparece en lobby_state.players[].door
+  ana.send({ type: 'claim_door', door: 2 });
+  for (;;) {
+    const lb = await ana.waitFor('lobby_state');
+    if (lb.players.find((p) => p.id === aj.playerId)?.door === 2) {
+      assert(true, 'reclamar una puerta libre OK (viaja en lobby_state.players[].door)');
+      break;
+    }
+  }
+
+  // (2) reclamar una puerta OCUPADA por otro → rechazada con error
+  ben.send({ type: 'claim_door', door: 2 });
+  const dupErr = await ben.waitFor('error');
+  assert(/ocupada|reclamada/i.test(dupErr.msg), `reclamar una puerta ocupada se rechaza ("${dupErr.msg}")`);
+
+  // Ben reclama otra libre (5); ambos reclamos coexisten
+  ben.send({ type: 'claim_door', door: 5 });
+  for (;;) {
+    const lb = await ana.waitFor('lobby_state');
+    const a = lb.players.find((p) => p.id === aj.playerId);
+    const b = lb.players.find((p) => p.id === bj.playerId);
+    if (a?.door === 2 && b?.door === 5) {
+      assert(true, 'cada jugador reclama SU puerta (Ana=2, Ben=5) y coexisten');
+      break;
+    }
+  }
+
+  // (3) LIBERACIÓN al salir: Ben se va → su puerta 5 queda libre y otro la reclama
+  ben.ws.close();
+  await sleep(300);
+  const cyd = new TestClient('DoorCyd', wsUrl({ code: aj.code }));
+  await cyd.open();
+  cyd.send({ type: 'join_room', name: 'Cyd', token: 'tok-door-cyd', code: aj.code });
+  const cj = await cyd.waitFor('room_joined');
+  await ana.waitFor('lobby_state');
+  cyd.send({ type: 'claim_door', door: 5 });
+  for (;;) {
+    const lb = await ana.waitFor('lobby_state');
+    if (lb.players.find((p) => p.id === cj.playerId)?.door === 5) {
+      assert(true, 'la puerta se LIBERA al salir (otro jugador reclama la 5 después)');
+      break;
+    }
+  }
+
+  // (4) el reclamo viaja al GameInit (el cliente pinta el estandarte en el spawn)
+  cyd.send({ type: 'set_ready', ready: true });
+  for (;;) {
+    const lb = await ana.waitFor('lobby_state');
+    if (lb.players.find((p) => !p.isHost)?.ready === true) break;
+  }
+  ana.send({ type: 'start_game' });
+  await ana.waitFor('countdown');
+  const init = await ana.waitFor('game_started', 6000);
+  const aDoor = init.init.players.find((p) => p.id === aj.playerId)?.door;
+  const cDoor = init.init.players.find((p) => p.id === cj.playerId)?.door;
+  assert(aDoor === 2 && cDoor === 5, `el reclamo de puerta viaja al GameInit (Ana=${aDoor}, Cyd=${cDoor})`);
+
+  ana.ws.close();
+  cyd.ws.close();
   await sleep(200);
 }
 

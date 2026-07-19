@@ -1198,6 +1198,53 @@ function drawMapAnimations(map: MapDef, now: number): void {
   }
 }
 
+// F9b · estandartes de puerta: en cada spawn RECLAMADO en el lobby (mapas
+// multi-ruta) ondea una bandera del COLOR del jugador. Puro dibujo del cliente
+// leyendo gs.init.players[i].door (viajó en el GameInit): cero sim, cero snapshot.
+// Es responsabilidad SOCIAL, no restringe dónde construye nadie.
+function drawDoorBanners(gs: GameStore, now: number): void {
+  const map = gs.map;
+  const s = view.scale;
+  const t = now / 1000;
+  for (const p of gs.init.players) {
+    const door = p.door;
+    if (door === undefined || door < 0 || door >= map.paths.length) continue;
+    const [sc, sr] = map.paths[door][0];
+    const x = toX(sc + 0.5);
+    const y = toY(sr + 0.5);
+    g.save();
+    g.translate(x, y);
+    // mástil de madera con remate dorado
+    const poleTop = -s * 0.98;
+    g.strokeStyle = '#3e2f26';
+    g.lineWidth = Math.max(1.5, s * 0.07);
+    g.lineCap = 'round';
+    g.beginPath();
+    g.moveTo(0, s * 0.16);
+    g.lineTo(0, poleTop);
+    g.stroke();
+    g.fillStyle = '#ffd54f';
+    g.beginPath();
+    g.arc(0, poleTop, Math.max(1.5, s * 0.075), 0, Math.PI * 2);
+    g.fill();
+    // gallardete ondeante (cola de golondrina) del color del dueño
+    const wave = Math.sin(t * 3 + sc * 0.7) * s * 0.06;
+    g.fillStyle = p.color;
+    g.beginPath();
+    g.moveTo(0, poleTop + s * 0.05);
+    g.lineTo(s * 0.44, poleTop + s * 0.14 + wave);
+    g.lineTo(s * 0.31, poleTop + s * 0.24);
+    g.lineTo(s * 0.44, poleTop + s * 0.34 + wave);
+    g.lineTo(0, poleTop + s * 0.42);
+    g.closePath();
+    g.fill();
+    g.strokeStyle = 'rgba(0,0,0,0.3)';
+    g.lineWidth = Math.max(1, s * 0.02);
+    g.stroke();
+    g.restore();
+  }
+}
+
 // ---------- partículas ambientales ----------
 
 function spawnAmbient(map: MapDef, dt: number): void {
@@ -4339,6 +4386,7 @@ function loop(): void {
   g.strokeRect(view.ox, view.oy, gs.map.gridW * view.scale, gs.map.gridH * view.scale);
 
   drawMapAnimations(gs.map, now);
+  drawDoorBanners(gs, now);
   drawOrcs(gs, now);
 
   const interp = interpolate(gs, now - INTERP_DELAY_MS);

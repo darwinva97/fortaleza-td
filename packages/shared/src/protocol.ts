@@ -43,6 +43,12 @@ export interface LobbyPlayer {
   // ¿el jugador marcó «Listo»? El anfitrión está siempre listo. La partida solo
   // arranca cuando TODOS los no-anfitriones conectados están listos.
   ready: boolean;
+  // F9b · PUERTA reclamada (selección de puerta por color): índice de ruta
+  // (map.paths[door]) que este jugador reclamó en el lobby, o ausente si ninguna.
+  // Es SOCIAL/decorativa: en partida su spawn luce el estandarte del color del
+  // jugador (dibujo del cliente). Solo aplica en mapas multi-ruta (≥4). El RoomDO
+  // valida que no esté ocupada y la libera al salir; NO toca la sim ni el snapshot.
+  door?: number;
 }
 
 // Los ajustes vienen del cliente: nunca confiar en ellos. Un mapId desconocido
@@ -341,6 +347,10 @@ export type ClientMsg =
   | { type: 'move_to_player'; spectatorId: string }
   // el jugador marca/desmarca «Listo» en el lobby
   | { type: 'set_ready'; ready: boolean }
+  // F9b · el jugador RECLAMA una puerta (índice de ruta) en el lobby, o la libera
+  // con door=null. Solo en mapas multi-ruta (≥4). Lo valida el RoomDO (puerta
+  // existente y libre); es un estado de lobby (NO un comando de sim).
+  | { type: 'claim_door'; door: number | null }
   | { type: 'start_game' }
   | { type: 'chat'; text: string }
   | { type: 'cmd'; cmd: Command }
@@ -364,7 +374,10 @@ export interface GameInit {
   mode: GameMode;
   difficulty: Difficulty;
   turbo: boolean; // MODO TURBO ⚡ (issue #14): el cliente pinta el distintivo ⚡ en el HUD
-  players: { id: string; name: string; color: string }[];
+  // F9b · `door`: puerta reclamada por el jugador en el lobby (índice de ruta), o
+  // ausente. Viaja aquí (no en el snapshot ni en la sim) para que el cliente pinte
+  // el estandarte del color del dueño en el spawn de esa ruta durante la partida.
+  players: { id: string; name: string; color: string; door?: number }[];
   youAre: string;
 }
 
