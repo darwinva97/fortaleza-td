@@ -22,6 +22,7 @@ import {
   placementError,
   rank2Cost,
   replayTo,
+  MAX_PLAYERS,
   sanitizeSettings,
   stepGame,
   towerFires,
@@ -1108,6 +1109,21 @@ console.log('— Guardar/Cargar (issue #12): SaveData válido y el fast-forward 
   // versión anterior del balance → rechazo con mensaje claro
   const oldV = validateSaveData({ ...parsed, v: BALANCE_VERSION - 1 });
   assert(!oldV.ok && /versión anterior/i.test(oldV.msg), 'un guardado de otra versión del balance se rechaza');
+
+  // ANTI-ADULTERACIÓN de joins (visto en producción: 80 «MigracionN» inyectados
+  // en el log de un guardado real → récord con 88 nombres): más de MAX_PLAYERS
+  // SIMULTÁNEOS se rechaza; el churn legítimo (baja `conn` + alta) sigue pasando.
+  const fakeJoin = (n: number) => ({ t: 0, kind: 'join', player: { id: `mig${n}`, name: `Migracion${n}`, color: '#123456' }, gold: 0 });
+  const flood = { ...parsed, log: [...parsed.log, ...Array.from({ length: 9 }, (_, i) => fakeJoin(i))] };
+  const vFlood = validateSaveData(flood);
+  assert(!vFlood.ok && /simultáneos/i.test(vFlood.msg), 'un guardado con joins inyectados (9+ simultáneos) se rechaza');
+  const churnLog = [
+    ...Array.from({ length: MAX_PLAYERS }, (_, i) => fakeJoin(i)),
+    { t: 1, kind: 'conn', playerId: 'mig0', connected: false },
+    fakeJoin(99),
+  ];
+  const vChurn = validateSaveData({ ...parsed, log: churnLog });
+  assert(vChurn.ok === true, `el churn legítimo (baja + alta hasta el tope) pasa la validación${vChurn.ok ? '' : `: ${(vChurn as { ok: false; msg: string }).msg}`}`);
   // basura evidente → rechazo
   assert(!validateSaveData({ hola: 1 }).ok, 'un objeto que no es un guardado se rechaza');
   // un comando con tick posterior al guardado → rechazo (defensa anti-corrupción)
