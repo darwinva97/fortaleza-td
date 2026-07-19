@@ -1,9 +1,15 @@
 import type { AffixId, Difficulty, EnemyTypeId, GameMode, SpawnEntry, WaveComp } from '../types.js';
 import { ENEMIES } from './enemies.js';
-import { AFFIX_ORDER } from './affixes.js';
+import { BOSS_AFFIX_POOL, ELITE_AFFIX_POOL } from './affixes.js';
+import { classicWave, type CalendarWave } from './calendar.js';
 import {
   BLESSED_FROM,
   BLESSED_ODDS,
+  BOSS_AFFIX_FROM_CLASSIC,
+  CHAMPION_EVERY,
+  CHAMPION_FROM,
+  CLASSIC_BOUNTY_COMP,
+  CLASSIC_WAVES,
   DIFF_HP_MULT,
   ELITE_MIN_WAVE,
   ELITE_TWO_AFFIX_WAVE,
@@ -44,7 +50,10 @@ export function waveBountyMult(wave: number, mode?: GameMode): number {
     mode === 'endless' && wave > ENDLESS_BOUNTY_FROM
       ? Math.min(ENDLESS_BOUNTY_CAP, Math.pow(ENDLESS_BOUNTY_STEP, wave - ENDLESS_BOUNTY_FROM))
       : 1;
-  return base * endless;
+  // F9a (v19) · el calendario clásico monoespecie trae menos cuerpos: cada baja
+  // paga ×1.3 para que la economía total por oleada quede a la par del generador.
+  const classic = mode === 'classic' ? CLASSIC_BOUNTY_COMP : 1;
+  return base * endless * classic;
 }
 
 // ¿La oleada `wave` es de inmunidad mágica? Múltiplos de 5 desde la 10 (10,15,20,25…)
@@ -67,11 +76,22 @@ export function isImmuneWave(wave: number): boolean {
 // INVISIBLE_FROM (12, 18, 24, 30, 36…), PERO se exime cuando coincide con una
 // oleada INMUNE o de JEFE — como la bendecida evita combinarse — para no apilar
 // castigos (un invisible + inmune, o invisible + jefe, sería desproporcionado).
-// Determinista por número de oleada: NO consume RNG. En el clásico de 36 caen
-// exactamente 4 oleadas invisibles: 12, 18, 24 y 36 (la 30 es golem+inmune).
-export function isInvisibleWave(wave: number): boolean {
+// Determinista por número de oleada: NO consume RNG.
+// F9a (v19) · con el jefe-muro del clásico en la 36 (waveHasBoss con `mode`), en
+// el clásico caen exactamente 3 invisibles: 12, 18 y 24 (la 30 es inmune y la 36
+// jefe). Sin `mode` se asume endless (comportamiento previo intacto).
+export function isInvisibleWave(wave: number, mode: GameMode = 'endless'): boolean {
   if (wave < INVISIBLE_FROM || (wave - INVISIBLE_FROM) % INVISIBLE_EVERY !== 0) return false;
-  return !isImmuneWave(wave) && !waveHasBoss(wave);
+  return !isImmuneWave(wave) && !waveHasBoss(wave, mode);
+}
+
+// F9a (v19) · ¿La oleada trae CAMPEONES 👑? En clásico manda el calendario fijo
+// (13/22/31); en infinito/horda entran en rotación cada 10 desde la 13 (13, 23,
+// 33…) — cadencia elegida para no chocar jamás con inmunes (múltiplos de 5),
+// jefes (10s/15s) ni invisibles (12+6k). Determinista, sin RNG.
+export function isChampionWave(wave: number, mode: GameMode = 'endless'): boolean {
+  if (mode === 'classic') return classicWave(wave)?.champion === true;
+  return wave >= CHAMPION_FROM && (wave - CHAMPION_FROM) % CHAMPION_EVERY === 0;
 }
 
 // Presupuesto de la oleada: cuánto "vale" en enemigos.
@@ -103,9 +123,23 @@ function pool(wave: number): EnemyTypeId[] {
     'berserker',
     'wraith',
     'skywhale',
+    // F9a (v19) · los monstruos nuevos entran también al generador del infinito
+    'stalker',
+    'runebrat',
+    'bannerman',
+    'harpy',
+    'gargoyle',
+    'knight',
+    'mammoth',
   ];
   return all.filter((t) => ENEMIES[t].minWave <= wave);
 }
+
+// F9a (v19) · especies elegibles como CAMPEÓN en infinito/horda: terrestres, sin
+// soporte (curar/acelerar ×5 de vida sería un puzle injusto), sin zapadores (un
+// campeón-zapador aturdiría una torre media partida) y sin el Mamut (ya es
+// semi-campeón de base; ×9 encima lo sacaría del molde "Mega" de ETD2 §4.2).
+const CHAMPION_SPECIES: EnemyTypeId[] = ['brute', 'armored', 'troll', 'berserker', 'knight'];
 
 export interface GeneratedWave {
   entries: SpawnEntry[];
@@ -117,12 +151,20 @@ export interface GeneratedWave {
   blessedAffix: AffixId | null; // el afijo común, si es bendecida
   flying: boolean; // la oleada está dominada por lo aéreo / jefe volador (telegrafía 🦅)
   invisible: boolean; // Lote 3 · oleada INVISIBLE: los enemigos no-jefe nacen invisibles (telegrafía 👁)
+  // F9a (v19)
+  champion: boolean; // oleada de CAMPEONES 👑 (telegrafía)
+  bossAffix: AffixId | null; // afijo del jefe ("☠ Gólem Gélido"), si lo trae
 }
 
 // Elige el jefe de una oleada con jefe. En el CLÁSICO: golem en múltiplos de 10,
-// pero la Quimera (voladora) toma las oleadas 15/25/35 para forzar anti-aire. En
-// endless/horde el Behemot aparece en oleadas muy altas (25+) como jefe pesado.
-function pickBoss(wave: number): EnemyTypeId {
+// pero la Quimera (voladora) toma las oleadas 15/25/35 para forzar anti-aire, y
+// el JEFE-MURO (Behemot) cierra la 36 (F9a). En endless/horde el Behemot aparece
+// en oleadas muy altas (30+) como jefe pesado.
+function pickBoss(wave: number, mode: GameMode): EnemyTypeId {
+  if (mode === 'classic') {
+    const cal = classicWave(wave);
+    if (cal?.boss) return cal.boss;
+  }
   // Quimera voladora a mitad de partida: 15, 25, 35… (múltiplos de 5 impares en la
   // decena) — obliga a tener anti-aire justo cuando el jugador se acomodó en tierra.
   if (wave >= 15 && wave % 10 === 5) return 'chimera';
@@ -132,24 +174,290 @@ function pickBoss(wave: number): EnemyTypeId {
 }
 
 // ¿La oleada `wave` trae jefe? Golem/Behemot cada 10; Quimera en 15/25/35.
-function waveHasBoss(wave: number): boolean {
+// F9a (v19) · en CLÁSICO, además, la 36 es el JEFE-MURO (Behemot). Sin `mode` se
+// asume endless (compatibilidad con los llamadores previos).
+export function waveHasBoss(wave: number, mode: GameMode = 'endless'): boolean {
+  if (mode === 'classic' && wave === CLASSIC_WAVES) return true;
   return wave > 0 && (wave % 10 === 0 || (wave >= 15 && wave % 10 === 5));
 }
 
-// Genera la oleada `wave` para un mapa con `pathCount` caminos.
-export function generateWave(
+// Reparte élites sobre la lista `normal` (índices → afijos). Compartido por el
+// generador y el calendario clásico. Determinista: solo rand(state).
+// `maxElites` (F9a): el calendario monoespecie CAPA los élites en proporción al
+// tamaño de la oleada — en una oleada de 4 tanques, un élite ×2.6 ya es un
+// mini-jefe; con la fórmula del generador (pensada para 15-20 unidades baratas)
+// salían oleadas-muro. Sin límite = comportamiento del generador de siempre.
+function rollElites(
+  state: RngState,
+  wave: number,
+  normal: EnemyTypeId[],
+  maxElites = Infinity,
+): Map<number, AffixId[]> {
+  const eliteAffixes = new Map<number, AffixId[]>();
+  if (wave >= ELITE_MIN_WAVE && normal.length > 0) {
+    const count = Math.min(normal.length, 1 + Math.floor((wave - ELITE_MIN_WAVE) / 3), maxElites);
+    const numAffixes = wave >= ELITE_TWO_AFFIX_WAVE ? 2 : 1;
+    const chosen = new Set<number>();
+    for (let n = 0; n < count; n++) {
+      // buscar un índice libre (los enjambres de larvas no valen la pena)
+      let idx = -1;
+      for (let tries = 0; tries < 8; tries++) {
+        const cand = Math.floor(rand(state) * normal.length);
+        if (!chosen.has(cand) && normal[cand] !== 'larva') {
+          idx = cand;
+          break;
+        }
+      }
+      if (idx < 0) break;
+      chosen.add(idx);
+      const affixes: AffixId[] = [];
+      // F9a · los élites tiran de ELITE_AFFIX_POOL (sin los afijos de jefe)
+      const affixPool = [...ELITE_AFFIX_POOL];
+      for (let a = 0; a < numAffixes && affixPool.length > 0; a++) {
+        const pickIdx = Math.floor(rand(state) * affixPool.length);
+        affixes.push(affixPool.splice(pickIdx, 1)[0]);
+      }
+      eliteAffixes.set(idx, affixes);
+    }
+  }
+  return eliteAffixes;
+}
+
+// Ensambla las SpawnEntry finales a partir de la lista ordenada + flags de oleada.
+// Compartido por el generador y el calendario. Consume RNG solo para el jitter de
+// espaciado (determinista).
+function buildEntries(
+  state: RngState,
+  wave: number,
+  ordered: EnemyTypeId[],
+  pathCount: number,
+  opts: {
+    eliteAffixes: Map<number, AffixId[]>;
+    immune: boolean;
+    blessed: boolean;
+    blessedAffix: AffixId | null;
+    invisible: boolean;
+    champion: boolean;
+    championHp?: number;
+    bossAffix: AffixId | null;
+    hpTune?: number;
+    gapOverride?: number; // F9a · espaciado fijo del calendario (sanadores/portaestandartes)
+  },
+): SpawnEntry[] {
+  // Espaciado entre spawns: más denso en oleadas altas. Los campeones marchan
+  // espaciados (1.2 s): son pocos y gordos — que se lean uno a uno.
+  const baseGap = Math.max(0.28, 0.85 - wave * 0.018);
+  return ordered.map((type, i) => {
+    const isBoss = ENEMIES[type].boss ?? false;
+    const gap = isBoss
+      ? 1.5
+      : opts.champion
+        ? 1.2
+        : (opts.gapOverride ?? baseGap) * (0.75 + rand(state) * 0.5);
+    const affixes = opts.eliteAffixes.get(i);
+    return {
+      type,
+      delay: Math.max(2, Math.round(gap * TICK_RATE)),
+      pathIdx: pathCount > 1 ? i % pathCount : 0,
+      ...(affixes ? { elite: true, affixes } : {}),
+      ...(opts.immune ? { immune: true } : {}),
+      ...(opts.blessed && opts.blessedAffix ? { blessed: true, blessedAffix: opts.blessedAffix } : {}),
+      // invisible se aplica solo a los no-jefe (spawnEnemy/stepWaves lo respeta)
+      ...(opts.invisible && !isBoss ? { invisible: true } : {}),
+      // F9a · campeones: toda la oleada (no hay escolta que marcar)
+      ...(opts.champion ? { champion: true } : {}),
+      ...(opts.champion && opts.championHp !== undefined ? { championHp: opts.championHp } : {}),
+      // F9a · el afijo de jefe viaja SOLO en la entrada del jefe
+      ...(isBoss && opts.bossAffix ? { bossAffix: opts.bossAffix } : {}),
+      // F9a · afinado del calendario clásico (toda la oleada)
+      ...(opts.hpTune !== undefined && opts.hpTune !== 1 ? { hpTune: opts.hpTune } : {}),
+    };
+  });
+}
+
+// Resumen para la vista previa + etiqueta aérea.
+function summarize(ordered: EnemyTypeId[], bossType: EnemyTypeId | null): { comp: WaveComp[]; flying: boolean } {
+  const counts = new Map<EnemyTypeId, number>();
+  for (const t of ordered) counts.set(t, (counts.get(t) ?? 0) + 1);
+  const comp: WaveComp[] = [...counts.entries()].map(([type, count]) => ({ type, count }));
+  comp.sort((a, b) => ENEMIES[b.type].cost - ENEMIES[a.type].cost);
+  const flyers = ordered.filter((t) => ENEMIES[t].flying).length;
+  const flying =
+    (bossType !== null && ENEMIES[bossType].flying) || (ordered.length > 0 && flyers >= ordered.length / 2);
+  return { comp, flying };
+}
+
+// F9a (v19) · afijo del JEFE de la oleada: desde la 20 en clásico, SIEMPRE en
+// infinito/horda. Sale del RNG de la sim (determinista, replay-safe).
+function rollBossAffix(state: RngState, wave: number, hasBoss: boolean, mode: GameMode): AffixId | null {
+  if (!hasBoss) return null;
+  if (mode === 'classic' && wave < BOSS_AFFIX_FROM_CLASSIC) return null;
+  return pick(state, BOSS_AFFIX_POOL);
+}
+
+// F9a (v19) · oleada del CALENDARIO CLÁSICO: una especie temática, cantidad fija
+// escalada por jugadores, con jefe/campeones/afinado según la tabla. Los élites y
+// la bendición siguen operando encima (son variantes de la MISMA especie, así que
+// el tema monoespecie se conserva).
+function generateCalendarWave(
+  state: RngState,
+  cal: CalendarWave,
+  wave: number,
+  playerCount: number,
+  pathCount: number,
+): GeneratedWave {
+  const scale = 1 + 0.3 * (playerCount - 1);
+  const immune = isImmuneWave(wave);
+  const invisible = isInvisibleWave(wave, 'classic');
+
+  if (cal.champion) {
+    // CAMPEONES 👑: pelotón sin escolta. La cantidad escala suave con los
+    // jugadores (la vida ya escala ×1.4 por jugador extra en waveHpMult).
+    const count = Math.max(3, Math.min(6, Math.round(cal.count * (1 + 0.15 * (playerCount - 1)))));
+    const ordered = Array.from({ length: count }, () => cal.type);
+    const entries = buildEntries(state, wave, ordered, pathCount, {
+      eliteAffixes: new Map(), // los campeones no son élites: son su propio arquetipo
+      immune,
+      blessed: false,
+      blessedAffix: null,
+      invisible,
+      champion: true,
+      championHp: cal.championHp,
+      bossAffix: null,
+      hpTune: cal.hpTune,
+    });
+    const { comp, flying } = summarize(ordered, null);
+    return {
+      entries,
+      comp,
+      hasBoss: false,
+      bossType: null,
+      immune,
+      blessed: false,
+      blessedAffix: null,
+      flying,
+      invisible,
+      champion: true,
+      bossAffix: null,
+    };
+  }
+
+  const count = Math.max(1, Math.round(cal.count * scale));
+  const normal: EnemyTypeId[] = Array.from({ length: count }, () => cal.type);
+  const bosses: EnemyTypeId[] = cal.boss ? [cal.boss] : [];
+  const ordered = [...normal, ...bosses];
+
+  // élites capados a ~1 por cada 5 unidades (mínimo 1): ver rollElites
+  const eliteAffixes = rollElites(state, wave, normal, Math.max(1, Math.floor(normal.length / 5)));
+  const bossAffix = rollBossAffix(state, wave, bosses.length > 0, 'classic');
+
+  // Oleada bendecida: mismo dado que el generador (no en inmunes ni jefes).
+  let blessed = false;
+  let blessedAffix: AffixId | null = null;
+  {
+    const roll = wave >= BLESSED_FROM ? rand(state) : 1;
+    if (roll < 1 / BLESSED_ODDS && !immune && bosses.length === 0) {
+      blessed = true;
+      blessedAffix = pick(state, ELITE_AFFIX_POOL);
+    }
+  }
+
+  const entries = buildEntries(state, wave, ordered, pathCount, {
+    eliteAffixes,
+    immune,
+    blessed,
+    blessedAffix,
+    invisible,
+    champion: false,
+    bossAffix,
+    hpTune: cal.hpTune,
+    gapOverride: cal.gap,
+  });
+  const { comp, flying } = summarize(ordered, cal.boss ?? null);
+  return {
+    entries,
+    comp,
+    hasBoss: bosses.length > 0,
+    bossType: cal.boss ?? null,
+    immune,
+    blessed,
+    blessedAffix,
+    flying,
+    invisible,
+    champion: false,
+    bossAffix,
+  };
+}
+
+// F9a (v19) · oleada de CAMPEONES del generador (infinito/horda): especie elegida
+// por el RNG entre las elegibles, cantidad 3-6 creciendo con la profundidad.
+function generateChampionWave(
   state: RngState,
   wave: number,
   playerCount: number,
   pathCount: number,
 ): GeneratedWave {
+  const candidates = CHAMPION_SPECIES.filter((t) => ENEMIES[t].minWave <= wave);
+  const type = candidates.length > 0 ? pick(state, candidates) : 'brute';
+  const count = Math.min(
+    6,
+    3 + Math.floor((wave - CHAMPION_FROM) / 20) + (playerCount > 2 ? 1 : 0),
+  );
+  const ordered = Array.from({ length: count }, () => type);
+  const immune = isImmuneWave(wave); // nunca coincide por cadencia; defensa en profundidad
+  const invisible = isInvisibleWave(wave); // ídem
+  const entries = buildEntries(state, wave, ordered, pathCount, {
+    eliteAffixes: new Map(),
+    immune,
+    blessed: false,
+    blessedAffix: null,
+    invisible,
+    champion: true,
+    bossAffix: null,
+  });
+  const { comp, flying } = summarize(ordered, null);
+  return {
+    entries,
+    comp,
+    hasBoss: false,
+    bossType: null,
+    immune,
+    blessed: false,
+    blessedAffix: null,
+    flying,
+    invisible,
+    champion: true,
+    bossAffix: null,
+  };
+}
+
+// Genera la oleada `wave` para un mapa con `pathCount` caminos.
+// F9a (v19) · `mode` decide la fuente: CLÁSICO usa el calendario fijo de 36;
+// infinito/horda conservan el generador por presupuesto (+ rotación de campeones).
+// El parámetro es opcional (default endless) para no romper herramientas/llamadores.
+export function generateWave(
+  state: RngState,
+  wave: number,
+  playerCount: number,
+  pathCount: number,
+  mode: GameMode = 'endless',
+): GeneratedWave {
+  if (mode === 'classic') {
+    const cal = classicWave(wave);
+    if (cal) return generateCalendarWave(state, cal, wave, playerCount, pathCount);
+    // fuera del calendario (no debería ocurrir en clásico de 36): cae al generador
+  }
+  if (mode !== 'classic' && isChampionWave(wave, mode)) {
+    return generateChampionWave(state, wave, playerCount, pathCount);
+  }
+
   const picks: EnemyTypeId[] = [];
   let budget = waveBudget(wave, playerCount);
-  const hasBoss = waveHasBoss(wave);
+  const hasBoss = waveHasBoss(wave, mode);
   let bossType: EnemyTypeId | null = null;
 
   if (hasBoss) {
-    bossType = pickBoss(wave);
+    bossType = pickBoss(wave, mode);
     // El jefe consume gran parte del presupuesto; el resto es escolta.
     const bosses = Math.max(1, Math.floor(wave / 30));
     for (let i = 0; i < bosses; i++) picks.push(bossType);
@@ -161,8 +469,9 @@ export function generateWave(
 
   // En una oleada de jefe VOLADOR (Quimera) la escolta NO lleva Colosos Alados:
   // jefe volador + tanques voladores sería un muro de anti-aire desproporcionado.
+  // F9a · la Gárgola (voladora blindada) queda fuera por la misma razón.
   if (hasBoss && bossType && ENEMIES[bossType].flying) {
-    candidates = candidates.filter((t) => t !== 'skywhale');
+    candidates = candidates.filter((t) => t !== 'skywhale' && t !== 'gargoyle');
   }
 
   // Oleadas con sabor especial
@@ -203,37 +512,15 @@ export function generateWave(
 
   // Élites: unos pocos enemigos normales suben de categoría con 1-2 afijos.
   // Índices dentro de `normal` (los jefes nunca son élite).
-  const eliteAffixes = new Map<number, AffixId[]>();
-  if (wave >= ELITE_MIN_WAVE && normal.length > 0) {
-    const count = Math.min(normal.length, 1 + Math.floor((wave - ELITE_MIN_WAVE) / 3));
-    const numAffixes = wave >= ELITE_TWO_AFFIX_WAVE ? 2 : 1;
-    const chosen = new Set<number>();
-    for (let n = 0; n < count; n++) {
-      // buscar un índice libre (los enjambres de larvas no valen la pena)
-      let idx = -1;
-      for (let tries = 0; tries < 8; tries++) {
-        const cand = Math.floor(rand(state) * normal.length);
-        if (!chosen.has(cand) && normal[cand] !== 'larva') {
-          idx = cand;
-          break;
-        }
-      }
-      if (idx < 0) break;
-      chosen.add(idx);
-      const affixes: AffixId[] = [];
-      const affixPool = [...AFFIX_ORDER];
-      for (let a = 0; a < numAffixes && affixPool.length > 0; a++) {
-        const pickIdx = Math.floor(rand(state) * affixPool.length);
-        affixes.push(affixPool.splice(pickIdx, 1)[0]);
-      }
-      eliteAffixes.set(idx, affixes);
-    }
-  }
+  const eliteAffixes = rollElites(state, wave, normal);
 
   // Inmunidad mágica: oleadas múltiplos de 5 desde la 10. Todos los enemigos (y
   // élites) de esta oleada son inmunes a magia. Se decide DESPUÉS de las élites
   // (el flag se propaga en spawnEnemy/makeElite leyendo la entrada).
   const immune = isImmuneWave(wave);
+
+  // F9a · afijo del jefe (siempre en endless/horda; clásico desde la 20)
+  const bossAffix = rollBossAffix(state, wave, hasBoss, mode);
 
   // Oleada bendecida: desde la 6, ~1/15 de probabilidad. NO se combina con inmune
   // ni con jefe (para no acumular dificultad). TODA la oleada gana UN afijo común
@@ -245,7 +532,7 @@ export function generateWave(
     const roll = wave >= BLESSED_FROM ? rand(state) : 1;
     if (roll < 1 / BLESSED_ODDS && !immune && !hasBoss) {
       blessed = true;
-      blessedAffix = pick(state, AFFIX_ORDER);
+      blessedAffix = pick(state, ELITE_AFFIX_POOL);
     }
   }
 
@@ -253,34 +540,31 @@ export function generateWave(
   // así no descuadra nada). Marca a TODA la composición no-jefe como invisible:
   // sin un Sentry del equipo, las torres no pueden apuntarla ni verla. Nunca cae
   // en oleadas inmunes ni de jefe (lo garantiza isInvisibleWave).
-  const invisible = isInvisibleWave(wave);
+  const invisible = isInvisibleWave(wave, mode);
 
-  // Espaciado entre spawns: más denso en oleadas altas
-  const baseGap = Math.max(0.28, 0.85 - wave * 0.018); // segundos
-  const entries: SpawnEntry[] = ordered.map((type, i) => {
-    const gap = ENEMIES[type].boss ? 1.5 : baseGap * (0.75 + rand(state) * 0.5);
-    const affixes = eliteAffixes.get(i);
-    return {
-      type,
-      delay: Math.max(2, Math.round(gap * TICK_RATE)),
-      pathIdx: pathCount > 1 ? (i % pathCount) : 0,
-      ...(affixes ? { elite: true, affixes } : {}),
-      ...(immune ? { immune: true } : {}),
-      ...(blessed && blessedAffix ? { blessed: true, blessedAffix } : {}),
-      // invisible se aplica solo a los no-jefe (spawnEnemy/stepWaves lo respeta)
-      ...(invisible && !ENEMIES[type].boss ? { invisible: true } : {}),
-    };
+  const entries = buildEntries(state, wave, ordered, pathCount, {
+    eliteAffixes,
+    immune,
+    blessed,
+    blessedAffix,
+    invisible,
+    champion: false,
+    bossAffix,
   });
 
-  // Resumen para la vista previa
-  const counts = new Map<EnemyTypeId, number>();
-  for (const t of ordered) counts.set(t, (counts.get(t) ?? 0) + 1);
-  const comp: WaveComp[] = [...counts.entries()].map(([type, count]) => ({ type, count }));
-  comp.sort((a, b) => ENEMIES[b.type].cost - ENEMIES[a.type].cost);
+  const { comp, flying } = summarize(ordered, bossType);
 
-  // ¿Domina lo aéreo? (para la etiqueta 🦅): jefe volador, o mayoría de voladores.
-  const flyers = ordered.filter((t) => ENEMIES[t].flying).length;
-  const flying = (bossType !== null && ENEMIES[bossType].flying) || (ordered.length > 0 && flyers >= ordered.length / 2);
-
-  return { entries, comp, hasBoss, bossType, immune, blessed, blessedAffix, flying, invisible };
+  return {
+    entries,
+    comp,
+    hasBoss,
+    bossType,
+    immune,
+    blessed,
+    blessedAffix,
+    flying,
+    invisible,
+    champion: false,
+    bossAffix,
+  };
 }

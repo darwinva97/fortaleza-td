@@ -1,10 +1,12 @@
 import {
-  activeStats,
+  AFFIX_ORDER,
+  AFFIXES,
   ARMOR_TYPE_INFO,
   ATTACK_TYPE_INFO,
   attackMult,
   attackTypeOf,
   CALL_WAVE_GOLD_PER_SEC,
+  CRIT_MULT,
   ENEMIES,
   ENEMY_ORDER,
   findFusion,
@@ -13,19 +15,22 @@ import {
   FUSIONS,
   hasRank2,
   HORDE_CAP,
+  nextEliteLevelCost,
   placementError,
   rank2Cost,
   SELL_REFUND,
   SENTRY_DURATION_SEC,
+  START_LIVES,
+  statsOf,
   TARGET_MODES,
   TICK_RATE,
   TOWERS,
   TOWER_ORDER,
   towerFires,
   towerLevel,
-  towerTotalCost,
   ORC_RATES,
   ORC_UPGRADE_COSTS,
+  VITAL_LIVES_MIN,
   WOOD_COST_RANK2,
   WOOD_COST_SPEC,
   WOOD_LOT,
@@ -219,7 +224,11 @@ function processPremoves(snap: Snap): void {
         toast('⏳ Premovimiento cancelado: la casilla ya no está libre');
         continue; // deja de ser válido → descartar
       }
-      const cost = TOWERS[pm.towerType].levels[0].cost;
+      // F9a · el Barril usa el precio EFECTIVO del snapshot (escala por compra);
+      // si otro compró entre medias, el server re-valida igual (reject visible).
+      const cost = TOWERS[pm.towerType].detonates
+        ? snap.boomCost
+        : TOWERS[pm.towerType].levels[0].cost;
       if (availGold >= cost) {
         net.send({ type: 'cmd', cmd: { kind: 'place', towerType: pm.towerType, cx: pm.cx, cy: pm.cy } });
         availGold -= cost;
@@ -352,10 +361,12 @@ function syncPlacingInfo(): void {
   const type = gs.selection.towerType;
   const def = TOWERS[type];
   const lvl = def.levels[0];
-  const parts: string[] = [`${TOWER_ICONS[type]} <b>${def.name}</b> 🪙${lvl.cost}`];
+  // F9a (v19) · el Barril muestra su precio EFECTIVO de equipo (snap.boomCost)
+  const placeCost = def.detonates ? (gs.latest?.boomCost ?? lvl.cost) : lvl.cost;
+  const parts: string[] = [`${TOWER_ICONS[type]} <b>${def.name}</b> 🪙${placeCost}`];
   const isAura = lvl.auraDamage !== undefined || lvl.auraHaste !== undefined || lvl.auraBounty !== undefined;
   if (lvl.damage > 0 && !def.onPathOnly) parts.push(`Daño <b>${lvl.damage}</b>`);
-  if (def.onPathOnly) parts.push(def.detonates ? `💥 Detona al pisarlo: <b>ELIMINA</b> a los terrestres del área (jefes: ${lvl.damage} de daño)` : `Daño por golpe <b>${lvl.damage}</b>`);
+  if (def.onPathOnly) parts.push(def.detonates ? `💥 Detona al pisarlo: <b>borra la morralla</b> terrestre del área (con tope — tanques/élites gordos sobreviven; jefes: ${lvl.damage} de daño)` : `Daño por golpe <b>${lvl.damage}</b>`);
   if (def.detects) parts.push(`👁 <b>Revela invisibles</b> en su radio · ⏳ dura <b>${SENTRY_DURATION_SEC[0] / 60} min</b> (mejorable)`);
   if (lvl.auraDamage !== undefined && lvl.auraDamage > 0) parts.push(`Aura de daño <b>+${Math.round(lvl.auraDamage * 100)}%</b>`);
   if (lvl.auraHaste !== undefined && lvl.auraHaste > 0) parts.push(`Aura de cadencia <b>+${Math.round(lvl.auraHaste * 100)}%</b>`);
@@ -383,8 +394,15 @@ export function syncTowerBar(): void {
       card.classList.remove('selected', 'poor');
       card.classList.toggle('suggesting', store.suggestType === type);
     } else {
+      // F9a (v19) · el Barril usa su precio EFECTIVO de equipo (escala ×1.3)
+      const cost = TOWERS[type].detonates ? (gs.latest?.boomCost ?? TOWERS[type].levels[0].cost) : TOWERS[type].levels[0].cost;
       card.classList.toggle('selected', placing === type);
-      card.classList.toggle('poor', gold < TOWERS[type].levels[0].cost);
+      card.classList.toggle('poor', gold < cost);
+      if (TOWERS[type].detonates) {
+        const costEl = card.querySelector<HTMLElement>('.tcost');
+        const txt = `🪙${cost}`;
+        if (costEl && costEl.textContent !== txt) costEl.textContent = txt;
+      }
     }
   }
   if (!store.spectator) syncPlacingInfo();
@@ -846,7 +864,8 @@ function buildGroupPanel(
   const level = head[4];
   const spec = head[9] ?? -1;
   const fusion = fusionByIndex(head[13] ?? -1);
-  const lvl = fusion ? fusion.stats : activeStats(type, level, spec);
+  // F9a · statsOf aplica también la veteranía (niveles 5→10) del cabecilla
+  const lvl = statsOf({ type, level, spec, fusion: head[13] ?? -1 });
   const projKind = fusion ? fusion.projectileKind : def.projectileKind;
   const n = tuples.length;
   const fires = tupleFires(head);
@@ -859,13 +878,16 @@ function buildGroupPanel(
     : spec >= 0
       ? `${TOWER_ICONS[type]} ${def.specs[spec].name}`
       : `${TOWER_ICONS[type]} ${def.name}`;
-  const levelTag = fusion
-    ? '⚗ Fusión'
-    : level >= 4
-      ? '★★ Rango II'
-      : spec >= 0
-        ? '★ Élite'
-        : `Nv. ${level}${level >= 3 ? ' (máx)' : ''}`;
+  const levelTag =
+    level >= 5
+      ? `${fusion ? '⚗' : '★★'} Nv. ${level}` // F9a · veteranía
+      : fusion
+        ? '⚗ Fusión'
+        : level >= 4
+          ? '★★ Rango II'
+          : spec >= 0
+            ? '★ Élite'
+            : `Nv. ${level}${level >= 3 ? ' (máx)' : ''}`;
 
   // agregados volátiles del grupo (cambian cada tick: van por data-lv, no al html)
   const live: Record<string, string> = {
@@ -964,7 +986,9 @@ function buildTowerPanel(gs: GameStore, selectedId: number): { html: string; liv
   const def = TOWERS[type];
   const specialized = spec >= 0;
   const isRank2 = level >= 4;
-  const lvl = fusion ? fusion.stats : activeStats(type, level, spec);
+  // F9a (v19) · statsOf es fusion-aware Y veteranía-aware (niveles 5→10):
+  // el panel muestra los stats REALES con los +8%/+4% compuestos aplicados.
+  const lvl = statsOf({ type, level, spec, fusion: fusionIdx });
   const projKind = fusion ? fusion.projectileKind : def.projectileKind;
   const next = !fusion && !specialized && level < 3 ? def.levels[level] : null;
   const owner = gs.init.players[ownerIdx];
@@ -972,13 +996,17 @@ function buildTowerPanel(gs: GameStore, selectedId: number): { html: string; liv
   // coincide con un slot — sin este gate saldrían botones sobre una red muerta.
   const isMine = !store.spectator && !store.replay && owner?.id === store.playerId;
   const gold = myGold(gs);
-  // la inversión de una fusión (suma de sus dos ingredientes) no se puede
-  // reconstruir desde type/level/spec: usa el `invested` real del snapshot
-  const sellValue = Math.floor((fusion ? invested : towerTotalCost(type, level, spec)) * SELL_REFUND);
+  const wood = myWood(gs);
+  // F9a · el `invested` real del snapshot vale para TODO (fusiones, veteranía,
+  // barril con precio escalado…): es el oro que de verdad entró en la torre.
+  const sellValue = Math.floor(invested * SELL_REFUND);
   const canSpecialize = !fusion && level >= 3 && !specialized && !def.onPathOnly && !def.detects;
   // ¿puede subir al Rango II? torre especializada, aún en nivel 3, cuya spec tenga rank2
   const canRank2 = !fusion && specialized && level === 3 && hasRank2(type, spec);
   const r2cost = canRank2 ? rank2Cost(type, spec) : null;
+  // F9a (v19) · ¿puede comprar su SIGUIENTE nivel de veteranía (5→10)? La misma
+  // función que valida el server (cúspide, tope del clásico, torres que disparan).
+  const eliteNext = nextEliteLevelCost({ type, level, spec, fusion: fusionIdx }, gs.init.mode);
 
   // aura de Estandarte activa SOBRE esta torre → el panel muestra stats efectivos
   const auraBuff = computeBannerAuras(snap).get(id);
@@ -986,6 +1014,28 @@ function buildTowerPanel(gs: GameStore, selectedId: number): { html: string; liv
   // F5.1 · línea de tipo de ataque + fuerte/débil vs (bajo el nombre): solo para
   // torres que hacen daño directo (las de apoyo/economía no entran en la matriz).
   if (towerAttacks(lvl, def)) statLines.unshift(attackMatrixLine({ type, fusion: fusionIdx }));
+  // F9a (v19) · Poder Vital: indicador ENCENDIDO/APAGADO según las vidas del equipo
+  // (se refresca con el panel; el umbral y el estado salen del snapshot — honesto).
+  if ((lvl.vitalPower ?? 0) > 0) {
+    const vitalOn = snap.lives >= VITAL_LIVES_MIN;
+    statLines.unshift(
+      vitalOn
+        ? `<span style="color:#81c784">⚡ Poder Vital <b>ACTIVO</b>: +${Math.round((lvl.vitalPower ?? 0) * 100)}% de daño (vidas ${snap.lives} ≥ ${VITAL_LIVES_MIN})</span>`
+        : `<span style="color:#ef5350">💤 Poder Vital <b>apagado</b>: vidas ${snap.lives} &lt; ${VITAL_LIVES_MIN}</span>`,
+    );
+  }
+  // F9a (v19) · el Estandarte del Vencedor sobre ESTA torre: crítico + certeza
+  if (auraBuff && auraBuff.crit > 0) {
+    statLines.push(
+      `<span style="color:#ffd700">👑 Bajo el Vencedor: +${Math.round(auraBuff.crit * 100)}% de CRÍTICO (×${CRIT_MULT}) y CERTEZA (nada esquiva)</span>`,
+    );
+  }
+  // el propio Vencedor: describe su aura (no dispara, no tiene línea de matriz)
+  if ((lvl.auraCrit ?? 0) > 0) {
+    statLines.push(
+      `Aura de gloria: <b>+${Math.round((lvl.auraCrit ?? 0) * 100)}% de crítico</b> (golpe ×${CRIT_MULT}) y <b>Certeza</b> para las torres en rango`,
+    );
+  }
   // F6.2 · contador de PRÓXIMO ATAQUE, solo para torres que disparan (las de apoyo
   // y las de camino no lo muestran). Va en un span con id estable para poder
   // refrescarlo en CADA tick desde onTick (a 15/s) sin re-renderizar el panel
@@ -1001,8 +1051,8 @@ function buildTowerPanel(gs: GameStore, selectedId: number): { html: string; liv
   const combatLine = 'Bajas: <b data-lv="kills"></b> · Daño total: <b data-lv="damage"></b>';
   live.kills = String(kills);
   live.damage = damage.toLocaleString();
-  // Estandarte (y fusiones con aura): cuántas torres está reforzando ahora mismo
-  if (lvl.auraDamage !== undefined || lvl.auraHaste !== undefined) {
+  // Estandarte (y fusiones con aura; F9a: también el Vencedor): torres reforzadas
+  if (lvl.auraDamage !== undefined || lvl.auraHaste !== undefined || lvl.auraCrit !== undefined) {
     const n = countBannerTargets(snap, id);
     live.targets = `${n} ${n === 1 ? 'torre' : 'torres'}`;
     statLines.push('Reforzando <b data-lv="targets"></b>');
@@ -1027,7 +1077,7 @@ function buildTowerPanel(gs: GameStore, selectedId: number): { html: string; liv
   } else if (def.onPathOnly) {
     if (def.detonates) {
       // Barril explosivo: se consume al detonar (no tiene cargas que contar)
-      statLines.push('💥 Detona <b>una sola vez</b> al ser pisado: <b>ELIMINA</b> a los terrestres del área (los jefes solo reciben daño)');
+      statLines.push('💥 Detona <b>una sola vez</b> al ser pisado: <b>borra la morralla</b> terrestre del área — con TOPE de daño: tanques, élites gordos, campeones y jefes <b>sobreviven</b>');
     } else {
       // Trampa de púas: cargas restantes (no acumula kills/daño clásicos)
       live.charges = String(charges);
@@ -1059,13 +1109,17 @@ function buildTowerPanel(gs: GameStore, selectedId: number): { html: string; liv
     : specialized
       ? `${TOWER_ICONS[type]} ${def.specs[spec].name}`
       : `${TOWER_ICONS[type]} ${def.name}`;
-  const levelTag = fusion
-    ? '⚗ Fusión'
-    : isRank2
-      ? '★★ Rango II'
-      : specialized
-        ? '★ Élite'
-        : `Nv. ${level}${level >= 3 ? ' (máx)' : ''}`;
+  // F9a (v19) · nivel 5+ = VETERANÍA (post-élite): la etiqueta muestra el nivel real
+  const levelTag =
+    level >= 5
+      ? `${fusion ? '⚗' : '★★'} Nv. ${level}`
+      : fusion
+        ? '⚗ Fusión'
+        : isRank2
+          ? '★★ Rango II'
+          : specialized
+            ? '★ Élite'
+            : `Nv. ${level}${level >= 3 ? ' (máx)' : ''}`;
 
   // F4.3 · candidatos de fusión: la torre seleccionada está especializada y tiene
   // vecinas (Chebyshev 1) especializadas del mismo dueño con receta. Un botón por
@@ -1115,14 +1169,29 @@ function buildTowerPanel(gs: GameStore, selectedId: number): { html: string; liv
       </div>${focusLine}`;
   }
 
+  // F9a (v19) · botón de VETERANÍA (niveles 5→10): compartido por fusiones y
+  // Rango II. El paso al nivel 10 cuesta como una fusión; en clásico es la cima
+  // (nivel 10); en infinito/horda sigue abierto con curva más dura.
+  const eliteBtn = (): string => {
+    if (!eliteNext) {
+      // en la cima del clásico (o torre que no gana nada): botón informativo
+      return level >= 5
+        ? `<button id="panel-upgrade" class="btn primary" disabled>Nv. ${level} — la cima</button>`
+        : '';
+    }
+    const targetLevel = level < 4 ? 5 : level + 1;
+    const afford = gold >= eliteNext.gold && wood >= eliteNext.wood;
+    return `<button id="panel-upgrade" class="btn primary"${afford ? '' : ' disabled'}>⬆ Veteranía Nv. ${targetLevel} (+8%⚔ +4%⏱) 🪙${eliteNext.gold} · 🪵${eliteNext.wood}</button>`;
+  };
+
   // acciones del dueño
   let actions = '';
   if (isMine) {
     if (fusion) {
-      // una fusión no se mejora ni se especializa: solo venta (+ modo de objetivo)
+      // una fusión no se especializa; desde F9a SÍ mejora: niveles de veteranía
       actions = `
         <p class="spec-desc" style="padding:0 4px 6px">${fusion.desc}</p>
-        <div class="prow"><button id="panel-sell" class="btn ghost">💸 Vender ${sellValue}</button></div>
+        <div class="prow">${eliteBtn()}<button id="panel-sell" class="btn ghost">💸 Vender ${sellValue}</button></div>
         ${targetModesHtml(projKind, lvl, modeIdx)}
         ${controlRow}`;
     } else if (def.onPathOnly) {
@@ -1147,23 +1216,26 @@ function buildTowerPanel(gs: GameStore, selectedId: number): { html: string; liv
           <button id="panel-sell" class="btn ghost">💸 Vender ${sellValue}</button>
         </div>`;
     } else if (canSpecialize) {
-      const wood = myWood(gs);
       // descubrimiento contextual: si lo que te frena es la madera, el panel te
       // manda directo al mercado (el mejor momento para aprender que existe)
       const woodHint = wood < WOOD_COST_SPEC
         ? '<p class="hint" style="padding:2px 4px 0">💡 Te falta madera: toca el chip 🪵 de arriba para comprarla o mejorar a tu orco</p>'
         : '';
       actions = `
-        <div class="spec-title">Elige especialización <span class="spec-woodreq">(cuesta 🪵${WOOD_COST_SPEC} de madera)</span></div>${woodHint}
+        <div class="spec-title">Elige especialización <span class="spec-woodreq">(cuesta 🪵 madera además del oro)</span></div>${woodHint}
         <div class="spec-choices">
           ${def.specs
             .map(
-              (sp, i) => `
-            <button class="spec-btn" data-spec="${i}" ${gold < sp.cost || wood < WOOD_COST_SPEC ? 'disabled' : ''}>
+              // F9a · las specs nuevas (índice 2) pueden costar MÁS madera (woodCost)
+              (sp, i) => {
+                const wc = sp.woodCost ?? WOOD_COST_SPEC;
+                return `
+            <button class="spec-btn" data-spec="${i}" ${gold < sp.cost || wood < wc ? 'disabled' : ''}>
               <span class="spec-name">${sp.name}</span>
               <span class="spec-desc">${sp.desc}</span>
-              <span class="spec-cost">🪙${sp.cost}<br>🪵${WOOD_COST_SPEC}</span>
-            </button>`,
+              <span class="spec-cost">🪙${sp.cost}<br>🪵${wc}</span>
+            </button>`;
+              },
             )
             .join('')}
         </div>
@@ -1172,7 +1244,6 @@ function buildTowerPanel(gs: GameStore, selectedId: number): { html: string; liv
     } else if (canRank2 && r2cost !== null) {
       // Rango II: mejora identidad de la especialización (reutiliza el comando upgrade)
       const r2desc = def.specs[spec].rank2?.desc ?? 'Mejora de Rango II';
-      const wood = myWood(gs);
       const affordR2 = gold >= r2cost && wood >= WOOD_COST_RANK2;
       const r2btn = affordR2
         ? `<button id="panel-upgrade" class="btn primary">★★ Rango II 🪙${r2cost} · 🪵${WOOD_COST_RANK2}</button>`
@@ -1191,7 +1262,11 @@ function buildTowerPanel(gs: GameStore, selectedId: number): { html: string; liv
       const nextCost = next?.cost ?? null;
       const maxedLabel = isRank2 ? 'Máximo (Rango II)' : 'Máximo';
       let upBtn: string;
-      if (nextCost === null) {
+      if (isRank2) {
+        // F9a (v19) · Rango II alcanzado: la ruta de mejora continúa por la
+        // VETERANÍA (niveles 5→10) — o muestra la cima si ya no puede más.
+        upBtn = eliteBtn() || `<button id="panel-upgrade" class="btn primary" disabled>${maxedLabel}</button>`;
+      } else if (nextCost === null) {
         upBtn = `<button id="panel-upgrade" class="btn primary" disabled>${maxedLabel}</button>`;
       } else if (gold >= nextCost) {
         upBtn = `<button id="panel-upgrade" class="btn primary">⬆ Mejorar 🪙${nextCost}</button>`;
@@ -1264,8 +1339,9 @@ export function onTick(snap: Snap): void {
   if (horde) {
     // En horda no hay vidas: se pierde por SATURACIÓN. El chip 👾 pasa a ser la
     // "vida" — enemigos vivos / cap. Amarillo desde 70%, rojo desde 90% (pulso).
+    // F9a (v19) · Reparar suma aforo: cap efectivo = HORDE_CAP + repairsBought.
     lives.hidden = true;
-    const cap = HORDE_CAP[gs.init.difficulty] ?? HORDE_CAP.normal;
+    const cap = (HORDE_CAP[gs.init.difficulty] ?? HORDE_CAP.normal) + (snap.repairsBought ?? 0);
     const alive = snap.enemies.length;
     aliveChip.hidden = false;
     aliveChip.textContent = `👾 ${alive}/${cap}`;
@@ -1326,10 +1402,17 @@ export function onTick(snap: Snap): void {
     if (snap.nextImmune) tags.push('<span class="wave-tag immune" title="Inmune a la magia: solo daño físico">🛡 inmune</span>');
     if (snap.nextBlessed) tags.push('<span class="wave-tag blessed" title="¡Oleada bendecida: doble botín!">⭐ bendecida</span>');
     if (snap.nextInvisible) tags.push('<span class="wave-tag invisible" title="Oleada INVISIBLE: sin un Sentry (🛒 Tienda) no puedes ver ni apuntar a los enemigos">👁 invisible</span>');
+    // F9a (v19) · CAMPEONES 👑: pocos mini-jefes gordos y lentos, fuga carísima
+    if (snap.nextChampion) tags.push('<span class="wave-tag boss" title="CAMPEONES: 3-6 mini-jefes con muchísima vida, lentos, botín ×5 — si uno escapa cuesta MUCHAS vidas">👑 campeones</span>');
     if (snap.nextBossType >= 0) {
       const bossType = ENEMY_ORDER[snap.nextBossType];
       const bossFlying = ENEMIES[bossType]?.flying;
-      tags.push(`<span class="wave-tag boss" title="${ENEMIES[bossType]?.name ?? 'Jefe'}">${bossFlying ? '🦅' : '☠'} ${ENEMIES[bossType]?.name ?? 'jefe'}</span>`);
+      // F9a (v19) · afijo del jefe telegrafiado: "☠ Gólem · Adaptativo 🧬"
+      const affix = snap.nextBossAffix >= 0 ? AFFIXES[AFFIX_ORDER[snap.nextBossAffix]] : null;
+      const bossName = ENEMIES[bossType]?.name ?? 'jefe';
+      const label = affix ? `${bossName} · ${affix.name} ${affix.icon}` : bossName;
+      const title = affix ? `${bossName} — ${affix.name}: ${affix.desc}` : bossName;
+      tags.push(`<span class="wave-tag boss" title="${title}">${bossFlying ? '🦅' : '☠'} ${label}</span>`);
     } else if (snap.nextFlying) {
       tags.push('<span class="wave-tag flying" title="Domina lo aéreo: necesitas anti-aire">🦅 aérea</span>');
     }
@@ -1498,25 +1581,53 @@ let lastShopSync = 0;
 // actualiza clases EN SITIO. Antes reescribía el innerHTML cada 250ms con la
 // tienda abierta: el botón se destruía bajo el dedo y el click se perdía (bug
 // real reportado: "hay que hacer varios clics para comprar el Sentry").
+// F9a (v19) · la tienda gana REPARAR FORTALEZA (solo infinito/horda): compra
+// directa (comando `repair`, sin colocación) con precio de EQUIPO escalado que
+// viaja en el snapshot (snap.repairCost) — el server valida el precio real.
 export function renderShop(): void {
   const gs = store.game;
   if (!gs) return;
+  const snap = gs.latest;
   const grid = $('shop-grid');
-  if (grid.childElementCount !== SHOP_ITEMS.length) {
-    grid.innerHTML = SHOP_ITEMS.map((it) => {
-      const cost = TOWERS[it.towerType].levels[0].cost;
-      return `<button class="shop-item" data-item="${it.towerType}">
+  const mode = gs.init.mode;
+  const wantRepair = mode !== 'classic';
+  const wantCount = SHOP_ITEMS.length + (wantRepair ? 1 : 0);
+  if (grid.childElementCount !== wantCount) {
+    const repairHtml = wantRepair
+      ? `<button class="shop-item" data-action="repair">
+        <span class="shop-icon">🏰</span>
+        <span class="shop-info"><b>Reparar fortaleza</b><span class="shop-desc">${
+          mode === 'horde'
+            ? 'Refuerza las murallas: +1 de AFORO de saturación (aguantáis un enemigo más a la vez). El precio sube ×1.5 con cada compra del equipo.'
+            : '+1 vida para el equipo. El precio sube ×1.5 con cada compra del equipo. Reencender el Poder Vital puede valer cada moneda.'
+        }</span></span>
+        <span class="shop-cost" data-repair-cost>🪙…</span>
+      </button>`
+      : '';
+    grid.innerHTML =
+      SHOP_ITEMS.map((it) => {
+        const cost = TOWERS[it.towerType].levels[0].cost;
+        return `<button class="shop-item" data-item="${it.towerType}">
         <span class="shop-icon">${it.icon}</span>
         <span class="shop-info"><b>${it.name}</b><span class="shop-desc">${it.desc}</span></span>
         <span class="shop-cost">🪙${cost}</span>
       </button>`;
-    }).join('');
+      }).join('') + repairHtml;
   }
   const gold = myGold(gs);
   for (const el of grid.querySelectorAll<HTMLElement>('[data-item]')) {
     const type = el.dataset.item as TowerTypeId;
     el.classList.toggle('poor', gold < TOWERS[type].levels[0].cost);
     el.classList.toggle('selected', gs.selection?.kind === 'placing' && gs.selection.towerType === type);
+  }
+  // F9a · reparación: precio vivo del snapshot + estados (sin oro / vidas al máximo)
+  const repairBtn = grid.querySelector<HTMLButtonElement>('[data-action="repair"]');
+  if (repairBtn && snap) {
+    const cost = snap.repairCost;
+    const full = mode === 'endless' && snap.lives >= START_LIVES;
+    const costEl = repairBtn.querySelector<HTMLElement>('[data-repair-cost]');
+    if (costEl) costEl.textContent = full ? 'intacta' : `🪙${cost}`;
+    repairBtn.classList.toggle('poor', full || gold < cost);
   }
 }
 
@@ -1558,6 +1669,14 @@ export function initShop(): void {
   });
   // comprar = armar la colocación del item; el pago se hace al plantar (comando place)
   $('shop-grid').addEventListener('click', (e) => {
+    // F9a (v19) · Reparar fortaleza: compra DIRECTA (sin colocación) — manda el
+    // comando y el server valida modo/precio/vidas. La tienda queda abierta para
+    // encadenar reparaciones (el precio sube solo en el snapshot siguiente).
+    const action = (e.target as HTMLElement).closest<HTMLElement>('[data-action="repair"]');
+    if (action) {
+      net.send({ type: 'cmd', cmd: { kind: 'repair' } });
+      return;
+    }
     const el = (e.target as HTMLElement).closest<HTMLElement>('[data-item]');
     if (!el) return;
     const type = el.dataset.item as TowerTypeId;

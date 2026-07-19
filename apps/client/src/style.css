@@ -2162,6 +2162,15 @@ html, body {
   border-radius: 999px;
 }
 
+/* F9a (v19) · 📅 calendario clásico de 36: reutiliza la tabla de la matriz
+   (tokens --h-*), con texto alineado a la izquierda y filas especiales doradas */
+.cal-table th, .cal-table td { text-align: left; font-weight: 500; }
+.cal-table td.cal-w { text-align: right; font-weight: 700; color: var(--h-muted); width: 2ch; }
+.cal-table td.cal-tags { white-space: nowrap; }
+.cal-table td.cal-theme { color: var(--h-muted); font-size: 0.74rem; white-space: normal; }
+.cal-table tr.cal-special td { background: rgba(242, 177, 0, 0.07); }
+.cal-table tr.cal-special td.cal-species { color: var(--h-accent-hi); }
+
 @media (max-width: 700px) {
   .overlay-card.bestiary-card { padding: 18px 14px; }
   .bestiary-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }

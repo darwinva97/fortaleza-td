@@ -6,6 +6,7 @@ import {
   ENEMY_ORDER,
   fusionByIndex,
   INTERP_DELAY_MS,
+  statsOf,
   TICK_RATE,
   TOWERS,
   TOWER_ORDER,
@@ -92,6 +93,28 @@ export const ENEMY_ICONS: Record<EnemyTypeId, string> = {
   wraith: '👤',
   chimera: '🦁',
   behemoth: '🦏',
+  // F9a (v19)
+  gargoyle: '🗿',
+  harpy: '🦅',
+  stalker: '🥷',
+  runebrat: '🧝',
+  bannerman: '🚩',
+  knight: '🛡️',
+  mammoth: '🦣',
+};
+
+// F9a (v19) · arte provisional de los monstruos nuevos: cada uno REUTILIZA el
+// cuerpo vectorial de un pariente visual (con SU color de def, que ya cambia la
+// silueta percibida). El arte final llegará por prompts del pipeline de sprites;
+// esto garantiza que NUNCA se dibuje un enemigo vacío.
+const ENEMY_ART_ALIAS: Partial<Record<EnemyTypeId, EnemyTypeId>> = {
+  gargoyle: 'bat', // alas + cuerpo pétreo gris
+  harpy: 'bat', // alas rosadas (la cura ya se lee por su aura)
+  stalker: 'ghost', // silueta escurridiza parda
+  runebrat: 'goblin', // duende pequeño celeste
+  bannerman: 'shaman', // porta-algo humanoide naranja
+  knight: 'armored', // placas moradas
+  mammoth: 'behemoth', // mole colosal parda
 };
 
 // ---------- paletas por tema ----------
@@ -1441,13 +1464,13 @@ function nearestEnemyAngle(interp: InterpResult | null, cx: number, cy: number, 
 export interface ClientAura {
   dmg: number;
   haste: number;
+  crit: number; // F9a · prob. de crítico del Estandarte del Vencedor (0 = sin aura)
 }
 
-// Stats de una torre del snapshot TENIENDO EN CUENTA su fusión (F4.3): si la
-// tupla trae índice de fusión, mandan los stats de la receta; espeja `statsOf`.
+// Stats de una torre del snapshot TENIENDO EN CUENTA su fusión (F4.3) Y su
+// veteranía (F9a, niveles 5→10): espeja `statsOf` de la sim usando la tupla.
 function tupleStats(tw: SnapTower): TowerLevelDef {
-  const f = fusionByIndex(tw[13] ?? -1);
-  return f ? f.stats : activeStats(TOWER_ORDER[tw[1]], tw[4], tw[9] ?? -1);
+  return statsOf({ type: TOWER_ORDER[tw[1]], level: tw[4], spec: tw[9] ?? -1, fusion: tw[13] ?? -1 });
 }
 
 export function computeBannerAuras(snap: Snap): Map<number, ClientAura> {
@@ -1456,7 +1479,8 @@ export function computeBannerAuras(snap: Snap): Map<number, ClientAura> {
     const blvl = tupleStats(banner);
     const dmg = blvl.auraDamage ?? 0;
     const haste = blvl.auraHaste ?? 0;
-    if (dmg <= 0 && haste <= 0) continue; // no es estandarte (o aura nula)
+    const crit = blvl.auraCrit ?? 0; // F9a · Estandarte del Vencedor
+    if (dmg <= 0 && haste <= 0 && crit <= 0) continue; // no es estandarte (o aura nula)
     const bx = banner[2] + 0.5;
     const by = banner[3] + 0.5;
     for (const tw of snap.towers) {
@@ -1464,18 +1488,19 @@ export function computeBannerAuras(snap: Snap): Map<number, ClientAura> {
       const twType = TOWER_ORDER[tw[1]];
       const tlvl = tupleStats(tw);
       // un estandarte puro no recibe auras; el Señor de la Guerra (alsoFires) sí
-      if ((tlvl.auraDamage !== undefined || tlvl.auraHaste !== undefined) && !tlvl.alsoFires) continue;
+      if ((tlvl.auraDamage !== undefined || tlvl.auraHaste !== undefined || tlvl.auraCrit !== undefined) && !tlvl.alsoFires) continue;
       if (tlvl.incomePerWave) continue; // la mina
       if (tlvl.auraBounty !== undefined) continue; // el Alquimista (no dispara)
       if (TOWERS[twType].onPathOnly) continue; // la Trampa de púas
       if (Math.hypot(bx - (tw[2] + 0.5), by - (tw[3] + 0.5)) > blvl.range) continue;
       let a = out.get(tw[0]);
       if (!a) {
-        a = { dmg: 0, haste: 0 };
+        a = { dmg: 0, haste: 0, crit: 0 };
         out.set(tw[0], a);
       }
       if (dmg > a.dmg) a.dmg = dmg;
       if (haste > a.haste) a.haste = haste;
+      if (crit > a.crit) a.crit = crit;
     }
   }
   return out;
@@ -1487,7 +1512,7 @@ export function countBannerTargets(snap: Snap, bannerId: number): number {
   const banner = snap.towers.find((t) => t[0] === bannerId);
   if (!banner) return 0;
   const blvl = tupleStats(banner);
-  if (blvl.auraDamage === undefined && blvl.auraHaste === undefined) return 0;
+  if (blvl.auraDamage === undefined && blvl.auraHaste === undefined && blvl.auraCrit === undefined) return 0;
   const bx = banner[2] + 0.5;
   const by = banner[3] + 0.5;
   let n = 0;
@@ -1495,7 +1520,7 @@ export function countBannerTargets(snap: Snap, bannerId: number): number {
     if (tw[0] === bannerId) continue;
     const twType = TOWER_ORDER[tw[1]];
     const tlvl = tupleStats(tw);
-    if ((tlvl.auraDamage !== undefined || tlvl.auraHaste !== undefined) && !tlvl.alsoFires) continue;
+    if ((tlvl.auraDamage !== undefined || tlvl.auraHaste !== undefined || tlvl.auraCrit !== undefined) && !tlvl.alsoFires) continue;
     if (tlvl.incomePerWave) continue;
     if (tlvl.auraBounty !== undefined) continue;
     if (TOWERS[twType].onPathOnly) continue;
@@ -3015,11 +3040,13 @@ function drawEnemies(interp: InterpResult, now: number): void {
     const isBoss = (e.flags & 4) !== 0;
     const isElite = (e.flags & 8) !== 0;
     const isImmune = (e.flags & 16) !== 0;
-    const affixes = isElite ? affixesFromMask(e.affix) : [];
+    const isChampion = (e.flags & 256) !== 0; // F9a · campeón 👑
+    // F9a · los JEFES con afijo también mandan máscara (icono sobre la cabeza)
+    const affixes = isElite || isBoss ? affixesFromMask(e.affix) : [];
     if (stealth) g.globalAlpha = 0.5;
     const x = toX(e.x);
     let y = toY(e.y);
-    const r = Math.max(4, def.radius * s * (isElite ? 1.3 : 1));
+    const r = Math.max(4, def.radius * s * (isElite ? 1.3 : isChampion ? 1.45 : 1));
     const bob = Math.sin(t * def.speed * 6 + e.id * 1.7);
 
     // sombra
@@ -3040,6 +3067,19 @@ function drawEnemies(interp: InterpResult, now: number): void {
       g.fillStyle = halo;
       g.beginPath();
       g.arc(x, y, r * (1.6 + pulse * 0.3), 0, Math.PI * 2);
+      g.fill();
+    }
+
+    // F9a · halo DORADO del campeón 👑 (mini-jefe de pelotón): más lento y regio
+    // que el de élite, para que "pocos y gordos" se lea desde lejos.
+    if (isChampion) {
+      const pulse = 0.5 + Math.sin(t * 2.2 + e.id) * 0.5;
+      const halo = g.createRadialGradient(x, y, r * 0.7, x, y, r * 2.2);
+      halo.addColorStop(0, 'rgba(255,213,79,0.4)');
+      halo.addColorStop(1, 'rgba(255,213,79,0)');
+      g.fillStyle = halo;
+      g.beginPath();
+      g.arc(x, y, r * (1.7 + pulse * 0.25), 0, Math.PI * 2);
       g.fill();
     }
 
@@ -3164,8 +3204,8 @@ function drawEnemies(interp: InterpResult, now: number): void {
       g.fill();
     }
 
-    // corona + iconos de afijos sobre los élites
-    if (isElite && s > 22) {
+    // corona + iconos de afijos sobre los élites (F9a: también jefes con afijo)
+    if ((isElite || (isBoss && affixes.length > 0)) && s > 22) {
       const iconY = y - r - (e.hpFrac < 1 ? s * 0.34 : s * 0.22);
       g.font = `${Math.max(9, s * 0.34)}px serif`;
       g.textAlign = 'center';
@@ -3174,6 +3214,15 @@ function drawEnemies(interp: InterpResult, now: number): void {
       affixes.forEach((a, i) => {
         g.fillText(AFFIXES[a].icon, x + (i - (total - 1) / 2) * s * 0.32, iconY);
       });
+    }
+
+    // F9a · corona 👑 sobre los CAMPEONES (su marca de arquetipo)
+    if (isChampion && s > 22) {
+      const iconY = y - r - (e.hpFrac < 1 ? s * 0.34 : s * 0.22);
+      g.font = `${Math.max(10, s * 0.38)}px serif`;
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      g.fillText('👑', x, iconY);
     }
 
     if (isBoss && (!boss || e.hpFrac > boss.hpFrac)) {
@@ -3187,7 +3236,10 @@ function drawEnemies(interp: InterpResult, now: number): void {
 }
 
 // Arte vectorial de cada enemigo, centrado en (0,0) con radio r.
-function drawEnemyArt(type: EnemyTypeId, color: string, r: number, t: number, id: number, bob: number, s: number): void {
+function drawEnemyArt(rawType: EnemyTypeId, color: string, r: number, t: number, id: number, bob: number, s: number): void {
+  // F9a · arte provisional: los tipos nuevos dibujan el cuerpo de su pariente
+  // visual (el color propio ya viene en `color`). Ver ENEMY_ART_ALIAS.
+  const type = ENEMY_ART_ALIAS[rawType] ?? rawType;
   const dark = shade(color, 0.55);
   const lite = shade(color, 1.35);
 

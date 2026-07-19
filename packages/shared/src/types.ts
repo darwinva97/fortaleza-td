@@ -52,7 +52,16 @@ export type EnemyTypeId =
   | 'skywhale' // Coloso alado: volador tanque
   | 'wraith' // Espectro mayor: esquiva 50%, inmune a veneno, lento
   | 'chimera' // jefe volador de media partida
-  | 'behemoth'; // jefe terrestre pesado que aturde torres al cruzar esquinas
+  | 'behemoth' // jefe terrestre pesado que aturde torres al cruzar esquinas
+  // F9a (v19) — ~7 monstruos nuevos: llenan huecos de la matriz ataque×armadura y
+  // del calendario clásico. SIEMPRE al FINAL del orden de snapshot.
+  | 'gargoyle' // Gárgola: volador BLINDADO (no existía aire+blindada) — la Metralla brilla
+  | 'harpy' // Arpía: voladora SANADORA (chamán del cielo) — mátala primero
+  | 'stalker' // Acechador: evasor terrestre veloz NO espectral (esquiva alta, sin inmunidad)
+  | 'runebrat' // Duende Rúnico: morralla SIEMPRE inmune a magia — castiga el mono-build mágico
+  | 'bannerman' // Portaestandarte: soporte con aura de CELERIDAD (acelera a los cercanos)
+  | 'knight' // Caballero Corrupto: blindado RÁPIDO (el bloque élite 28-34 del clásico)
+  | 'mammoth'; // Mamut de Guerra: colosal terrestre no-jefe — presa del perforante y campeón canónico
 
 // F4.3 · Fusión de torres (recetas curadas estilo Element TD). Dos torres
 // ESPECIALIZADAS adyacentes del mismo dueño cuyos tipos formen una receta se
@@ -79,7 +88,10 @@ export type AffixId =
   | 'vampiric' // vampírico (cura a los cercanos)
   | 'elusive' // escurridizo (esquiva)
   | 'frostward' // gélido (resiste el hielo)
-  | 'explosive'; // explosivo (suelta crías al morir)
+  | 'explosive' // explosivo (suelta crías al morir)
+  // F9a (v19) · afijos de JEFE (ELEMENTTD.md §9.1) — AL FINAL de AFFIX_ORDER
+  | 'adaptive' // adaptativo: tras N impactos del mismo attackType gana resistencia contra él
+  | 'chillaura'; // aura gélida: baja la cadencia de las torres cercanas
 
 export interface Vec {
   x: number;
@@ -131,6 +143,15 @@ export interface TowerLevelDef {
   lineWidth?: number; // *Tormenta de Riel*: rayo PERFORANTE — golpea a todos los enemigos a ≤ esta distancia de la línea de tiro (a inmunes −70%, como el Tesla)
   alsoFires?: boolean; // *Señor de la Guerra*: la torre tiene aura de Estandarte Y ADEMÁS dispara
   poisonBountyMult?: number; // *Piedra Filosofal*: multiplicador de botín de las bajas causadas por SU veneno (DoT)
+  // --- F9a (v19) · specs nuevas de identidad ---
+  // *Poder Vital* (ELEMENTTD §9.3): +esta fracción de daño mientras el EQUIPO
+  // conserve ≥ VITAL_LIVES_MIN vidas. Se resuelve en fireTower leyendo state.lives
+  // (determinista); reparar la fortaleza (item 7) puede reencender el buff.
+  vitalPower?: number;
+  // *Estandarte del Vencedor*: aura de CRÍTICO — las torres en rango ganan esta
+  // probabilidad de golpe ×CRIT_MULT (rand(state) por disparo, determinista) y
+  // CERTEZA (sus proyectiles no pueden ser esquivados). Regla MAX, no apila.
+  auraCrit?: number;
 }
 
 // Especialización: se elige una de dos al llegar al nivel máximo. Es un bloque
@@ -142,6 +163,9 @@ export interface TowerSpecDef extends TowerLevelDef {
   name: string;
   desc: string;
   rank2?: TowerRank2Def; // mejora del Rango II (nivel 4)
+  // F9a (v19) · coste de madera propio de la spec (ausente = WOOD_COST_SPEC).
+  // Las specs "gordas" nuevas (Estandarte del Vencedor) cuestan más madera.
+  woodCost?: number;
 }
 
 // Overrides del Rango II: mismos campos que un nivel de torre, más su coste.
@@ -164,7 +188,11 @@ export interface TowerDef {
   // dañan (mina/estandarte/alquimista/sentry) llevan un valor nominal que nunca se usa.
   attackType: AttackTypeId;
   levels: [TowerLevelDef, TowerLevelDef, TowerLevelDef];
-  specs: [TowerSpecDef, TowerSpecDef]; // ramas A/B al máximo nivel
+  // F9a (v19) · antes era una tupla fija [A, B]; ahora es un array que solo CRECE
+  // POR EL FINAL (el índice de spec viaja en el snapshot, como TOWER_ORDER). Las
+  // torres siguen teniendo 2 ramas base; las specs nuevas de identidad (Poder
+  // Vital, Estandarte del Vencedor) entran como índice 2.
+  specs: TowerSpecDef[]; // ramas al máximo nivel (mínimo 2)
   // F4.2 · Trampa de púas: única torre construible SOBRE el camino (y solo ahí).
   // El resto de torres siguen sin poder ir sobre el camino.
   onPathOnly?: boolean;
@@ -207,6 +235,10 @@ export interface EnemyDef {
   berserkMult?: number; // multiplicador de velocidad al enfurecerse (p. ej. 1.8)
   sapper?: boolean; // Zapador: se detiene junto a la torre más cercana y la aturde
   stunOnCorner?: { radius: number; seconds: number }; // Behemot: aturde torres al cruzar cada esquina
+  // F9a (v19) · Portaestandarte: aura de CELERIDAD — los enemigos cercanos (no él
+  // mismo) se mueven ×mult mientras el portador viva. No apila (es un booleano
+  // "estoy dentro de algún aura", no un producto por fuente).
+  hasteAura?: { radius: number; mult: number };
 }
 
 export interface MapDef {
@@ -268,6 +300,14 @@ export interface EnemyState {
   // trampa/barril) y el tick de veneno (por poisonSrc). Al morir, killEnemy busca aquí al
   // mayor dañador para el oro de asistencia. Determinista: acumulación en orden estable.
   dmgBy: Record<string, number>;
+  // --- F9a (v19) · AL FINAL ---
+  // CAMPEÓN 👑 (oleada de mini-jefes, ELEMENTTD §9.2): ×9 hp, ×0.5 velocidad,
+  // botín ×5, fuga cara. No es élite ni jefe: es su propio arquetipo.
+  champion: boolean;
+  // Afijo ADAPTATIVO (jefes): impactos recibidos por attackType (índice =
+  // ATTACK_TYPE_ORDER). Al llegar a ADAPT_HITS de un tipo, ese tipo pega ×(1−ADAPT_RESIST)
+  // para siempre. Solo se alimenta si el enemigo lleva el afijo (resto: ceros).
+  adaptHits: [number, number, number, number];
 }
 
 export interface TowerState {
@@ -342,6 +382,13 @@ export interface ProjectileState {
   // --- F5.1 · AL FINAL ---
   // tipo de ataque de la torre emisora (matriz ataque×armadura al impactar)
   attackType: AttackTypeId;
+  // --- F9a (v19) · AL FINAL ---
+  // CRÍTICO (Estandarte del Vencedor): el disparo ya salió crítico (daño ×CRIT_MULT
+  // horneado en `damage` al disparar; el roll de rand(state) ocurre en fireTower).
+  // El cliente pinta el número dorado al impactar (evento `crit`).
+  crit: boolean;
+  // CERTEZA (Estandarte del Vencedor): este proyectil no puede ser esquivado.
+  sure: boolean;
 }
 
 export interface PlayerStats {
@@ -379,6 +426,16 @@ export interface SpawnEntry {
   blessedAffix?: AffixId; // el afijo común de la oleada bendecida
   // Lote 3 · oleada invisible: el enemigo nace `invisible` (no en jefes)
   invisible?: boolean;
+  // --- F9a (v19) ---
+  // CAMPEÓN 👑: el enemigo nace campeón (makeChampion). `championHp` permite al
+  // calendario afinar el multiplicador de hp por oleada (ausente = CHAMPION_HP_MULT).
+  champion?: boolean;
+  championHp?: number;
+  // Afijo de JEFE telegrafiado ("☠ Gólem Gélido"): solo lo llevan entradas de jefe.
+  bossAffix?: AffixId;
+  // Afinado a mano del calendario clásico: multiplica el hp base de ESTA entrada
+  // (antes de élite/campeón). Ausente = 1.
+  hpTune?: number;
 }
 
 export interface WaveComp {
@@ -409,6 +466,10 @@ export interface GameState {
   nextWaveFlying: boolean;
   nextWaveInvisible: boolean; // Lote 3 · la próxima oleada es INVISIBLE (telegrafía 👁)
   nextWaveBoss: EnemyTypeId | null;
+  // F9a (v19) · telegrafía nueva: 👑 oleada de CAMPEONES y afijo del próximo jefe
+  // ("☠ Gólem Gélido"). Campos de OBJETO (no tupla): añadirlos es seguro.
+  nextWaveChampion: boolean;
+  nextWaveBossAffix: AffixId | null;
   pendingWave: SpawnEntry[] | null; // oleada ya generada, esperando el fin del interludio
   pendingBoss: boolean;
   pendingBossType: EnemyTypeId | null; // jefe de la oleada pendiente (para el anuncio)
@@ -424,6 +485,13 @@ export interface GameState {
   woodPrice: number;
   nextId: number;
   over: null | { victory: boolean };
+  // --- F9a (v19) · contadores de EQUIPO (economía escalada) ---
+  // Barriles explosivos comprados por el EQUIPO: cada compra encarece el siguiente
+  // ×BOOM_COST_TEAM_STEP compuesto (vender NO lo devuelve — sin ciclos de reset).
+  boomsBought: number;
+  // Reparaciones de la fortaleza compradas por el EQUIPO (solo infinito/horda):
+  // en infinito +1 vida; en horda +1 de aforo de saturación. Escala ×REPAIR_COST_STEP.
+  repairsBought: number;
 }
 
 // ---------- Comandos (cliente -> sim) ----------
@@ -453,7 +521,11 @@ export type Command =
   | { kind: 'focus'; towerId: number; enemyId: number }
   // Lote 4 · STOP/REANUDAR: on=true detiene la torre (no dispara), on=false la
   // reanuda. Solo torres que DISPARAN, del dueño.
-  | { kind: 'halt'; towerId: number; on: boolean };
+  | { kind: 'halt'; towerId: number; on: boolean }
+  // F9a (v19) · REPARAR FORTALEZA (solo infinito/horda, 🛒 Tienda): +1 vida (o +1
+  // de aforo en horda). El precio ESCALA por compra del EQUIPO y lo valida el
+  // server (repairCost del estado); el cliente no manda precio — no puede mentir.
+  | { kind: 'repair' };
 
 export interface PlayerCommand {
   playerId: string;
@@ -551,8 +623,11 @@ export type GameEvent =
   // bonus). El cliente la usa para destacar el botín aumentado (⚗ en verde).
   | { e: 'death'; x: number; y: number; type: EnemyTypeId; bounty: number; killer: string; elite: boolean; alch?: number }
   | { e: 'miss'; x: number; y: number }
-  | { e: 'leak'; lives: number; type: EnemyTypeId }
-  | { e: 'steal'; gold: number; x: number; y: number } // el Ladrón escapó y robó oro
+  // `pathIdx` (F9a, pedido del lote de mapas XL): índice de la RUTA por la que
+  // fugó/robó el enemigo — el cliente atribuye la fuga a la "puerta" de cada
+  // jugador en los mapas multi-carril. Evento efímero: ganar campos no exige bump.
+  | { e: 'leak'; lives: number; type: EnemyTypeId; pathIdx: number }
+  | { e: 'steal'; gold: number; x: number; y: number; pathIdx: number } // el Ladrón escapó y robó oro
   | { e: 'wave_start'; wave: number; comp: WaveComp[] }
   | { e: 'wave_end'; wave: number; bonus: number }
   | { e: 'income'; playerId: string; amount: number; x: number; y: number }
@@ -570,9 +645,20 @@ export type GameEvent =
   | { e: 'fuse'; x: number; y: number; fusion: FusionId; name: string } // F4.3: FX + toast de fusión
   | { e: 'sell'; x: number; y: number; refund: number }
   | { e: 'reject'; playerId: string; reason: string }
-  | { e: 'boss'; name: string }
+  // `affix`: nombre del afijo de jefe (F9a; "Gélido") para el toast "☠ Gólem Gélido".
+  // Los eventos son efímeros: pueden ganar campos sin bump.
+  | { e: 'boss'; name: string; affix?: string }
   | { e: 'gameover'; victory: boolean }
   | { e: 'sys'; msg: string }
+  // F9a (v19) · GOLPE CRÍTICO (Estandarte del Vencedor): número dorado flotante.
+  // `dmg` es el daño del disparo crítico (aprox. para el visual; el real ya pasó
+  // por matriz/armadura en la sim).
+  | { e: 'crit'; x: number; y: number; dmg: number }
+  // F9a (v19) · un jefe ADAPTATIVO completó su adaptación contra un tipo de ataque:
+  // aviso visual ("🛡 se adaptó al asedio"). `attackType` es el id del tipo.
+  | { e: 'adapt'; x: number; y: number; attackType: AttackTypeId }
+  // F9a (v19) · REPARACIÓN de la fortaleza: vidas/aforo nuevos + quién pagó.
+  | { e: 'repair'; playerId: string; lives: number; cost: number }
   // ORO DE ASISTENCIA (co-op): el mayor dañador de un enemigo (≥35% de su maxHp) cobra
   // un extra al morir este SI no fue quien dio el golpe final. `player` = playerId del
   // asistente; `gold` = oro cobrado. El cliente pinta "+N 🤝" en su color.

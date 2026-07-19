@@ -7,6 +7,7 @@ export * from './balance/fusions.js';
 export * from './balance/enemies.js';
 export * from './balance/affixes.js';
 export * from './balance/waves.js';
+export * from './balance/calendar.js';
 export * from './balance/maps.js';
 export * from './sim/grid.js';
 export * from './sim/state.js';

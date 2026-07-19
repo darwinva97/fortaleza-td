@@ -1,10 +1,13 @@
 import type { GameEvent, GameState, MapDef, PlayerCommand } from '../types.js';
 import { TOWERS, towerLevel, hasRank2, rank2Cost } from '../balance/towers.js';
-import { FUSION_ORDER, findFusion, towerFires } from '../balance/fusions.js';
+import { FUSION_ORDER, findFusion, nextEliteLevelCost, towerFires } from '../balance/fusions.js';
 import {
+  BOOM_COST_TEAM_STEP,
   CALL_WAVE_GOLD_PER_SEC,
   ORC_RATES,
   ORC_UPGRADE_COSTS,
+  REPAIR_COST_BASE,
+  REPAIR_COST_STEP,
   SELL_REFUND,
   SENTRY_DURATION_SEC,
   TICK_RATE,
@@ -20,6 +23,19 @@ import { placementError, type PlacementContext } from './grid.js';
 
 function reject(events: GameEvent[], playerId: string, reason: string) {
   events.push({ e: 'reject', playerId, reason });
+}
+
+// F9a (v19) · precio EFECTIVO del Barril explosivo: base ×1.3 compuesto por cada
+// compra previa del EQUIPO. Vive aquí (server-side): el cliente solo lo muestra
+// (viaja en el snapshot como boomCost) — no hay precio que el cliente pueda falsificar.
+export function boomCost(state: { boomsBought: number }): number {
+  return Math.round(TOWERS.boom.levels[0].cost * Math.pow(BOOM_COST_TEAM_STEP, state.boomsBought));
+}
+
+// F9a (v19) · precio EFECTIVO de Reparar la fortaleza: 500 ×1.5 compuesto por
+// compra del EQUIPO. Igual que el barril: el server es la única fuente del precio.
+export function repairCost(state: { repairsBought: number }): number {
+  return Math.round(REPAIR_COST_BASE * Math.pow(REPAIR_COST_STEP, state.repairsBought));
 }
 
 export function applyCommands(
@@ -38,7 +54,12 @@ export function applyCommands(
         const def = TOWERS[cmd.towerType];
         if (!def) break;
         const lvl = def.levels[0];
-        if (player.gold < lvl.cost) {
+        // F9a (v19) · el Barril tiene precio ESCALADO por equipo: el server calcula
+        // el precio real del estado actual (nada que el cliente pueda falsificar; si
+        // dos jugadores compran en el mismo tick, el segundo paga el precio ya subido
+        // — los comandos se aplican en orden estable dentro del tick).
+        const cost = def.detonates ? boomCost(state) : lvl.cost;
+        if (player.gold < cost) {
           reject(events, playerId, 'No te alcanza el oro');
           break;
         }
@@ -54,9 +75,12 @@ export function applyCommands(
           reject(events, playerId, msgs[err]);
           break;
         }
-        player.gold -= lvl.cost;
-        player.stats.goldSpent += lvl.cost;
+        player.gold -= cost;
+        player.stats.goldSpent += cost;
         player.stats.towersBuilt += 1;
+        // el contador del equipo SOLO sube con una compra consumada (tras validar
+        // oro y celda); vender el barril NO lo baja — sin ciclos de reset del precio
+        if (def.detonates) state.boomsBought += 1;
         state.towers.push({
           id: state.nextId++,
           type: cmd.towerType,
@@ -67,7 +91,7 @@ export function applyCommands(
           owner: playerId,
           cooldownLeft: 0,
           targetMode: 'first',
-          invested: lvl.cost,
+          invested: cost, // F9a: el barril paga su precio escalado (refund del real)
           kills: 0,
           damage: 0,
           stunnedUntil: 0,
@@ -99,19 +123,46 @@ export function applyCommands(
           reject(events, playerId, 'Esta torre no se puede mejorar');
           break;
         }
-        // una torre fusionada no admite más mejoras (F4.3)
-        if (tower.fusion >= 0) {
-          reject(events, playerId, 'Una fusión no se puede mejorar');
+        // F9a (v19) · NIVELES 5→10 (veteranía): una torre en su cúspide — fusión,
+        // o spec en Rango II (nivel 4+) — sigue mejorando con ORO + MADERA (+8%
+        // daño, +4% cadencia por nivel). Reutiliza el comando `upgrade` (mismo
+        // criterio que el Rango II: cero protocolo nuevo). nextEliteLevelCost
+        // valida TODO server-side: cúspide real, tope del clásico, torres que no
+        // disparan (rechazadas — la veteranía no les aporta nada).
+        if (tower.fusion >= 0 || (tower.spec >= 0 && tower.level >= 4)) {
+          const elite = nextEliteLevelCost(tower, state.mode);
+          if (!elite) {
+            reject(
+              events,
+              playerId,
+              state.mode === 'classic' && tower.level >= 10
+                ? 'Nivel 10: la cima del clásico'
+                : 'Esta torre ya no puede mejorar',
+            );
+            break;
+          }
+          if (player.gold < elite.gold) {
+            reject(events, playerId, 'No te alcanza el oro');
+            break;
+          }
+          if (player.wood < elite.wood) {
+            reject(events, playerId, `Te falta madera (necesitas 🪵${elite.wood})`);
+            break;
+          }
+          player.gold -= elite.gold;
+          player.stats.goldSpent += elite.gold;
+          player.wood -= elite.wood;
+          // las fusiones saltan 3→5 (los niveles de veteranía se llaman 5..10 para
+          // TODOS; eliteSteps() = level−4 vale igual para specs y fusiones)
+          tower.level = tower.level < 4 ? 5 : tower.level + 1;
+          tower.invested += elite.gold;
+          events.push({ e: 'upgrade', x: tower.cx + 0.5, y: tower.cy + 0.5, level: tower.level });
           break;
         }
         // Rango II: una torre ya especializada (nivel 3, spec elegida) con `rank2`
         // puede subir al nivel 4 pagando el coste del Rango II. Reutiliza el comando
         // `upgrade` en vez de inventar protocolo nuevo.
         if (tower.spec >= 0) {
-          if (tower.level >= 4) {
-            reject(events, playerId, 'Ya está en el Rango II');
-            break;
-          }
           if (!hasRank2(tower.type, tower.spec)) {
             reject(events, playerId, 'Esta especialización no tiene Rango II');
             break;
@@ -183,20 +234,25 @@ export function applyCommands(
           break;
         }
         const specs = TOWERS[tower.type].specs;
-        if (cmd.spec !== 0 && cmd.spec !== 1) break;
+        // F9a (v19) · specs ya no son solo 0/1: las ramas nuevas (Poder Vital,
+        // Estandarte del Vencedor) entran como índice 2 — validar contra el array
+        // real (entero en rango; el cliente no puede inventar índices).
+        if (!Number.isInteger(cmd.spec) || cmd.spec < 0 || cmd.spec >= specs.length) break;
         const spec = specs[cmd.spec];
         if (player.gold < spec.cost) {
           reject(events, playerId, 'No te alcanza el oro');
           break;
         }
-        // F5.2 · especializar cuesta madera además de oro (economía Green TD)
-        if (player.wood < WOOD_COST_SPEC) {
-          reject(events, playerId, `Te falta madera (necesitas 🪵${WOOD_COST_SPEC})`);
+        // F5.2 · especializar cuesta madera además de oro (economía Green TD).
+        // F9a · las specs "gordas" pueden traer coste de madera propio (woodCost).
+        const woodCost = spec.woodCost ?? WOOD_COST_SPEC;
+        if (player.wood < woodCost) {
+          reject(events, playerId, `Te falta madera (necesitas 🪵${woodCost})`);
           break;
         }
         player.gold -= spec.cost;
         player.stats.goldSpent += spec.cost;
-        player.wood -= WOOD_COST_SPEC;
+        player.wood -= woodCost;
         tower.spec = cmd.spec;
         tower.invested += spec.cost;
         tower.cooldownLeft = 0;
@@ -431,6 +487,49 @@ export function applyCommands(
         player.stats.goldSpent += gold;
         receiver.stats.goldEarned += gold;
         events.push({ e: 'give', from: playerId, to, gold, wood });
+        break;
+      }
+
+      // F9a (v19) · REPARAR FORTALEZA — SOLO infinito/horda (el clásico de 36 es
+      // una carrera cerrada: comprar vidas lo trivializaría). En infinito: +1 vida
+      // (tope maxLives). En horda: +1 de AFORO de saturación (su "vida" real).
+      // El precio escala ×1.5 compuesto POR EQUIPO y lo calcula el server del
+      // estado — el comando no lleva precio que falsificar. Disponible para todos
+      // los jugadores → los récords siguen comparables.
+      case 'repair': {
+        if (state.mode === 'classic') {
+          reject(events, playerId, 'Reparar la fortaleza solo existe en infinito y horda');
+          break;
+        }
+        if (state.mode === 'endless' && state.lives >= state.maxLives) {
+          reject(events, playerId, 'La fortaleza está intacta');
+          break;
+        }
+        const cost = repairCost(state);
+        if (player.gold < cost) {
+          reject(events, playerId, 'No te alcanza el oro');
+          break;
+        }
+        player.gold -= cost;
+        player.stats.goldSpent += cost;
+        state.repairsBought += 1;
+        let lives: number;
+        if (state.mode === 'endless') {
+          state.lives = Math.min(state.maxLives, state.lives + 1);
+          lives = state.lives;
+        } else {
+          // horda: el aforo efectivo = HORDE_CAP + repairsBought (lo lee stepEnemies);
+          // reportamos el AFORO nuevo en el evento para el toast
+          lives = state.repairsBought;
+        }
+        events.push({ e: 'repair', playerId, lives, cost });
+        events.push({
+          e: 'sys',
+          msg:
+            state.mode === 'endless'
+              ? `🏰 ${player.name} reparó la fortaleza (+1 vida, 🪙${cost})`
+              : `🏰 ${player.name} reforzó las murallas (+1 de aforo, 🪙${cost})`,
+        });
         break;
       }
 

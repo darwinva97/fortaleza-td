@@ -11,17 +11,29 @@ import {
   ASSIST_SHARE,
   ATTACK_TYPE_INFO,
   attackMult,
+  BOSS_AFFIX_FROM_CLASSIC,
+  BOSS_ONLY_AFFIXES,
   CALL_WAVE_GOLD_PER_SEC,
+  CHAMPION_BOUNTY_MULT,
+  CHAMPION_EVERY,
+  CHAMPION_FROM,
+  CHAMPION_HP_MULT,
+  CLASSIC_CALENDAR,
+  ELITE_LEVEL_GOLD,
+  ELITE_LEVEL_WOOD,
   ENDLESS_BOUNTY_FROM,
   ENEMY_ORDER,
   ENEMIES,
   FUSION_ORDER,
   FUSIONS,
+  isImmuneWave,
+  isInvisibleWave,
   SENTRY_DURATION_SEC,
   TOWER_ORDER,
   TOWERS,
   TURBO_BOUNTY_MULT,
   TURBO_WOOD_MULT,
+  waveHasBoss,
   WOOD_COST_RANK2,
   WOOD_COST_SPEC,
 } from '@td/shared';
@@ -65,7 +77,22 @@ const DESC: Record<EnemyTypeId, string> = {
   wraith:
     'Esquiva el 45% e INMUNE a la magia (hielo, veneno y ejecución; el tesla le pega reducido). Usa daño físico o el disparo certero del francotirador.',
   chimera: 'Jefe VOLADOR (oleadas 15/25/35). Obliga a tener anti-aire: el cañón y el mortero no la alcanzan.',
-  behemoth: 'Jefe demoledor. Al cruzar cada esquina ATURDE todas las torres a su alrededor. Vida descomunal.',
+  behemoth: 'Jefe demoledor. Al cruzar cada esquina ATURDE todas las torres a su alrededor. Vida descomunal. En el clásico es el JEFE-MURO de la oleada 36.',
+  // F9a (v19) · monstruos nuevos — contrajuego enunciable en una frase
+  gargoyle:
+    'Voladora BLINDADA: la única placa del cielo. La METRALLA (asedio antiaéreo, ×1.5 vs blindada) la despedaza; la magia se le disipa.',
+  harpy:
+    'Voladora que CURA a los voladores cercanos: el chamán del cielo. Mátala PRIMERO (focus/francotirador) o la oleada aérea no bajará de vida.',
+  stalker:
+    'Esquiva el 50% de los proyectiles pero NO es inmune a magia. Disparos instantáneos (tesla, francotirador), área, o la CERTEZA del Estandarte del Vencedor.',
+  runebrat:
+    'Morralla SIEMPRE inmune a la magia, en cualquier oleada. Castiga el mono-build mágico: ten físico/perforante barato a mano.',
+  bannerman:
+    'Porta un estandarte que ACELERA (+30%) a los enemigos cercanos mientras viva. Derríbalo con fuego prioritario y la procesión vuelve a su paso.',
+  knight:
+    'Placas duras Y velocidad: rompe la regla de "blindado = lento". El asedio (×1.5) lo revienta; el hielo le roba la ventaja.',
+  mammoth:
+    'Colosal TERRESTRE no-jefe: una muralla que camina. Presa exclusiva del PERFORANTE (×1.5 vs colosal) — y la especie estrella de las oleadas de CAMPEONES 👑.',
 };
 
 interface Trait {
@@ -81,6 +108,7 @@ function traitsOf(def: EnemyDef): Trait[] {
   if (def.flying) t.push({ icon: '🦅', label: 'Volador', cls: 'air' });
   if (def.spellImmune) t.push({ icon: '🛡', label: 'Inmune a magia', cls: 'immune' });
   if (def.sapper) t.push({ icon: '🔨', label: 'Aturde torres' });
+  if (def.hasteAura) t.push({ icon: '🚩', label: 'Acelera aliados' }); // F9a
   if (def.stunOnCorner) t.push({ icon: '💥', label: 'Aturde al girar' });
   if (typeof def.stealGold === 'number' && def.stealGold > 0) t.push({ icon: '💰', label: 'Roba oro' });
   if (typeof def.berserkBelow === 'number') t.push({ icon: '🐗', label: 'Se enfurece' });
@@ -137,6 +165,63 @@ function buildEnemies(): void {
     .join('');
 }
 
+// ---------- pestaña 📅: CALENDARIO CLÁSICO de 36 (F9a, estilo Green TD) ----------
+// La tabla completa, derivada de CLASSIC_CALENDAR + las reglas reales de la sim
+// (isImmuneWave / isInvisibleWave / waveHasBoss): FIJA y PÚBLICA — saberla ES el
+// juego (GREENTD.md §10.2: telegrafía sin sorpresas = sensación de dominio).
+
+function buildCalendar(): void {
+  const rows = CLASSIC_CALENDAR.map((cal) => {
+    const w = cal.wave;
+    const tags: string[] = [];
+    if (cal.boss) tags.push(ENEMIES[cal.boss].flying ? '🦅☠' : '☠');
+    if (cal.champion) tags.push('👑');
+    if (isImmuneWave(w)) tags.push('🛡');
+    if (isInvisibleWave(w, 'classic')) tags.push('👁');
+    if (!cal.boss && !cal.champion && ENEMIES[cal.type].flying) tags.push('🦅');
+    const species = cal.boss
+      ? `${ENEMY_ICONS[cal.boss]} <b>${ENEMIES[cal.boss].name}</b> + ${ENEMY_ICONS[cal.type]} ${ENEMIES[cal.type].name} de escolta`
+      : `${ENEMY_ICONS[cal.type]} <b>${ENEMIES[cal.type].name}</b> ×${cal.count}${cal.champion ? ' 👑' : ''}`;
+    const special = cal.boss || cal.champion || isImmuneWave(w) || isInvisibleWave(w, 'classic');
+    return `<tr class="${special ? 'cal-special' : ''}">
+      <td class="cal-w">${w}</td>
+      <td class="cal-tags">${tags.join(' ')}</td>
+      <td class="cal-species">${species}</td>
+      <td class="cal-theme">${escapeHtml(cal.theme)}</td>
+    </tr>`;
+  }).join('');
+
+  $('guide-calendar').innerHTML = `
+    <div class="guide-intro">
+      <h3>📅 Calendario clásico — las 36 oleadas, fijas y públicas</h3>
+      <p class="edesc">En el modo <b>CLÁSICO</b> cada oleada es <b>una especie</b> con contrajuego claro, siempre en el
+      mismo orden (estilo Green TD): planifica tus compras sabiendo lo que viene. Patrones prometidos:
+      <b>🦅 aéreas en 7 / 17 / 23 / 27 / 35</b> · <b>🛡 inmunes a magia en 10 / 20 / 30</b> ·
+      <b>👁 invisibles en 12 / 18 / 24</b> · <b>👑 CAMPEONES en 16 / 22 / 31</b> · jefes cada 5 desde la 10 y
+      <b>JEFE-MURO en la 36</b>. Desde la oleada ${BOSS_AFFIX_FROM_CLASSIC}, cada jefe trae un <b>afijo con nombre</b>
+      (mira la pestaña Élites). La cantidad mostrada es para 1 jugador (crece con el equipo; la vida escala aparte).</p>
+      <p class="edesc">👑 <b>Campeones</b>: 3-6 mini-jefes SIN escolta — ×${CHAMPION_HP_MULT} de vida, mitad de velocidad, botín
+      ×${CHAMPION_BOUNTY_MULT}… y una fuga cuesta MUCHAS vidas. El foco de fuego en equipo (y el perforante contra
+      los colosales) es su contrajuego. En <b>Infinito/Horda</b> entran en rotación cada ${CHAMPION_EVERY} oleadas
+      desde la ${CHAMPION_FROM} (13, 23, 33…), con el generador de siempre para el resto.</p>
+    </div>
+    <div class="matrix-wrap">
+      <table class="matrix-table cal-table">
+        <thead><tr><th>#</th><th></th><th>Oleada</th><th>Tema</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div class="guide-intro">
+      <h3>⬆ Niveles 5→10 — la veteranía post-élite (F9a)</h3>
+      <p class="edesc">Una torre en su <b>cúspide</b> (★★ Rango II, o una ⚗ fusión) puede seguir subiendo:
+      <b>+8% de daño y +4% de cadencia por nivel</b> (compuestos), pagando <b>oro + madera</b>
+      (🪙${ELITE_LEVEL_GOLD[0]}→${ELITE_LEVEL_GOLD[ELITE_LEVEL_GOLD.length - 1]} · 🪵${ELITE_LEVEL_WOOD[0]}→${ELITE_LEVEL_WOOD[ELITE_LEVEL_WOOD.length - 1]};
+      el nivel 10 cuesta como una fusión). En el clásico el tope es el <b>nivel 10</b>; en Infinito/Horda el tope se
+      <b>abre</b> (11, 12…) con una curva aún más dura — el pozo del oro tardío. Las torres sin especializar se quedan
+      en nivel 3: especializar vale la pena.</p>
+    </div>`;
+}
+
 // ---------- pestaña 2: élites, afijos y oleadas especiales ----------
 // Cualquier monstruo puede aparecer MODIFICADO: la corona 👑 marca a los élites y
 // los iconos que flotan sobre un enemigo son sus afijos (esta tabla los explica).
@@ -144,8 +229,12 @@ function buildEnemies(): void {
 function buildElites(): void {
   const affixCards = AFFIX_ORDER.map((id) => {
     const a = AFFIXES[id];
+    // F9a · los afijos nuevos (Adaptativo / Aura Gélida) son EXCLUSIVOS de jefes
+    const bossOnly = BOSS_ONLY_AFFIXES.includes(id)
+      ? ' <span class="etrait boss">☠ solo jefes</span>'
+      : '';
     return `<div class="enemy-card">
-      <div class="ecard-head"><span class="eicon">${a.icon}</span><span class="ename" style="color:${a.color}">${a.name}</span></div>
+      <div class="ecard-head"><span class="eicon">${a.icon}</span><span class="ename" style="color:${a.color}">${a.name}</span>${bossOnly}</div>
       <p class="edesc">${a.desc}.</p>
     </div>`;
   }).join('');
@@ -186,9 +275,16 @@ function buildElites(): void {
         <p class="edesc">Dominada por voladores: el cañón y el mortero no llegan. Necesitas anti-aire
         (arquero, hielo, veneno, tesla, francotirador o la Metralla).</p>
       </div>
+      <div class="enemy-card boss">
+        <div class="ecard-head"><span class="eicon">👑</span><span class="ename">Oleada de CAMPEONES</span></div>
+        <p class="edesc">Un pelotón de <b>3-6 mini-jefes</b> SIN escolta: <b>×${CHAMPION_HP_MULT} de vida</b>, mitad de velocidad,
+        <b>botín ×${CHAMPION_BOUNTY_MULT}</b> y una fuga <b>carísima</b> (varias vidas por cabeza). En el clásico caen en
+        las oleadas <b>16 / 22 / 31</b> (mira el 📅 Calendario); en Infinito/Horda rotan cada ${CHAMPION_EVERY} desde la
+        ${CHAMPION_FROM}. Contrajuego: foco de fuego del equipo, remates porcentuales y el perforante contra los colosales.</p>
+      </div>
       <div class="enemy-card">
         <div class="ecard-head"><span class="eicon">👁</span><span class="ename">Oleada INVISIBLE</span></div>
-        <p class="edesc">Cada 6 oleadas desde la 12 (12, 18, 24, 36…), toda la oleada es <b>invisible</b>:
+        <p class="edesc">Cada 6 oleadas desde la 12 (en el clásico: 12, 18 y 24), toda la oleada es <b>invisible</b>:
         las torres <b>no pueden verla ni apuntarle</b> y desaparece del mapa. Compra un <b>👁 Sentry</b> en la
         <b>🛒 Tienda</b> y colócalo cubriendo el camino: revela a los monstruos (terrestres y aéreos) dentro de su radio,
         volviéndolos targeteables para todo el equipo. El Sentry es <b>temporal</b> (dura ${SENTRY_DURATION_SEC[0] / 60} min) y
@@ -197,9 +293,12 @@ function buildElites(): void {
         también los golpean aunque no estén detectados.</p>
       </div>
       <div class="enemy-card boss">
-        <div class="ecard-head"><span class="eicon">☠</span><span class="ename">JEFES</span></div>
-        <p class="edesc">Llegan cada 10 oleadas; la <b>Quimera voladora</b> en la 15/25/35 del clásico.
-        Consulta su ficha en la pestaña Enemigos.</p>
+        <div class="ecard-head"><span class="eicon">☠</span><span class="ename">JEFES (con AFIJO)</span></div>
+        <p class="edesc">Llegan cada 10 oleadas; la <b>Quimera voladora</b> en la 15/25/35 del clásico, y el
+        <b>JEFE-MURO</b> (Behemot) cierra la 36. Desde la oleada <b>${BOSS_AFFIX_FROM_CLASSIC}</b> (siempre en
+        Infinito/Horda), cada jefe trae <b>1 afijo con nombre</b>, telegrafiado en la vista previa ("☠ Gólem ·
+        Adaptativo 🧬"): los 7 de élite más dos exclusivos — <b>🧬 Adaptativo</b> (resiste el tipo de ataque que más
+        recibe: diversifica) y <b>🥶 Aura Gélida</b> (tus torres cercanas disparan más lento mientras pasa).</p>
       </div>
     </div>
     <div class="guide-intro">
@@ -594,6 +693,7 @@ function build(): void {
   if (built) return;
   built = true;
   buildEnemies();
+  buildCalendar(); // F9a · calendario clásico de 36
   buildElites();
   buildFusions();
   buildTowers();
@@ -602,6 +702,7 @@ function build(): void {
 
 const TABS: [string, string][] = [
   ['guide-tab-enemies', 'bestiary-grid'],
+  ['guide-tab-calendar', 'guide-calendar'], // F9a
   ['guide-tab-elites', 'guide-elites'],
   ['guide-tab-towers', 'guide-towers'],
   ['guide-tab-fusions', 'guide-fusions'],
@@ -616,7 +717,7 @@ function showTab(tabId: string): void {
   }
 }
 
-export function openBestiary(tab: 'enemies' | 'elites' | 'towers' | 'fusions' | 'shortcuts' = 'enemies'): void {
+export function openBestiary(tab: 'enemies' | 'calendar' | 'elites' | 'towers' | 'fusions' | 'shortcuts' = 'enemies'): void {
   build();
   showTab(`guide-tab-${tab}`);
   $('overlay-bestiary').hidden = false;

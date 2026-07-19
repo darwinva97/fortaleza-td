@@ -204,6 +204,89 @@ export const TURBO_WAVE_BONUS_MULT = 1.5; // ×bono de fin de oleada
 export const TURBO_WOOD_MULT = 1.5; // el orco tala más rápido (donde se aplican ORC_RATES)
 export const TURBO_INTERLUDE_MULT = 0.5; // interludios a la mitad (primero y normales)
 
+// ---------- F9a (v19) · nerf del BARRIL EXPLOSIVO ----------
+// (a) Coste escalado POR EQUIPO: cada compra encarece el siguiente ×1.3 compuesto.
+// El contador vive en GameState (boomsBought) y el server valida el precio real —
+// el cliente solo lo muestra (viaja en el snapshot como boomCost).
+export const BOOM_COST_TEAM_STEP = 1.3;
+// (b) Daño PORCENTUAL con tope en vez de matanza plana: la detonación hace daño
+// VERDADERO = min(vida MÁXIMA del enemigo, BOOM_HP_CAP_BASE × waveHpMult actual).
+// Traducido: borra a cualquier no-jefe cuya vida BASE ≤ 100 (goblins, corredores,
+// murciélagos, blindados, morralla élite pequeña…) pero los élites gordos y los
+// tanques (bruto 150, trol 200, caballero 260, campeones) SOBREVIVEN con un
+// mordisco. El rol pasa de "borrador universal" a "limpia-morralla de pánico".
+export const BOOM_HP_CAP_BASE = 100;
+
+// F9a (v19) · compensación de botín del CALENDARIO clásico: las oleadas
+// monoespecie traen MENOS cuerpos (y más gordos) que el generador por presupuesto
+// — sumando el botín de las 36, la economía quedaba ~35-40% por debajo de la de
+// v18 y toda defensa llegaba pobre a los jefes (medido en simtest). Cada baja del
+// clásico paga ×1.3 para que el TOTAL por oleada vuelva a la par. Solo clásico:
+// infinito/horda conservan su generador (y su botín) de siempre.
+export const CLASSIC_BOUNTY_COMP = 1.35;
+
+// ---------- F9a (v19) · oleadas de CAMPEONES 👑 (ELEMENTTD §9.2) ----------
+// Pelotón de 3-6 mini-jefes SIN escolta: ×9 hp, mitad de velocidad, botín ×5 y
+// fuga cara. En el clásico van en oleadas fijas del calendario (13/22/31); en
+// infinito/horda entran en la rotación cada 10 desde la 13 (13, 23, 33…).
+export const CHAMPION_HP_MULT = 8;
+export const CHAMPION_SPEED_MULT = 0.5;
+export const CHAMPION_BOUNTY_MULT = 5;
+// vidas EXTRA por fuga de un campeón (se suma a livesCost y a la fuga escalonada:
+// total real 5-8 según especie/oleada — dentro del molde "Mega" de ETD2)
+export const CHAMPION_EXTRA_LIVES = 3;
+export const CHAMPION_RADIUS_MULT = 1.45;
+export const CHAMPION_FROM = 13; // primera oleada de campeones (todas las rotaciones)
+export const CHAMPION_EVERY = 10; // infinito/horda: 13, 23, 33…
+
+// ---------- F9a (v19) · AFIJOS DE JEFE (ELEMENTTD §9.1) ----------
+// Desde la oleada 20 en clásico (SIEMPRE en infinito/horda), cada jefe llega con
+// 1 afijo con nombre, telegrafiado ("☠ Gólem Gélido"). Sale del RNG de generateWave
+// (determinista) y reutiliza la tubería de afijos de élite + 2 nuevos AL FINAL.
+export const BOSS_AFFIX_FROM_CLASSIC = 20;
+export const BOSS_AFFIX_BOUNTY_MULT = 1.3; // un jefe con afijo paga más botín
+// Adaptativo: tras ADAPT_HITS impactos del MISMO attackType, ese tipo le pega
+// ×(1−ADAPT_RESIST) para siempre — el mono-build se castiga solo; diversificar gana.
+export const ADAPT_HITS = 12;
+export const ADAPT_RESIST = 0.5;
+// Aura Gélida: las torres a ≤ radius celdas del jefe recargan ×slow más lento.
+export const CHILL_AURA_RADIUS = 2.6;
+export const CHILL_AURA_SLOW = 1.45;
+
+// ---------- F9a (v19) · NIVELES 5→10 post-élite ----------
+// Una torre en su CÚSPIDE (Rango II ★★, o fusión) desbloquea niveles de veteranía:
+// +8% de daño y +4% de cadencia por nivel (compuestos), pagando ORO + MADERA.
+// El paso al nivel 10 cuesta como una fusión (~2 torres especializadas). Tope de
+// 6 pasos en clásico (nivel 10); en infinito/horda el tope se ABRE con coste
+// ×ELITE_LEVEL_OPEN_STEP compuesto — es el pozo del oro tardío. Las torres SIN
+// especializar se quedan en nivel 3: especializar tiene que valer la pena.
+export const ELITE_LEVEL_GOLD = [240, 350, 500, 730, 1060, 1540];
+export const ELITE_LEVEL_WOOD = [18, 25, 35, 50, 70, 100];
+export const ELITE_LEVEL_DMG = 0.08; // +8% daño por nivel (compuesto)
+export const ELITE_LEVEL_HASTE = 0.04; // +4% cadencia por nivel (compuesto)
+export const ELITE_LEVEL_CAP_CLASSIC = 6; // pasos máx en clásico (= nivel 10)
+export const ELITE_LEVEL_OPEN_STEP = 1.5; // endless/horda: coste compuesto tras el paso 6
+
+// ---------- F9a (v19) · REPARAR FORTALEZA (solo infinito/horda) ----------
+// Compra de EQUIPO en la 🛒 Tienda: +1 vida (infinito) o +1 de AFORO de saturación
+// (horda — su "vida" es el cupo de enemigos vivos, así que reforzar murallas =
+// aguantar un enemigo más). Coste inicial 500 escalando ×1.5 compuesto por compra.
+// Disponible para todos → los récords siguen justos. En clásico NO existe.
+export const REPAIR_COST_BASE = 500;
+export const REPAIR_COST_STEP = 1.5;
+
+// ---------- F9a (v19) · specs de identidad ----------
+// Poder Vital: +20% de daño mientras el EQUIPO conserve ≥25 vidas (de 30). El
+// umbral alto crea el drama de "defended la racha"; reparar (item 7) lo reenciende.
+export const VITAL_LIVES_MIN = 25;
+// Estandarte del Vencedor: crítico ×1.75. La esperanza (+15% de prob) es ~+11% de
+// daño medio — MENOS que el Estandarte de Guerra ★ (+60%): su valor real es la
+// CERTEZA (nada esquiva) y el pico de burst que dispara ejecuciones porcentuales.
+export const CRIT_MULT = 1.75;
+
+// orden estable de los tipos de ataque (índice de los contadores del Adaptativo)
+export const ATTACK_TYPE_ORDER: AttackTypeId[] = ['fisico', 'perforante', 'asedio', 'magico'];
+
 // oro de entrada para quien se une con la partida ya empezada
 export const midJoinGold = (wave: number) => 180 + wave * 22;
 
@@ -248,6 +331,11 @@ export const PLAYER_COLORS = [
 // daño directo), torre nueva 'flak' (Balista de Cielo, antiaérea pura), DoT
 // porcentual de la Corrosión ★★, curva de hp del infinito en dos tramos, botín
 // superlineal del endless y retoques de fusiones (Bertha/Fragmentador/Bóveda) —
-// invalida guardados y replays de v17 (correcto: la sim ya no reproduce igual)
-export const BALANCE_VERSION = 18;
+// invalida guardados y replays de v17 (correcto: la sim ya no reproduce igual) ·
+// 19 (F9a): calendario CLÁSICO fijo de 36 oleadas monoespecie (estilo Green TD),
+// oleadas de CAMPEONES 👑, 7 monstruos nuevos, afijos de JEFE (Adaptativo/Aura
+// Gélida), nerf del Barril (coste de equipo ×1.3 + daño con tope), niveles 5→10
+// post-élite, Reparar Fortaleza (infinito/horda), Poder Vital y Estandarte del
+// Vencedor (CRÍTICO determinista + Certeza) — invalida guardados/replays de v18
+export const BALANCE_VERSION = 19;
 export const PROTOCOL_VERSION = 1;

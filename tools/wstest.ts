@@ -4,11 +4,14 @@
 // Requiere el WORKER de Cloudflare corriendo (pnpm cf:dev y PORT=8787).
 import WebSocket from 'ws';
 import {
+  BOOM_COST_TEAM_STEP,
   getMap,
   makePlacementContext,
+  pathCells,
   placementError,
   replayTo,
   sha256Hex,
+  TOWERS,
   type ClientMsg,
   type ReplayData,
   type SaveData,
@@ -153,6 +156,48 @@ async function main(): Promise<void> {
   }
   assert(cell !== null, 'hay una celda construible');
   ana.send({ type: 'cmd', cmd: { kind: 'place', towerType: 'archer', cx: cell![0], cy: cell![1] } });
+
+  // 5.5 · F9a (v19) — protocolo nuevo, validado SERVER-SIDE (RoomDO re-valida):
+  //   (a) `repair` en CLÁSICO se rechaza (solo existe en infinito/horda)
+  //   (b) el precio del Barril ESCALA por compra del EQUIPO y lo cobra el server
+  //       (el cliente no manda precio: no hay nada que falsificar)
+  // Se prueba EN EL INTERLUDIO: sin botines ni bonos que ensucien las cuentas.
+  {
+    const ticksAt = ana.ticks.length;
+    ana.send({ type: 'cmd', cmd: { kind: 'repair' } });
+    await sleep(700);
+    const evs1 = ana.ticks.slice(ticksAt).flatMap((t) => t.events);
+    assert(
+      evs1.some((e) => e.e === 'reject' && /infinito/i.test(e.reason)),
+      'F9a · `repair` en CLÁSICO se rechaza server-side',
+    );
+
+    const boomBase = TOWERS.boom.levels[0].cost;
+    const snap0 = ana.ticks[ana.ticks.length - 1].snap;
+    assert(snap0.boomCost === boomBase, `F9a · el snapshot expone el precio del Barril (${snap0.boomCost} == ${boomBase})`);
+
+    // Ana compra el 1.º barril sobre el camino
+    const pcs = [...pathCells(map)].map((k) => k.split(',').map(Number) as [number, number]);
+    ana.send({ type: 'cmd', cmd: { kind: 'place', towerType: 'boom', cx: pcs[0][0], cy: pcs[0][1] } });
+    await sleep(700);
+    const snap1 = ana.ticks[ana.ticks.length - 1].snap;
+    const second = Math.round(boomBase * BOOM_COST_TEAM_STEP);
+    assert(snap1.boomCost === second, `F9a · tras comprar 1 barril el precio de EQUIPO sube a ${second} (${snap1.boomCost})`);
+
+    // Beto compra el 2.º: el server le cobra el precio ESCALADO, no el base
+    const betoId = initB.init.youAre;
+    const betoGold0 = snap1.players.find((p) => p.id === betoId)?.gold ?? -1;
+    beto.send({ type: 'cmd', cmd: { kind: 'place', towerType: 'boom', cx: pcs[2][0], cy: pcs[2][1] } });
+    await sleep(700);
+    const snap2 = ana.ticks[ana.ticks.length - 1].snap;
+    const betoGold1 = snap2.players.find((p) => p.id === betoId)?.gold ?? -1;
+    // Beto no tiene torres: su oro solo pudo moverse por esta compra
+    assert(
+      betoGold0 - betoGold1 === second,
+      `F9a · el server cobró el precio ESCALADO al 2.º comprador (${betoGold0}−${betoGold1} == ${second})`,
+    );
+  }
+
 
   // 6. Llamar la oleada ya
   await sleep(400);

@@ -11,9 +11,10 @@ import type {
   WaveComp,
 } from './types.js';
 import { ENEMIES, ENEMY_ORDER } from './balance/enemies.js';
-import { affixMask } from './balance/affixes.js';
+import { AFFIX_ORDER, affixMask } from './balance/affixes.js';
 import { TOWER_ORDER } from './balance/towers.js';
 import { MAPS } from './balance/maps.js';
+import { boomCost, repairCost } from './sim/commands.js';
 import { BALANCE_VERSION, MAX_PLAYERS, TICK_RATE } from './constants.js';
 
 // ---------- Lobby / sala ----------
@@ -94,7 +95,9 @@ export interface PublicRoomInfo {
 
 // enemigo: [id, typeIdx, x, y, hpFrac, flags, affixMask]
 //   flags: 1=slow 2=poison 4=boss 8=elite 16=inmune 32=shred 64=invisible 128=detectado
-//   (bits nuevos AL FINAL; afijos aparte)   affixMask: bits de balance/affixes
+//          256=campeón 👑 (F9a)
+//   (bits nuevos AL FINAL; afijos aparte)   affixMask: bits de balance/affixes —
+//   viaja para élites Y para jefes con afijo (F9a; el resto manda 0)
 export type SnapEnemy = [number, number, number, number, number, number, number];
 // torre: [id, typeIdx, cx, cy, level, ownerIdx, targetModeIdx, kills, damage, spec, stunned, charges, growth, fusion, invested, goldGen, cd, halted, focusId, expiresTick]
 //   spec: -1 sin especializar, 0/1 rama; stunned: 0/1; charges: Trampa (0 = N/A);
@@ -141,12 +144,20 @@ export interface Snap {
   nextFlying: boolean;
   nextInvisible: boolean; // Lote 3 · la próxima oleada es INVISIBLE (necesitas un Sentry)
   nextBossType: number; // typeIdx del jefe de la próxima oleada, o -1
+  // F9a (v19) · telegrafía nueva (campos de OBJETO al final: seguro añadirlos)
+  nextChampion: boolean; // 👑 la próxima oleada es de CAMPEONES
+  nextBossAffix: number; // índice en AFFIX_ORDER del afijo del próximo jefe, o -1
   players: SnapPlayer[];
   enemies: SnapEnemy[];
   towers: SnapTower[];
   projs: SnapProj[];
   woodPrice: number; // F5.4 · precio actual del mercado de madera (oro por 1 🪵)
   over: 0 | 1 | 2; // 0 nada, 1 derrota, 2 victoria
+  // F9a (v19) · precios de EQUIPO calculados por el server (el cliente solo pinta;
+  // la validación del precio real vive en applyCommands — nada que falsificar):
+  boomCost: number; // precio EFECTIVO del próximo Barril (escala ×1.3 por compra)
+  repairCost: number; // precio EFECTIVO de Reparar la fortaleza (×1.5 por compra)
+  repairsBought: number; // horda: aforo efectivo = HORDE_CAP + repairsBought
 }
 
 export const TARGET_MODES: TargetMode[] = ['first', 'last', 'strong', 'weak', 'near'];
@@ -172,6 +183,8 @@ export function buildSnap(state: GameState): Snap {
     nextFlying: state.nextWaveFlying,
     nextInvisible: state.nextWaveInvisible,
     nextBossType: state.nextWaveBoss ? (enemyTypeIdx.get(state.nextWaveBoss) ?? -1) : -1,
+    nextChampion: state.nextWaveChampion,
+    nextBossAffix: state.nextWaveBossAffix ? AFFIX_ORDER.indexOf(state.nextWaveBossAffix) : -1,
     players: state.players.map((p) => ({
       id: p.id,
       gold: Math.floor(p.gold),
@@ -192,6 +205,7 @@ export function buildSnap(state: GameState): Snap {
       if (e.armorShredUntil > state.tick) flags |= 32; // shred de armadura activo
       if (e.invisible) flags |= 64; // Lote 3 · invisible
       if (e.detected) flags |= 128; // Lote 3 · detectado por un Sentry
+      if (e.champion) flags |= 256; // F9a · campeón 👑
       return [
         e.id,
         enemyTypeIdx.get(e.type) ?? 0,
@@ -199,7 +213,9 @@ export function buildSnap(state: GameState): Snap {
         r2(e.y),
         Math.max(0, Math.round((e.hp / e.maxHp) * 1000) / 1000),
         flags,
-        e.elite ? affixMask(e.affixes) : 0,
+        // F9a · la máscara viaja también para JEFES con afijo (los élites como
+        // siempre; el resto manda 0 — las bendecidas siguen sin icono, a propósito)
+        e.elite || (ENEMIES[e.type].boss && e.affixes.length > 0) ? affixMask(e.affixes) : 0,
       ] as SnapEnemy;
     }),
     towers: state.towers.map(
@@ -245,6 +261,10 @@ export function buildSnap(state: GameState): Snap {
     }),
     woodPrice: Math.round(state.woodPrice * 100) / 100,
     over: state.over === null ? 0 : state.over.victory ? 2 : 1,
+    // F9a (v19) · precios de equipo (server = única fuente de verdad)
+    boomCost: boomCost(state),
+    repairCost: repairCost(state),
+    repairsBought: state.repairsBought,
   };
 }
 

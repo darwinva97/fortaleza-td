@@ -22,6 +22,14 @@ export const ENEMY_ORDER: EnemyTypeId[] = [
   'wraith',
   'chimera',
   'behemoth',
+  // F9a (v19) — al FINAL para no romper índices de snapshot
+  'gargoyle',
+  'harpy',
+  'stalker',
+  'runebrat',
+  'bannerman',
+  'knight',
+  'mammoth',
 ];
 
 export const ENEMIES: Record<EnemyTypeId, EnemyDef> = {
@@ -344,6 +352,144 @@ export const ENEMIES: Record<EnemyTypeId, EnemyDef> = {
     stunOnCorner: { radius: 2, seconds: 2 },
     cost: 0,
     minWave: 99,
+  },
+
+  // ---------- F9a (v19) · ~7 monstruos nuevos ----------
+  // Criterio: llenar los huecos de la matriz ataque×armadura (no existía volador
+  // blindado ni colosal terrestre no-jefe) y del calendario clásico, usando SOLO
+  // sistemas existentes (auras, dodge, inmunidad) + una aura de celeridad mínima.
+  gargoyle: {
+    // Volador BLINDADO: el único hueco aéreo de la matriz. Contrajuego enunciable:
+    // "asedio antiaéreo" — la Metralla (asedio ×1.5 vs blindada + airBonus) por fin
+    // tiene SU oleada; el mágico se le disipa (×0.65) y castiga al mono-tesla aéreo.
+    id: 'gargoyle',
+    name: 'Gárgola',
+    hp: 170,
+    speed: 1.1,
+    bounty: 16,
+    armor: 8,
+    armorType: 'blindada',
+    radius: 0.34,
+    livesCost: 2,
+    flying: true,
+    color: '#78909c',
+    cost: 15,
+    minWave: 16,
+  },
+  harpy: {
+    // El chamán del CIELO: voladora que cura a los voladores cercanos. Contrajuego:
+    // mátala PRIMERO (focus/francotirador) o la oleada aérea no baja de vida.
+    id: 'harpy',
+    name: 'Arpía',
+    hp: 90,
+    speed: 1.4,
+    bounty: 14,
+    armor: 0,
+    armorType: 'media',
+    radius: 0.3,
+    livesCost: 1,
+    flying: true,
+    color: '#f48fb1',
+    healAura: { radius: 1.6, hps: 20 },
+    cost: 14,
+    minWave: 13,
+  },
+  stalker: {
+    // Evasor terrestre NO espectral: esquiva alta (50%) pero SIN inmunidad mágica —
+    // el hueco entre ghost (30%) y wraith (45% + inmune). Contrajuego: disparos
+    // instantáneos (tesla/francotirador), área, o la CERTEZA del Estandarte del
+    // Vencedor (F9a), que existe exactamente para esto.
+    id: 'stalker',
+    name: 'Acechador',
+    hp: 70,
+    speed: 2.1,
+    bounty: 11,
+    armor: 0,
+    armorType: 'ligera',
+    radius: 0.26,
+    livesCost: 1,
+    flying: false,
+    color: '#8d6e63',
+    dodge: 0.5,
+    cost: 10,
+    minWave: 9,
+  },
+  runebrat: {
+    // Morralla SIEMPRE inmune a magia (fuera de las oleadas inmunes): castiga el
+    // mono-build mágico en cualquier oleada. Contrajuego: físico/perforante barato.
+    id: 'runebrat',
+    name: 'Duende Rúnico',
+    hp: 30,
+    speed: 1.9,
+    bounty: 6,
+    armor: 0,
+    armorType: 'ligera',
+    radius: 0.22,
+    livesCost: 1,
+    flying: false,
+    color: '#4dd0e1',
+    spellImmune: true,
+    cost: 6,
+    minWave: 8,
+  },
+  bannerman: {
+    // Soporte NUEVO: aura de CELERIDAD — los enemigos cercanos corren ×1.3 mientras
+    // el portador viva (espejo enemigo de nuestro Estandarte). Contrajuego: fuego
+    // prioritario — derriba el estandarte y la procesión vuelve a su paso.
+    id: 'bannerman',
+    name: 'Portaestandarte',
+    hp: 140,
+    speed: 1.15,
+    bounty: 15,
+    armor: 0,
+    armorType: 'media',
+    radius: 0.3,
+    livesCost: 1,
+    flying: false,
+    color: '#ff8a65',
+    hasteAura: { radius: 1.8, mult: 1.3 },
+    cost: 14,
+    minWave: 12,
+  },
+  knight: {
+    // Blindado RÁPIDO: rompe la regla implícita "placas = lento". Es la especie del
+    // bloque élite tardío del clásico (28-34: armadura dura Y velocidad). Contrajuego:
+    // asedio (×1.5 vs blindada) + hielo para robarle la velocidad.
+    id: 'knight',
+    name: 'Caballero Corrupto',
+    hp: 260,
+    speed: 1.5,
+    bounty: 24,
+    armor: 10,
+    armorType: 'blindada',
+    radius: 0.34,
+    livesCost: 2,
+    flying: false,
+    color: '#7e57c2',
+    cost: 22,
+    minWave: 18,
+  },
+  mammoth: {
+    // Colosal TERRESTRE no-jefe: el primo de tierra del Coloso Alado. Presa
+    // exclusiva del perforante (×1.5 vs colosal) fuera de las oleadas de jefe, y
+    // especie estrella de las oleadas de CAMPEONES 👑 del calendario clásico.
+    id: 'mammoth',
+    name: 'Mamut de Guerra',
+    hp: 850,
+    speed: 0.55,
+    bounty: 45,
+    armor: 6,
+    armorType: 'colosal',
+    radius: 0.5,
+    livesCost: 3,
+    flying: false,
+    color: '#a1887f',
+    // Revisión adversarial F9a: con cost 30 su densidad (850/30 = 28 hp por punto
+    // de presupuesto, ×2 de la media ~13) volvía las oleadas del endless con
+    // mamuts mucho más gordas que sus vecinas. A 38 sigue siendo premium (es
+    // lento: paga menos presión por hp) sin distorsionar el presupuesto.
+    cost: 38,
+    minWave: 20,
   },
 };
 

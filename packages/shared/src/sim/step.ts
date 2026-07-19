@@ -13,12 +13,27 @@ import type {
 import type { AffixId } from '../types.js';
 import { ENEMIES } from '../balance/enemies.js';
 import { TOWERS, towerTargetsAir } from '../balance/towers.js';
+import { AFFIXES } from '../balance/affixes.js';
 import { attackTypeOf, fusionOf, statsOf, towerFires } from '../balance/fusions.js';
 import { generateWave, waveBountyMult, waveHpMult } from '../balance/waves.js';
 import {
+  ADAPT_HITS,
+  ADAPT_RESIST,
   ASSIST_MIN_DMG_FRAC,
   ASSIST_SHARE,
   ATTACK_MATRIX,
+  ATTACK_TYPE_ORDER,
+  BOOM_HP_CAP_BASE,
+  BOSS_AFFIX_BOUNTY_MULT,
+  CHAMPION_BOUNTY_MULT,
+  CHAMPION_EXTRA_LIVES,
+  CHAMPION_HP_MULT,
+  CHAMPION_RADIUS_MULT,
+  CHAMPION_SPEED_MULT,
+  CHILL_AURA_RADIUS,
+  CHILL_AURA_SLOW,
+  CRIT_MULT,
+  VITAL_LIVES_MIN,
   BLESSED_BOUNTY_MULT,
   BLESSED_BONUS_MULT,
   ELITE_BOUNTY_MULT,
@@ -127,6 +142,8 @@ function spawnEnemy(
     invisible: false,
     detected: false,
     dmgBy: {},
+    champion: false,
+    adaptHits: [0, 0, 0, 0],
   };
   state.enemies.push(enemy);
   return enemy;
@@ -165,7 +182,36 @@ function applyAffixEffect(enemy: EnemyState, a: AffixId): void {
     case 'explosive':
       enemy.deathSpawn = 3;
       break;
+    // F9a (v19) · afijos de JEFE: sin efecto al aplicarse — su mecánica vive en
+    // el bucle de la sim (adaptive: contadores en damageEnemy; chillaura: aura
+    // sobre las torres en fireTower). El afijo en enemy.affixes ES el interruptor.
+    case 'adaptive':
+    case 'chillaura':
+      break;
   }
+}
+
+// F9a (v19) · convierte un enemigo recién generado en CAMPEÓN 👑 (ELEMENTTD §9.2):
+// mini-jefe de pelotón — ×9 de vida (o el override del calendario), mitad de
+// velocidad, botín ×5, más grande, fuga cara (CHAMPION_EXTRA_LIVES en el leak).
+// No es élite (sin afijos) ni jefe (no exime inmunidad/barril): arquetipo propio.
+function makeChampion(enemy: EnemyState, hpMult = CHAMPION_HP_MULT): void {
+  enemy.champion = true;
+  enemy.hp = Math.round(enemy.maxHp * hpMult);
+  enemy.maxHp = enemy.hp;
+  enemy.speedMult *= CHAMPION_SPEED_MULT;
+  enemy.bountyMult *= CHAMPION_BOUNTY_MULT;
+  enemy.radiusMult = CHAMPION_RADIUS_MULT;
+}
+
+// F9a (v19) · aplica el afijo telegrafiado a un JEFE: solo el efecto + botín extra
+// (sin la subida ×2.6 de élite: la vida del jefe ya es su identidad). El afijo
+// queda en enemy.affixes → viaja en la máscara del snapshot y el cliente pinta
+// su icono sobre el jefe.
+function applyBossAffix(enemy: EnemyState, affix: AffixId): void {
+  if (!enemy.affixes.includes(affix)) enemy.affixes = [...enemy.affixes, affix];
+  enemy.bountyMult *= BOSS_AFFIX_BOUNTY_MULT;
+  applyAffixEffect(enemy, affix);
 }
 
 // Convierte un enemigo recién generado en élite y le aplica sus afijos.
@@ -334,7 +380,20 @@ function damageEnemy(
   if (enemy.hp <= 0) return false;
   const armor = pierceArmor ? 0 : effectiveArmor(state, enemy);
   // matriz ataque×armadura (un solo redondeo del producto, determinista)
-  const mult = attackType ? ATTACK_MATRIX[attackType][ENEMIES[enemy.type].armorType] : 1;
+  let mult = attackType ? ATTACK_MATRIX[attackType][ENEMIES[enemy.type].armorType] : 1;
+  // F9a (v19) · afijo ADAPTATIVO (jefes): cuenta impactos por attackType; a partir
+  // de ADAPT_HITS de un mismo tipo, ese tipo pega ×(1−ADAPT_RESIST) para siempre.
+  // Contador ANTES del golpe: el impacto que completa la adaptación aún entra
+  // entero (y avisa); del siguiente en adelante, resiste. El daño VERDADERO
+  // (attackType null, p. ej. el Barril) no alimenta ni sufre la adaptación.
+  if (attackType && enemy.affixes.includes('adaptive')) {
+    const ti = ATTACK_TYPE_ORDER.indexOf(attackType);
+    if (enemy.adaptHits[ti] >= ADAPT_HITS) mult *= 1 - ADAPT_RESIST;
+    enemy.adaptHits[ti] += 1;
+    if (enemy.adaptHits[ti] === ADAPT_HITS) {
+      events.push({ e: 'adapt', x: enemy.x, y: enemy.y, attackType });
+    }
+  }
   const dmg = Math.max(1, Math.round(amount * mult) - armor);
   const hpBefore = enemy.hp;
   enemy.hp -= dmg;
@@ -460,14 +519,17 @@ function pickTarget(
 }
 
 // Refuerzo que un Estandarte aplica a las torres bajo su aura (fracciones).
+// F9a (v19) · `critChance`: prob. de golpe crítico ×CRIT_MULT (Estandarte del
+// Vencedor); su presencia (>0) implica además CERTEZA (los ataques no fallan).
 export interface AuraBuff {
   dmgMult: number;
   hasteMult: number;
+  critChance: number;
 }
 
 // ¿Es esta torre un Estandarte (torre de aura, no dispara)?
-function isBanner(lvl: { auraDamage?: number; auraHaste?: number }): boolean {
-  return lvl.auraDamage !== undefined || lvl.auraHaste !== undefined;
+function isBanner(lvl: { auraDamage?: number; auraHaste?: number; auraCrit?: number }): boolean {
+  return lvl.auraDamage !== undefined || lvl.auraHaste !== undefined || lvl.auraCrit !== undefined;
 }
 
 // ¿Esta torre DISPARA? — ahora vive en balance/fusions.ts (Lote 4: la comparten
@@ -488,7 +550,8 @@ export function computeAuras(state: GameState): Map<number, AuraBuff> {
     if (!isBanner(blvl)) continue;
     const dmg = blvl.auraDamage ?? 0;
     const haste = blvl.auraHaste ?? 0;
-    if (dmg <= 0 && haste <= 0) continue;
+    const crit = blvl.auraCrit ?? 0; // F9a · Estandarte del Vencedor
+    if (dmg <= 0 && haste <= 0 && crit <= 0) continue;
     const bx = banner.cx + 0.5;
     const by = banner.cy + 0.5;
     for (const target of state.towers) {
@@ -501,11 +564,12 @@ export function computeAuras(state: GameState): Map<number, AuraBuff> {
       if (dist(bx, by, target.cx + 0.5, target.cy + 0.5) > blvl.range) continue;
       let buff = buffs.get(target.id);
       if (!buff) {
-        buff = { dmgMult: 0, hasteMult: 0 };
+        buff = { dmgMult: 0, hasteMult: 0, critChance: 0 };
         buffs.set(target.id, buff);
       }
       if (dmg > buff.dmgMult) buff.dmgMult = dmg;
       if (haste > buff.hasteMult) buff.hasteMult = haste;
+      if (crit > buff.critChance) buff.critChance = crit; // regla MAX: no apila
     }
   }
   return buffs;
@@ -517,6 +581,9 @@ function fireTower(
   tower: TowerState,
   events: GameEvent[],
   auras: Map<number, AuraBuff>,
+  // F9a (v19) · jefes con Aura Gélida vivos este tick (los precalcula stepTowers):
+  // si la torre está dentro del aura, su recarga sale ×CHILL_AURA_SLOW más lenta.
+  chillSrcs: EnemyState[] = [],
 ): void {
   const towerDef = TOWERS[tower.type];
   const fusion = fusionOf(tower);
@@ -543,11 +610,23 @@ function fireTower(
   const buff = auras.get(tower.id);
   const dmgMult = buff ? buff.dmgMult : 0;
   const hasteMult = buff ? buff.hasteMult : 0;
+  // F9a (v19) · Estandarte del Vencedor: prob. de CRÍTICO (×CRIT_MULT) y CERTEZA
+  // (los proyectiles no pueden ser esquivados) para las torres bajo su aura.
+  const critChance = buff ? buff.critChance : 0;
+  const sure = critChance > 0;
+  // F9a (v19) · Poder Vital: +vitalPower de daño mientras el EQUIPO conserve
+  // ≥VITAL_LIVES_MIN vidas. Lee state.lives (determinista); en horda las vidas
+  // nunca bajan, así que allí es un +20% plano — aceptable: su coste ya lo paga.
+  const vitalOn = (lvl.vitalPower ?? 0) > 0 && state.lives >= VITAL_LIVES_MIN;
+  const vitalMult = vitalOn ? 1 + (lvl.vitalPower ?? 0) : 1;
   // Crecimiento permanente (Arco Largo/Explorador II): el bono acumulado se suma al
   // daño base ANTES del aura. Se captura el bono ACTUAL para este disparo y luego se
   // incrementa (una vez POR DISPARO, no por objetivo), de modo que el próximo pega más.
   const growthNow = tower.growthBonus;
-  const dmgFor = (base: number) => Math.round((base + growthNow) * (1 + dmgMult));
+  const dmgFor = (base: number) => Math.round((base + growthNow) * (1 + dmgMult) * vitalMult);
+  // F9a · tirada de CRÍTICO: UNA por disparo/proyectil (rand(state), determinista).
+  // Se hornea en el daño ANTES de matriz/armadura: el crítico también atraviesa placas.
+  const rollCrit = (): boolean => critChance > 0 && rand(state) < critChance;
   const growth = lvl.growth ?? 0;
   // F5.1 · el crecimiento permanente tiene TOPE (ver GROWTH_CAP): sin él, el bono
   // divergía cuadráticamente y una sola torre acababa siendo el 50-70% del daño.
@@ -555,7 +634,17 @@ function fireTower(
 
   const tx = tower.cx + 0.5;
   const ty = tower.cy + 0.5;
-  tower.cooldownLeft = Math.round((lvl.cooldown * TICK_RATE) / (1 + hasteMult));
+  // F9a (v19) · Aura Gélida (afijo de jefe): recarga ×CHILL_AURA_SLOW si la torre
+  // está dentro del aura de algún jefe gélido vivo. Se evalúa AL DISPARAR (una vez
+  // por recarga): determinista, orden estable de chillSrcs.
+  let chillMult = 1;
+  for (const src of chillSrcs) {
+    if (dist(tx, ty, src.x, src.y) <= CHILL_AURA_RADIUS) {
+      chillMult = CHILL_AURA_SLOW;
+      break;
+    }
+  }
+  tower.cooldownLeft = Math.round(((lvl.cooldown * TICK_RATE) / (1 + hasteMult)) * chillMult);
 
   // Tormenta de Riel (F4.3): rayo PERFORANTE en línea recta e instantáneo — traza
   // la línea desde la torre a través del objetivo y golpea a TODOS los enemigos
@@ -567,7 +656,12 @@ function fireTower(
     const len = Math.max(0.001, Math.sqrt(ddx * ddx + ddy * ddy));
     const ux = ddx / len;
     const uy = ddy / len;
-    const dmgBase = dmgFor(lvl.damage);
+    // F9a · crítico: una tirada para TODO el rayo (un "disparo" = una línea)
+    let dmgBase = dmgFor(lvl.damage);
+    if (rollCrit()) {
+      dmgBase = Math.round(dmgBase * CRIT_MULT);
+      events.push({ e: 'crit', x: target.x, y: target.y, dmg: dmgBase });
+    }
     const lineN = state.enemies.length;
     for (let i = 0; i < lineN; i++) {
       const e = state.enemies[i];
@@ -597,6 +691,11 @@ function fireTower(
     const pts: [number, number][] = [[tx, ty]];
     let current: EnemyState | null = target;
     let dmg = dmgFor(lvl.damage);
+    // F9a · crítico: una tirada para TODA la cadena (un "disparo" del Tesla)
+    if (rollCrit()) {
+      dmg = Math.round(dmg * CRIT_MULT);
+      events.push({ e: 'crit', x: target.x, y: target.y, dmg });
+    }
     for (let i = 0; i < chain.targets && current; i++) {
       hitIds.add(current.id);
       pts.push([current.x, current.y]);
@@ -664,6 +763,12 @@ function fireTower(
     for (const t of targets) {
       events.push({ e: 'shot', x: tx, y: ty, tx: t.x, ty: t.y, kind: 'snipe', color, sniperBullet: !fusion && tower.type === 'sniper' });
       let dmg = dmgFor(lvl.damage);
+      // F9a · crítico por disparo (el francotirador crítico es ENORME a propósito:
+      // vigilado en barridos — el aura no da daño plano, solo el pico)
+      if (rollCrit()) {
+        dmg = Math.round(dmg * CRIT_MULT);
+        events.push({ e: 'crit', x: t.x, y: t.y, dmg });
+      }
       if (ENEMIES[t.type].flying && airBonus > 1) dmg = Math.round(dmg * airBonus);
       damageEnemy(state, ctx, t, dmg, lvl.pierceArmor ?? false, tower.id, events, execute, executeCurrent, shredChance, attackType);
     }
@@ -672,6 +777,10 @@ function fireTower(
 
   // Proyectil físico (arquero, cañón, hielo, veneno, mortero)
   for (const t of targets) {
+    // F9a · crítico por PROYECTIL: se hornea en el daño al disparar (la tirada es
+    // aquí — determinista); el evento visual sale al IMPACTAR (proj.crit).
+    const isCrit = rollCrit();
+    const baseDmg = dmgFor(lvl.damage);
     const proj: ProjectileState = {
       id: state.nextId++,
       kind: projectileKind === 'bomb' ? 'bomb' : projectileKind === 'shell' ? 'shell' : 'bullet',
@@ -683,7 +792,7 @@ function fireTower(
       speed: (lvl.projectileSpeed ?? 12) / TICK_RATE,
       towerId: tower.id,
       owner: tower.owner,
-      damage: dmgFor(lvl.damage),
+      damage: isCrit ? Math.round(baseDmg * CRIT_MULT) : baseDmg,
       splash: lvl.splash ?? 0,
       slow: lvl.slow
         ? { factor: lvl.slow.factor, durationTicks: Math.round(lvl.slow.duration * TICK_RATE) }
@@ -699,6 +808,8 @@ function fireTower(
       shredChance,
       airBonus,
       attackType,
+      crit: isCrit,
+      sure,
     };
     state.projectiles.push(proj);
   }
@@ -760,6 +871,9 @@ function explode(
   events: GameEvent[],
 ): void {
   events.push({ e: 'hit', x, y, r: Math.max(0.25, proj.splash), kind: proj.splash > 0 ? 'splash' : 'impact' });
+  // F9a · el número dorado del CRÍTICO sale UNA vez por explosión (no por enemigo
+  // golpeado — un Bombardeo crítico de 4 bombas ya spamea suficiente).
+  if (proj.crit) events.push({ e: 'crit', x, y, dmg: proj.damage });
   if (proj.splash > 0) {
     // longitud fija: si una muerte genera crías (push a state.enemies) NO deben
     // recibir este mismo golpe de área (nacen en la posición del padre)
@@ -802,7 +916,10 @@ function stepProjectiles(state: GameState, ctx: SimContext, events: GameEvent[])
         if (target && target.hp > 0) {
           const edef = ENEMIES[target.type];
           const dodge = Math.min(0.9, (edef.dodge ?? 0) + target.dodgeBonus);
-          if (dodge > 0 && rand(state) < dodge) {
+          // F9a · CERTEZA (Estandarte del Vencedor): el proyectil no puede ser
+          // esquivado — se salta la tirada entera (rand condicionado al estado:
+          // determinista igual, la sim decide siempre lo mismo con el mismo estado).
+          if (!proj.sure && dodge > 0 && rand(state) < dodge) {
             events.push({ e: 'miss', x: target.x, y: target.y });
           } else if (proj.splash > 0) {
             explode(state, ctx, proj, proj.x, proj.y, events);
@@ -814,6 +931,8 @@ function stepProjectiles(state: GameState, ctx: SimContext, events: GameEvent[])
               r: 0.2,
               kind: proj.poison ? 'poison' : proj.slow ? 'frost' : 'impact',
             });
+            // F9a · número dorado del crítico en el punto de impacto
+            if (proj.crit) events.push({ e: 'crit', x: proj.x, y: proj.y, dmg: proj.damage });
             applyPayload(state, ctx, proj, target, events);
           }
         }
@@ -860,6 +979,16 @@ function stepEnemies(state: GameState, ctx: SimContext, events: GameEvent[]): vo
   // misma torre (aturdir lo ya aturdido no aporta nada). Determinista: los enemigos
   // se recorren en orden estable y el primero que llega se la queda.
   const sapClaimed = new Set<number>();
+
+  // F9a (v19) · Portaestandarte: fuentes de aura de CELERIDAD vivas al INICIO del
+  // tick (lista fija — quién nazca/muera durante el bucle no cambia el tick actual:
+  // determinista e independiente del orden de proceso). No apila: estar dentro de
+  // UNA o de cinco auras da el mismo ×mult.
+  const hasteSrcs: { x: number; y: number; id: number; radius: number; mult: number }[] = [];
+  for (const e of state.enemies) {
+    const aura = ENEMIES[e.type].hasteAura;
+    if (aura && e.hp > 0) hasteSrcs.push({ x: e.x, y: e.y, id: e.id, radius: aura.radius, mult: aura.mult });
+  }
 
   // longitud fija: las crías que nacen al morir un enemigo (veneno) NO deben
   // moverse/curar en su propio tick de nacimiento; se procesan en el siguiente
@@ -950,10 +1079,22 @@ function stepEnemies(state: GameState, ctx: SimContext, events: GameEvent[]): vo
       }
     }
 
+    // F9a (v19) · aura de celeridad del Portaestandarte: ×mult si está dentro del
+    // aura de OTRO portador vivo (nunca del propio — un portaestandarte solo no
+    // corre; en manada se empujan entre sí, y matar portadores frena la fila).
+    let hasteMult = 1;
+    for (const src of hasteSrcs) {
+      if (src.id === enemy.id) continue;
+      if (dist(src.x, src.y, enemy.x, enemy.y) <= src.radius) {
+        hasteMult = src.mult;
+        break;
+      }
+    }
+
     // movimiento por waypoints (el zapador que está aturdiendo NO avanza)
     let moveLeft = sapping
       ? 0
-      : (def.speed * speedMult * enemy.speedMult * enemy.slowFactor * rageMult) / TICK_RATE;
+      : (def.speed * speedMult * enemy.speedMult * enemy.slowFactor * rageMult * hasteMult) / TICK_RATE;
     const wps = ctx.waypoints[enemy.pathIdx];
     while (moveLeft > 0 && enemy.wpIdx < wps.length) {
       const wp = wps[enemy.wpIdx];
@@ -1017,13 +1158,18 @@ function stepEnemies(state: GameState, ctx: SimContext, events: GameEvent[]): vo
           ps[pi].gold -= real;
           taken += real;
         }
-        events.push({ e: 'steal', gold: taken, x: enemy.x, y: enemy.y });
+        events.push({ e: 'steal', gold: taken, x: enemy.x, y: enemy.y, pathIdx: enemy.pathIdx });
       } else {
-        // fuga escalonada: cuesta `livesCost + floor(oleada/10)` (+extra si es élite).
-        const cost = def.livesCost + Math.floor(state.wave / LEAK_WAVE_DIV) + (enemy.elite ? ELITE_EXTRA_LIVES : 0);
+        // fuga escalonada: cuesta `livesCost + floor(oleada/10)` (+extra si es élite;
+        // F9a: un CAMPEÓN fuga MUY caro — CHAMPION_EXTRA_LIVES encima — total 5-8).
+        const cost =
+          def.livesCost +
+          Math.floor(state.wave / LEAK_WAVE_DIV) +
+          (enemy.elite ? ELITE_EXTRA_LIVES : 0) +
+          (enemy.champion ? CHAMPION_EXTRA_LIVES : 0);
         state.lives = Math.max(0, state.lives - cost);
         enemy.hp = 0; // sale del juego sin bounty
-        events.push({ e: 'leak', lives: state.lives, type: enemy.type });
+        events.push({ e: 'leak', lives: state.lives, type: enemy.type, pathIdx: enemy.pathIdx });
         if (state.lives <= 0 && !state.over) {
           state.over = { victory: false };
           events.push({ e: 'gameover', victory: false });
@@ -1038,7 +1184,9 @@ function stepEnemies(state: GameState, ctx: SimContext, events: GameEvent[]): vo
   // la fortaleza cae. Se evalúa tras el filtrado; el spawn de esta oleada ya
   // ocurrió en stepWaves (antes de stepEnemies), así que el conteo es fiel.
   if (state.mode === 'horde' && !state.over) {
-    const cap = HORDE_CAP[state.difficulty] ?? HORDE_CAP.normal;
+    // F9a (v19) · Reparar en horda = +1 de AFORO por compra (repairsBought): el
+    // equivalente coherente de "+1 vida" cuando la vida ES el cupo de saturación.
+    const cap = (HORDE_CAP[state.difficulty] ?? HORDE_CAP.normal) + state.repairsBought;
     if (state.enemies.length >= cap) {
       state.over = { victory: false };
       events.push({ e: 'gameover', victory: false });
@@ -1054,7 +1202,9 @@ function stepWaves(state: GameState, ctx: SimContext, events: GameEvent[]): void
     // generar la próxima oleada una sola vez al entrar al interludio,
     // así la vista previa coincide exactamente con lo que saldrá
     if (state.pendingWave === null) {
-      const gen = generateWave(state, state.wave + 1, connectedCount(state), ctx.map.paths.length);
+      // F9a (v19) · el modo decide la fuente: clásico = calendario fijo de 36;
+      // infinito/horda = generador por presupuesto + rotación de campeones.
+      const gen = generateWave(state, state.wave + 1, connectedCount(state), ctx.map.paths.length, state.mode);
       state.pendingWave = gen.entries;
       state.pendingBoss = gen.hasBoss;
       state.pendingBossType = gen.bossType;
@@ -1065,6 +1215,8 @@ function stepWaves(state: GameState, ctx: SimContext, events: GameEvent[]): void
       state.nextWaveFlying = gen.flying;
       state.nextWaveInvisible = gen.invisible;
       state.nextWaveBoss = gen.bossType;
+      state.nextWaveChampion = gen.champion; // F9a · 👑
+      state.nextWaveBossAffix = gen.bossAffix; // F9a · "☠ Gólem Gélido"
     }
     state.interludeLeft -= 1;
     if (state.interludeLeft <= 0) {
@@ -1076,7 +1228,12 @@ function stepWaves(state: GameState, ctx: SimContext, events: GameEvent[]): void
       state.blessedBonusMult = state.nextWaveBlessed ? BLESSED_BONUS_MULT : 1;
       events.push({ e: 'wave_start', wave: state.wave, comp: state.nextWaveComp });
       if (state.pendingBoss && state.pendingBossType) {
-        events.push({ e: 'boss', name: ENEMIES[state.pendingBossType].name });
+        // F9a · el anuncio lleva el afijo con nombre ("☠ Gólem · Adaptativo")
+        events.push({
+          e: 'boss',
+          name: ENEMIES[state.pendingBossType].name,
+          ...(state.nextWaveBossAffix ? { affix: AFFIXES[state.nextWaveBossAffix].name } : {}),
+        });
       }
       state.pendingWave = null;
       state.pendingBoss = false;
@@ -1087,6 +1244,8 @@ function stepWaves(state: GameState, ctx: SimContext, events: GameEvent[]): void
       state.nextWaveFlying = false;
       state.nextWaveInvisible = false;
       state.nextWaveBoss = null;
+      state.nextWaveChampion = false;
+      state.nextWaveBossAffix = null;
     }
     return;
   }
@@ -1097,7 +1256,16 @@ function stepWaves(state: GameState, ctx: SimContext, events: GameEvent[]): void
     while (state.spawnCooldown <= 0 && state.spawnQueue.length > 0) {
       const entry = state.spawnQueue.shift()!;
       const enemy = spawnEnemy(state, ctx, entry.type, entry.pathIdx);
+      // F9a (v19) · afinado del calendario clásico: ANTES de élite/campeón, para
+      // que sus multiplicadores compongan sobre la vida ya afinada.
+      if (entry.hpTune !== undefined && entry.hpTune !== 1) {
+        enemy.hp = Math.round(enemy.hp * entry.hpTune);
+        enemy.maxHp = enemy.hp;
+      }
       if (entry.elite) makeElite(enemy, entry.affixes ?? []);
+      // F9a (v19) · CAMPEÓN 👑: mini-jefe de pelotón (nunca élite a la vez — el
+      // generador no mezcla ambos; defensa en profundidad: elite ya aplicado no rompe)
+      if (entry.champion) makeChampion(enemy, entry.championHp);
       // oleada inmune: todos los enemigos normales (incl. élites) son inmunes a magia.
       // Los JEFES quedan EXENTOS: ya son un muro de por sí; hacerlos también inmunes a
       // hielo/veneno/tesla los volvería casi invencibles (doble castigo).
@@ -1108,6 +1276,8 @@ function stepWaves(state: GameState, ctx: SimContext, events: GameEvent[]): void
       }
       // Lote 3 · oleada invisible: los no-jefe nacen invisibles (un Sentry los revela)
       if (entry.invisible && !ENEMIES[entry.type].boss) enemy.invisible = true;
+      // F9a (v19) · afijo de JEFE telegrafiado (solo entra en entradas de jefe)
+      if (entry.bossAffix && ENEMIES[entry.type].boss) applyBossAffix(enemy, entry.bossAffix);
       state.spawnCooldown = state.spawnQueue.length > 0 ? state.spawnQueue[0].delay : 0;
     }
   }
@@ -1168,6 +1338,9 @@ function stepWaves(state: GameState, ctx: SimContext, events: GameEvent[]): void
 }
 
 function stepTowers(state: GameState, ctx: SimContext, events: GameEvent[], auras: Map<number, AuraBuff>): void {
+  // F9a (v19) · jefes con Aura Gélida vivos: precalculados UNA vez por tick (orden
+  // estable de state.enemies, determinista) y pasados a cada disparo.
+  const chillSrcs = state.enemies.filter((e) => e.hp > 0 && e.affixes.includes('chillaura'));
   for (const tower of state.towers) {
     // torre ATURDIDA (Zapador / Behemot): no dispara mientras dure el aturdimiento.
     if (tower.stunnedUntil > state.tick) continue;
@@ -1179,7 +1352,7 @@ function stepTowers(state: GameState, ctx: SimContext, events: GameEvent[], aura
       tower.cooldownLeft -= 1;
       continue;
     }
-    fireTower(state, ctx, tower, events, auras);
+    fireTower(state, ctx, tower, events, auras, chillSrcs);
   }
 }
 
@@ -1213,6 +1386,15 @@ function stepTraps(state: GameState, ctx: SimContext, events: GameEvent[]): void
         const bx = trap.cx + 0.5;
         const by = trap.cy + 0.5;
         const splash = lvl.splash ?? 1.5;
+        // F9a (v19) · NERF: el barril ya no ELIMINA todo no-jefe — hace daño
+        // VERDADERO porcentual con TOPE: min(vida MÁXIMA, BOOM_HP_CAP_BASE ×
+        // curva actual). Traducción: borra a la morralla (vida BASE ≤ 100, élites
+        // pequeños incluidos) pero los tanques, los élites gordos y los CAMPEONES
+        // sobreviven con un mordisco de ~100×curva. El tope escala con waveHpMult
+        // para que su ROL (limpia-morralla de pánico) sea constante toda la partida.
+        const boomCap = Math.round(
+          BOOM_HP_CAP_BASE * waveHpMult(Math.max(1, state.wave), state.difficulty, connectedCount(state)),
+        );
         for (let i = 0; i < n; i++) {
           const e = state.enemies[i];
           if (e.hp <= 0 || ENEMIES[e.type].flying) continue; // explosión a ras de suelo
@@ -1222,13 +1404,11 @@ function stepTraps(state: GameState, ctx: SimContext, events: GameEvent[]): void
               // armadura — la matriz F5.1 aplica ×1.0 vs colosal, neutro a propósito)
               damageEnemy(state, ctx, e, lvl.damage, false, trap.id, events, 0, 0, 0, attackTypeOf(trap));
             } else {
-              // ELIMINACIÓN: cualquier no-jefe dentro del radio muere, da igual su
-              // vida, armadura o inmunidad. El daño aplicado = su vida actual (con
-              // perforación) para que las estadísticas reflejen la vida retirada.
-              // F5.1 · daño VERDADERO (attackType null): la eliminación NO pasa por
-              // la matriz — un ×0.65 de asedio vs ligera dejaría vivo lo que el
-              // barril promete borrar.
-              damageEnemy(state, ctx, e, Math.max(1, Math.ceil(e.hp)), true, trap.id, events, 0, 0, 0, null);
+              // Daño VERDADERO (perfora, attackType null — fuera de matriz y del
+              // afijo Adaptativo): 100% de la vida máxima… hasta el tope. La
+              // morralla muere aunque esté a tope; lo gordo pierde `boomCap`.
+              const dmg = Math.max(1, Math.min(Math.ceil(e.maxHp), boomCap));
+              damageEnemy(state, ctx, e, dmg, true, trap.id, events, 0, 0, 0, null);
             }
           }
         }
@@ -1348,9 +1528,15 @@ export function stepGame(
   // aviso de sistema al arrancar la partida (una sola vez, tick 0): telegrafía las
   // reglas duras de Green TD. Solo en classic/endless (la horda no tiene fuga/jefes fijos).
   if (state.tick === 0 && state.mode !== 'horde') {
+    // F9a (v19) · el CLÁSICO tiene calendario FIJO y PÚBLICO (estilo Green TD):
+    // el aviso lo dice y manda a la Guía, donde está la tabla completa.
+    const calendarNote =
+      state.mode === 'classic'
+        ? ' 📅 El calendario de las 36 oleadas es FIJO y PÚBLICO: míralo completo en la Guía (🦅 aéreas en 7/17/23/27/35 · 👑 CAMPEONES en 16/22/31 · jefe-muro en la 36).'
+        : ' 👑 Cada 10 oleadas desde la 13 llega un pelotón de CAMPEONES: pocos, lentos y gordísimos.';
     events.push({
       e: 'sys',
-      msg: `🛡 Las oleadas múltiplos de 5 (desde la 10) son INMUNES a la magia: ten daño físico de reserva. ☠ Los jefes llegan cada 10 (la Quimera voladora en la 15/25/35). 👁 Las oleadas INVISIBLES llegan cada ${INVISIBLE_EVERY} desde la ${INVISIBLE_FROM}: compra un Sentry en la 🛒 Tienda ANTES de la ${INVISIBLE_FROM} para revelarlas.`,
+      msg: `🛡 Las oleadas múltiplos de 5 (desde la 10) son INMUNES a la magia: ten daño físico de reserva. ☠ Los jefes llegan cada 10 (la Quimera voladora en la 15/25/35) y desde la 20 traen AFIJO con nombre. 👁 Las oleadas INVISIBLES llegan cada ${INVISIBLE_EVERY} desde la ${INVISIBLE_FROM}: compra un Sentry en la 🛒 Tienda ANTES de la ${INVISIBLE_FROM} para revelarlas.${calendarNote}`,
     });
   }
   if (state.tick === 0) {

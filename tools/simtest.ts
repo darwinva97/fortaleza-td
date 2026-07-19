@@ -5,6 +5,7 @@ import {
   applyCommands,
   armorTypeOf,
   attackTypeOf,
+  buildSnap,
   computeAuras,
   createGame,
   ENEMIES,
@@ -17,6 +18,7 @@ import {
   makeSimContext,
   pathCells,
   pathLength,
+  pathWaypoints,
   placementError,
   rank2Cost,
   replayTo,
@@ -27,11 +29,38 @@ import {
   validateSaveData,
   waveBountyMult,
   waveHpMult,
+  ADAPT_HITS,
+  ADAPT_RESIST,
   ASSIST_MIN_DMG_FRAC,
   ASSIST_SHARE,
   ATTACK_MATRIX,
   BALANCE_VERSION,
+  BOOM_COST_TEAM_STEP,
+  BOOM_HP_CAP_BASE,
+  boomCost,
+  BOSS_AFFIX_POOL,
+  CHAMPION_BOUNTY_MULT,
+  CHAMPION_EXTRA_LIVES,
+  CHAMPION_HP_MULT,
+  CHAMPION_SPEED_MULT,
+  CHILL_AURA_SLOW,
+  CLASSIC_BOUNTY_COMP,
+  CLASSIC_CALENDAR,
+  classicWave,
+  CRIT_MULT,
   DIFF_HP_MULT,
+  ELITE_LEVEL_CAP_CLASSIC,
+  ELITE_LEVEL_GOLD,
+  ELITE_LEVEL_WOOD,
+  isChampionWave,
+  isImmuneWave,
+  nextEliteLevelCost,
+  repairCost,
+  REPAIR_COST_BASE,
+  REPAIR_COST_STEP,
+  statsOf,
+  VITAL_LIVES_MIN,
+  waveHasBoss,
   POISON_PCT_CAP_DPS,
   GROWTH_CAP,
   FIRST_INTERLUDE_SEC,
@@ -112,6 +141,7 @@ function mkEnemy(type: EnemyTypeId, over: Partial<EnemyState> = {}): EnemyState 
     dodgeBonus: 0, slowResist: 0, radiusMult: 1, auraRadius: 0, auraHps: 0, deathSpawn: 0, laps: 0,
     spellImmune: def.spellImmune ?? false, stunTowerId: 0, lastWpIdx: 1, armorShredUntil: 0,
     invisible: false, detected: false, dmgBy: {},
+    champion: false, adaptHits: [0, 0, 0, 0], // F9a (v19)
     ...over,
   };
 }
@@ -149,7 +179,10 @@ function buildCellCandidates(mapId: string): [number, number][] {
   return out;
 }
 
-const BUILD_ORDER: TowerTypeId[] = ['archer', 'cannon', 'frost', 'archer', 'tesla', 'banner', 'poison', 'sniper', 'mortar'];
+// F9a · el FRANCOTIRADOR sube al 5.º puesto: el calendario clásico concentra la
+// vida en pocas siluetas gordas (tanques, campeones, jefes) y un humano llega al
+// primer Gólem (w10) con single-target físico — el bot ahora también.
+const BUILD_ORDER: TowerTypeId[] = ['archer', 'cannon', 'frost', 'archer', 'sniper', 'tesla', 'banner', 'poison', 'mortar'];
 
 // v17 · celda buildable MÁS cercana al inicio del camino, IGNORANDO ocupación: la
 // celda RESERVADA del Sentry (fija toda la partida), que cubre el spawn de la oleada
@@ -201,6 +234,12 @@ function botCommands(
     const spent = new Map<string, number>();
     const claimed = new Set(state.towers.map((tw) => `${tw.cx},${tw.cy}`));
     if (reserved) claimed.add(`${reserved[0]},${reserved[1]}`);
+    // F9a · ¿queda ALGUNA torre libre disparando? Mientras sí, la jugada humana
+    // contra zapadores es PACIENCIA (las libres los muelen — en una oleada pura
+    // de zapadores no hay otro objetivo); vender solo procede en el LOCK real.
+    const freeTowers = state.towers.some(
+      (tw) => towerFires(tw) && tw.stunnedUntil <= state.tick && !tw.halted,
+    );
     for (const t of state.towers) {
       const key = `stun:${t.id}`;
       if (t.stunnedUntil > state.tick) {
@@ -228,14 +267,37 @@ function botCommands(
             }
           }
         }
-        if (since >= TICK_RATE * 20) {
+        // F9a · vender SOLO en el LOCK real (ninguna torre libre disparando) y
+        // RACIONADO (una cada 8 s): el calendario clásico trae una oleada PURA de
+        // zapadores (w8) y el reflejo viejo ("vende toda torre aturdida ≥20s")
+        // era un harakiri — el bot liquidaba su defensa en cadena mientras las
+        // torres libres ya estaban moliendo a los zapadores (único objetivo vivo).
+        // Un humano espera; solo vende si NADIE puede disparar.
+        const lastSell = counters.get('sellCd') ?? -99999;
+        if (since >= TICK_RATE * 20 && !freeTowers && state.tick - lastSell >= TICK_RATE * 8) {
           cmds.push({ playerId: t.owner, cmd: { kind: 'sell', towerId: t.id } });
+          counters.set('sellCd', state.tick);
           counters.delete(key);
           counters.delete(`stunbuild:${t.id}`);
         }
       } else if (counters.has(key)) {
         counters.delete(key);
         counters.delete(`stunbuild:${t.id}`);
+      }
+    }
+    // F9a · FOCO DE FUEGO en CAMPEONES 👑 (el contrajuego humano canónico del
+    // arquetipo: pocos objetivos gordos → concentrar daño y derribarlos UNO a
+    // uno, empezando por el que va más adelantado). Sin esto, el bot repartía el
+    // daño entre 3-4 campeones y fugaba varios a la vez (6 vidas por cabeza).
+    // Solo campeones: en oleadas de jefe el escolta también importa y repartir
+    // el fuego sigue siendo razonable.
+    // (solo CAMPEONES: enfocar al jefe hacía fugar a su escolta — probado y peor)
+    const bigs = state.enemies.filter((e) => e.hp > 0 && e.champion);
+    if (bigs.length > 0) {
+      const lead = bigs.sort((a, b) => b.travelled - a.travelled || a.id - b.id)[0];
+      for (const t of state.towers) {
+        if (!towerFires(t) || t.focusId === lead.id) continue;
+        cmds.push({ playerId: t.owner, cmd: { kind: 'focus', towerId: t.id, enemyId: lead.id } });
       }
     }
     const alive = state.enemies.filter((e) => e.hp > 0);
@@ -246,11 +308,19 @@ function botCommands(
       (state.pendingWave?.length ?? 0) === 0;
     if (stalled) {
       if (!counters.has('stall')) counters.set('stall', state.tick);
-      if (state.tick - counters.get('stall')! >= TICK_RATE * 5) {
-        for (const t of state.towers) {
-          if (t.stunnedUntil > state.tick) cmds.push({ playerId: t.owner, cmd: { kind: 'sell', towerId: t.id } });
+      // F9a · dos umbrales: LOCK real (nadie dispara) → vender UNA torre a los 5 s;
+      // último recurso (torres libres pero fuera de alcance, patológico) → a los
+      // 45 s. Vender UNA (la más barata aturdida) libera a su zapador, que camina
+      // y muere; vender TODAS (código previo) era la espiral de muerte de la w8.
+      const stallFor = state.tick - counters.get('stall')!;
+      if ((!freeTowers && stallFor >= TICK_RATE * 5) || stallFor >= TICK_RATE * 45) {
+        const stunned = state.towers
+          .filter((t) => t.stunnedUntil > state.tick)
+          .sort((a, b) => a.invested - b.invested);
+        if (stunned.length > 0) {
+          cmds.push({ playerId: stunned[0].owner, cmd: { kind: 'sell', towerId: stunned[0].id } });
         }
-        counters.delete('stall');
+        counters.set('stall', state.tick); // re-armar: otra venta si sigue atascado
       }
     } else if (counters.has('stall')) {
       counters.delete('stall');
@@ -270,7 +340,8 @@ function botCommands(
   // llenas) y el refund abarata la renovación. La detección pegajosa hace el resto.
   const sentryCell = nearestCellToSpawn(candidates, spawn);
   if (sentryCell) used.add(`${sentryCell[0]},${sentryCell[1]}`); // reservada: la defensa no construye ahí
-  const wantSentry = isInvisibleWave(state.wave + 1);
+  // F9a · pasar el MODO: en clásico las invisibles son 12/18/24 (la 36 ahora es jefe)
+  const wantSentry = isInvisibleWave(state.wave + 1, state.mode);
   const SENTRY_FRESH = TICK_RATE * 240; // ya cubierto si al Sentry le sobran ≥4 min
   let sentryDone = false; // un solo (re)plantado por tick (cualquier jugador con oro), sin duplicar
   for (const player of state.players) {
@@ -348,8 +419,11 @@ function botCommands(
       }
     }
 
-    // hasta 3 acciones por interludio: prioriza progresar torres hacia la especialización
-    for (let act = 0; act < 3; act++) {
+    // hasta 4 acciones por tick de interludio (F9a: antes 3 — el calendario
+    // monoespecie concentra la vida y el bot llegaba un ~10% corto de DPS a
+    // TODAS las oleadas; un humano no tiene un tope de clicks): prioriza
+    // progresar torres hacia la especialización
+    for (let act = 0; act < 4; act++) {
       // 1) especializar una torre al máximo aún sin rama (alterna A/B por id);
       // los miembros de par van primero (habilitan la fusión F4.3)
       const maxed = mine.filter((t) => t.level >= 3 && t.spec < 0).sort(byPairFirst)[0];
@@ -498,6 +572,11 @@ function runScenario(mapId = MAP_ID, maxTicks = MAX_TICKS, seed = SEED, turbo = 
     const events: GameEvent[] = stepGame(state, simCtx, botCommands(state, candidates, counters, spawn));
     for (const ev of events) {
       eventCounts.set(ev.e, (eventCounts.get(ev.e) ?? 0) + 1);
+      if (process.env.SIMTEST_DEBUG && (ev.e === 'sell' || ev.e === 'wave_end' || ev.e === 'leak')) {
+        const towers = state.towers.map((t) => `${t.type}${t.level}${t.stunnedUntil > state.tick ? '*' : ''}`).join(',');
+        if (ev.e === 'wave_end') console.log(`  [w${state.wave}] end · oro=${state.players.map((p) => Math.floor(p.gold)).join('/')} vidas=${state.lives} torres=[${towers}]`);
+        else console.log(`  [w${state.wave}] ${ev.e} ${'type' in ev ? ev.type : ''} ${'refund' in ev ? ev.refund : ''}`);
+      }
       if (ev.e === 'leak') leaksByWave.set(state.wave, (leaksByWave.get(state.wave) ?? 0) + 1);
       if (ev.e === 'death') totalKills++;
       if (ev.e === 'leak') totalLeaks++;
@@ -1186,23 +1265,26 @@ console.log('— F4.1 · Sistema de oleadas Green TD: inmunes, bendecidas y jefe
   assert(immuneTotal >= 3, `hay varias oleadas inmunes en 40 (${immuneTotal}: 10,20,30 — las 15/25/35 de la Quimera y la 40 del Behemot se eximen)`);
   void blessedIn20;
 
-  // Las oleadas bendecidas son probabilísticas (1/15 desde la 6): en una semilla dada
-  // pueden no caer en las primeras 20. Con la semilla 999 SÍ cae (en la 8) — verifica
-  // que aparecen y que llevan un afijo común aplicado a TODA la oleada.
+  // Las oleadas bendecidas son probabilísticas (1/15 desde la 6): en una semilla
+  // dada pueden no caer pronto. F9a cambió el consumo de RNG del generador, así
+  // que se barre un rango de semillas fijo (determinista) hasta encontrar una.
   {
-    const rng2 = { rng: 999 };
     let firstBlessed = 0;
     let commonAffixOk = false;
-    for (let w = 1; w <= 20; w++) {
-      const gen = generateWave(rng2, w, 2, 1);
-      if (gen.blessed && !firstBlessed) {
-        firstBlessed = w;
-        // todas las entradas no-jefe llevan el MISMO afijo común
-        const nonBoss = gen.entries.filter((e) => e.blessed);
-        commonAffixOk = nonBoss.length > 0 && nonBoss.every((e) => e.blessedAffix === gen.blessedAffix);
+    outer: for (let seed = 999; seed < 1010; seed++) {
+      const rng2 = { rng: seed };
+      for (let w = 1; w <= 40; w++) {
+        const gen = generateWave(rng2, w, 2, 1);
+        if (gen.blessed) {
+          firstBlessed = w;
+          // todas las entradas no-jefe llevan el MISMO afijo común
+          const nonBoss = gen.entries.filter((e) => e.blessed);
+          commonAffixOk = nonBoss.length > 0 && nonBoss.every((e) => e.blessedAffix === gen.blessedAffix);
+          break outer;
+        }
       }
     }
-    assert(firstBlessed > 0 && firstBlessed <= 20, `aparece una oleada BENDECIDA en 20 oleadas (semilla 999, oleada ${firstBlessed})`);
+    assert(firstBlessed > 0, `aparece una oleada BENDECIDA en el barrido de semillas (oleada ${firstBlessed})`);
     assert(commonAffixOk, 'la oleada bendecida aplica UN afijo común a toda la oleada');
   }
   assert(blessedTotal >= 1, `hay oleadas bendecidas con la semilla del test (${blessedTotal})`);
@@ -1552,23 +1634,24 @@ console.log('— F4.2 · Trampa de púas: SOLO se coloca sobre el camino —');
   assert(placementError(map, ctx, [], off[0], off[1], 'archer') === null, 'una torre normal SÍ va fuera del camino');
 }
 
-console.log('— F4.4 · Barril explosivo: ELIMINA a los no-jefes del área (jefes: solo daño) y desaparece —');
+console.log('— F9a · Barril explosivo NERFEADO: borra morralla (daño con TOPE); tanques/jefes sobreviven —');
 {
   const map = getMap('sendero');
   const simCtx = makeSimContext(map, makePlacementContext(map));
   const st = createGame('sendero', 'endless', 'normal', 701, [{ id: 'p1', name: 'A', color: '#fff' }]);
   st.nextId = 8000; st.wave = 1; st.waveState = 'active'; st.spawnQueue = []; st.pendingWave = [];
 
-  // barril en una celda del camino (fila 2 de «sendero»); alrededor:
-  //  - un bruto INMUNE, tanque (100k hp) e inmóvil PISANDO la celda: dispara la
-  //    detonación y debe MORIR igualmente (la eliminación ignora vida/armadura/inmunidad)
-  //  - un goblin inmóvil DENTRO del radio (1.5 celdas) → eliminado
-  //  - un GÓLEM (jefe) DENTRO del radio → NO se elimina: recibe 240−6 de armadura
-  //  - un goblin inmóvil FUERA del radio (4 celdas) → intacto
+  // barril en una celda del camino (fila 2 de «sendero»); alrededor (o1, 1 jugador
+  // → tope = BOOM_HP_CAP_BASE × 1 = 100 de daño VERDADERO):
+  //  - un bruto INMUNE tanque (100k hp) PISANDO la celda: dispara la detonación
+  //    pero SOBREVIVE con 100k−100 (el nerf F9a: ya no hay eliminación universal)
+  //  - un goblin (32 hp) DENTRO del radio → muere (morralla ≤ tope, aun inmune)
+  //  - un GÓLEM (jefe) DENTRO del radio → recibe 240−6 de armadura (sin cambios)
+  //  - un goblin FUERA del radio (4 celdas) → intacto
   const barrel = mkTower('boom', { id: 3400, cx: 8, cy: 2, level: 1, spec: -1, charges: 1, invested: 90 });
   st.towers.push(barrel);
   const brute = mkEnemy('brute', { id: 2500, hp: 100000, maxHp: 100000, spellImmune: true, speedMult: 0, x: 8.5, y: 2.5, wpIdx: 1 });
-  const near = mkEnemy('goblin', { id: 2501, hp: 32, maxHp: 32, speedMult: 0, x: 10.0, y: 2.5, wpIdx: 1 });
+  const near = mkEnemy('goblin', { id: 2501, hp: 32, maxHp: 32, spellImmune: true, speedMult: 0, x: 10.0, y: 2.5, wpIdx: 1 });
   const boss = mkEnemy('golem', { id: 2503, hp: 100000, maxHp: 100000, speedMult: 0, x: 9.5, y: 2.5, wpIdx: 1 });
   const far = mkEnemy('goblin', { id: 2502, hp: 32, maxHp: 32, speedMult: 0, x: 12.5, y: 2.5, wpIdx: 1 });
   st.enemies.push(brute, near, boss, far);
@@ -1580,8 +1663,11 @@ console.log('— F4.4 · Barril explosivo: ELIMINA a los no-jefes del área (jef
     if (ev.e === 'hit' && ev.kind === 'splash' && ev.r >= 1.5) sawSplash = true;
     if (ev.e === 'sell' && ev.refund === 0) sawPoof = true;
   }
-  assert(!st.enemies.some((e) => e.id === 2500), 'la detonación ELIMINA a un tanque inmune de 100k hp (no-jefe)');
-  assert(!st.enemies.some((e) => e.id === 2501), 'el goblin DENTRO del radio queda eliminado');
+  assert(
+    st.enemies.some((e) => e.id === 2500) && brute.hp === 100000 - 100,
+    `F9a · el tanque de 100k SOBREVIVE con daño al TOPE (perdió ${(100000 - brute.hp).toFixed(0)} == 100)`,
+  );
+  assert(!st.enemies.some((e) => e.id === 2501), 'la morralla DENTRO del radio muere (aun inmune: daño verdadero ≤ tope)');
   // jefe: NO se elimina — recibe el daño del barril como ASEDIO (matriz F5.1
   // ×1.0 vs colosal: neutro, los jefes son cosa del perforante): 240 − 6 de
   // armadura del Gólem = 234 (el número clásico, intacto).
@@ -1956,14 +2042,27 @@ console.log('— F4.3 · Fusión: consume 2 torres y crea 1 con invested sumado 
     'la celda del ingrediente consumido queda LIBRE',
   );
 
-  // una fusión no se puede mejorar ni especializar ni re-fusionar
-  const ev2 = stepGame(st, simCtx, [
-    { playerId: 'p1', cmd: { kind: 'upgrade', towerId: 4100 } },
-    { playerId: 'p1', cmd: { kind: 'specialize', towerId: 4100, spec: 0 } },
-  ]);
-  const rejects2 = ev2.filter((e) => e.e === 'reject').map((e) => (e.e === 'reject' ? e.reason : ''));
-  assert(rejects2.some((r) => r.includes('no se puede mejorar')), 'una fusión NO se puede mejorar (reject)');
-  assert(rejects2.some((r) => r.includes('no se puede especializar')), 'una fusión NO se puede especializar (reject)');
+  // F9a · una fusión ya NO es un callejón: `upgrade` compra su VETERANÍA (salta
+  // 3→5, oro+madera). Especializar/re-fusionar siguen prohibidos.
+  {
+    const p1 = st.players.find((p) => p.id === 'p1')!;
+    p1.gold = 10000;
+    p1.wood = 1000;
+    const goldBefore = p1.gold;
+    const woodBefore = p1.wood;
+    const ev2 = stepGame(st, simCtx, [
+      { playerId: 'p1', cmd: { kind: 'upgrade', towerId: 4100 } },
+      { playerId: 'p1', cmd: { kind: 'specialize', towerId: 4100, spec: 0 } },
+    ]);
+    const rejects2 = ev2.filter((e) => e.e === 'reject').map((e) => (e.e === 'reject' ? e.reason : ''));
+    const fusedNow = st.towers.find((t) => t.id === 4100)!;
+    assert(fusedNow.level === 5, `F9a · mejorar una fusión compra VETERANÍA: salta 3→5 (level=${fusedNow.level})`);
+    assert(
+      goldBefore - p1.gold === ELITE_LEVEL_GOLD[0] && Math.round(woodBefore - p1.wood) === ELITE_LEVEL_WOOD[0],
+      `la veteranía de la fusión cobra 🪙${ELITE_LEVEL_GOLD[0]} + 🪵${ELITE_LEVEL_WOOD[0]} (cobró ${goldBefore - p1.gold}/${Math.round(woodBefore - p1.wood)})`,
+    );
+    assert(rejects2.some((r) => r.includes('no se puede especializar')), 'una fusión NO se puede especializar (reject)');
+  }
 }
 
 console.log('— F4.3 · Fusión: rechazos (adyacencia, spec, receta, dueño, keepId) —');
@@ -2966,9 +3065,14 @@ console.log('— F5.1 · Curva del infinito y botín superlineal del endless —
   assert(growth45 < growth35, `pasada la 40 el hp crece más suave (${growth45.toFixed(3)} < ${growth35.toFixed(3)})`);
   void DIFF_HP_MULT;
 
-  // botín: sin modo (o clásico/horda) la fórmula es la de siempre
+  // botín: sin modo (o horda) la fórmula es la de siempre
   assert(waveBountyMult(40) === 1 + 0.03 * 39, 'waveBountyMult sin modo conserva la firma y la fórmula clásicas');
-  assert(waveBountyMult(40, 'classic') === 1 + 0.03 * 39, 'en clásico no hay término extra');
+  // F9a · el CLÁSICO paga ×CLASSIC_BOUNTY_COMP por baja (compensa que el
+  // calendario monoespecie trae menos cuerpos que el generador)
+  assert(
+    Math.abs(waveBountyMult(40, 'classic') - (1 + 0.03 * 39) * CLASSIC_BOUNTY_COMP) < 1e-9,
+    `en clásico el botín compensa ×${CLASSIC_BOUNTY_COMP} (sin término superlineal)`,
+  );
   // endless: ×1.02 compuesto por oleada sobre la 30…
   const b40 = waveBountyMult(40, 'endless');
   assert(Math.abs(b40 - (1 + 0.03 * 39) * Math.pow(1.02, 10)) < 1e-9, `endless o40: botín ×1.02^10 extra (${b40.toFixed(3)})`);
@@ -2985,12 +3089,18 @@ console.log('— F5.1 · Curva del infinito y botín superlineal del endless —
     st.waveState = 'interlude';
     st.interludeLeft = 1;
     st.lives = 1e9; st.maxLives = 1e9;
-    for (let i = 0; i < TICK_RATE * 20 && st.enemies.length === 0; i++) stepGame(st, simCtx, []);
-    return st.enemies[0]?.bountyMult ?? 0;
+    // F9a · leer un enemigo NORMAL (los élites llevan ×3 encima y con el nuevo
+    // consumo de RNG el primer spawn puede ser élite — falso positivo observado)
+    const normal = () => st.enemies.find((e) => !e.elite && !ENEMIES[e.type].boss);
+    for (let i = 0; i < TICK_RATE * 30 && !normal(); i++) stepGame(st, simCtx, []);
+    return normal()?.bountyMult ?? 0;
   }
   const classicMult = spawnedBountyMult('classic');
   const endlessMult = spawnedBountyMult('endless');
-  assert(Math.abs(classicMult - waveBountyMult(40)) < 1e-9, `en clásico la oleada 40 nace con el bounty clásico (${classicMult.toFixed(3)})`);
+  assert(
+    Math.abs(classicMult - waveBountyMult(40, 'classic')) < 1e-9,
+    `en clásico la oleada 40 nace con el bounty clásico compensado (${classicMult.toFixed(3)})`,
+  );
   assert(Math.abs(endlessMult - waveBountyMult(40, 'endless')) < 1e-9, `en endless la oleada 40 nace con el bounty superlineal (${endlessMult.toFixed(3)})`);
 }
 
@@ -3063,7 +3173,8 @@ console.log('— MODO TURBO ⚡ (issue #14): multiplicadores exactos, determinis
   }
   const bmOff = spawnBountyMult(false);
   const bmOn = spawnBountyMult(true);
-  assert(bmOff === 1, `turbo OFF: bountyMult de la oleada 1 es 1 (fue ${bmOff})`);
+  // F9a · en clásico el bounty base de la o1 ya lleva la compensación ×1.3
+  assert(bmOff === CLASSIC_BOUNTY_COMP, `turbo OFF: bountyMult de la o1 clásica es ${CLASSIC_BOUNTY_COMP} (fue ${bmOff})`);
   assert(
     Math.abs(bmOn - bmOff * TURBO_BOUNTY_MULT) < 1e-9,
     `turbo ON: el botín se multiplica ×${TURBO_BOUNTY_MULT} exacto (${bmOff} → ${bmOn})`,
@@ -3148,6 +3259,444 @@ console.log('— MODO TURBO ⚡ (issue #14): multiplicadores exactos, determinis
     hordeTurbo.interludeLeft === FIRST_INTERLUDE_SEC * TICK_RATE,
     `en HORDA el interludio NO se recorta (${hordeTurbo.interludeLeft} == ${FIRST_INTERLUDE_SEC * TICK_RATE}): el flag se ignora`,
   );
+}
+
+// ==================== F9a (v19) · BALANCE v19 ====================
+
+console.log('— F9a · Calendario clásico: fijo, determinista y fiel a sus promesas —');
+{
+  // determinismo: dos corridas con la MISMA semilla → entradas idénticas
+  const g1: string[] = [];
+  const g2: string[] = [];
+  const r1 = { rng: 777001 };
+  const r2 = { rng: 777001 };
+  for (let w = 1; w <= 36; w++) {
+    g1.push(JSON.stringify(generateWave(r1, w, 2, 1, 'classic')));
+    g2.push(JSON.stringify(generateWave(r2, w, 2, 1, 'classic')));
+  }
+  assert(g1.join('|') === g2.join('|'), 'el calendario clásico es DETERMINISTA (misma semilla → mismas 36 oleadas)');
+
+  // promesas del calendario (derivadas de la MISMA sim que las cumple)
+  const r3 = { rng: 424242 };
+  const airWaves: number[] = [];
+  const immuneWaves: number[] = [];
+  const invisWaves: number[] = [];
+  const champWaves: number[] = [];
+  const bossWaves: number[] = [];
+  let affixBelow20 = 0;
+  let affixFrom20 = 0;
+  let speciesOk = true;
+  for (let w = 1; w <= 36; w++) {
+    const gen = generateWave(r3, w, 2, 1, 'classic');
+    const cal = classicWave(w)!;
+    if (gen.flying) airWaves.push(w);
+    if (gen.immune) immuneWaves.push(w);
+    if (gen.invisible) invisWaves.push(w);
+    if (gen.champion) champWaves.push(w);
+    if (gen.hasBoss) bossWaves.push(w);
+    if (gen.bossAffix) (w < 20 ? affixBelow20++ : affixFrom20++);
+    // monoespecie: todas las entradas no-jefe son la especie del calendario
+    if (gen.entries.some((e) => !ENEMIES[e.type].boss && e.type !== cal.type)) speciesOk = false;
+  }
+  assert(airWaves.join(',') === '7,15,17,23,25,27,35', `AÉREAS en 7/17/23/27 + jefas voladoras 15/25/35 (${airWaves.join(',')})`);
+  assert(immuneWaves.join(',') === '10,20,30', `INMUNES exactamente en 10/20/30 (${immuneWaves.join(',')})`);
+  assert(invisWaves.join(',') === '12,18,24', `INVISIBLES exactamente en 12/18/24 (${invisWaves.join(',')})`);
+  assert(champWaves.join(',') === '16,22,31', `CAMPEONES 👑 exactamente en 16/22/31 (${champWaves.join(',')})`);
+  assert(bossWaves.join(',') === '10,15,20,25,30,35,36', `JEFES en su cadencia + jefe-muro en la 36 (${bossWaves.join(',')})`);
+  assert(speciesOk, 'cada oleada del calendario es MONOESPECIE (más su jefe, si lo hay)');
+  {
+    const r4 = { rng: 99 };
+    const g36 = generateWave(r4, 36, 2, 1, 'classic');
+    assert(g36.bossType === 'behemoth', `el JEFE-MURO de la 36 es el Behemot (${g36.bossType})`);
+  }
+  assert(affixBelow20 === 0 && affixFrom20 >= 4, `afijos de JEFE solo desde la o${20} en clásico (antes:${affixBelow20}, después:${affixFrom20})`);
+  // waveHasBoss con modo: la 36 solo es jefe EN CLÁSICO
+  assert(waveHasBoss(36, 'classic') && !waveHasBoss(36, 'endless'), 'waveHasBoss(36) depende del modo (jefe-muro solo clásico)');
+}
+
+console.log('— F9a · Campeones 👑: transformación, botín ×5 y fuga carísima —');
+{
+  // endless: la rotación cae en 13, 23, 33… y jamás pisa inmunes/jefes/invisibles
+  assert(isChampionWave(13) && isChampionWave(23) && isChampionWave(33) && !isChampionWave(20) && !isChampionWave(15), 'la rotación endless de campeones es 13/23/33…');
+  const map = getMap('sendero');
+  const simCtx = makeSimContext(map, makePlacementContext(map));
+  const st = createGame('sendero', 'endless', 'normal', 909090, [{ id: 'p1', name: 'A', color: '#fff' }]);
+  st.wave = 22; // la próxima (23) es de campeones
+  st.waveState = 'interlude';
+  st.interludeLeft = 1;
+  st.lives = 1e9; st.maxLives = 1e9;
+  for (let i = 0; i < TICK_RATE * 30 && st.enemies.length === 0; i++) stepGame(st, simCtx, []);
+  assert(st.nextWaveChampion === false && st.enemies.length > 0, 'la oleada 23 endless spawnea campeones');
+  const champ = st.enemies[0];
+  const def = ENEMIES[champ.type];
+  const baseHp = Math.round(def.hp * waveHpMult(23, 'normal', 1));
+  assert(champ.champion === true, 'el enemigo nace marcado como CAMPEÓN');
+  assert(champ.maxHp === Math.round(baseHp * CHAMPION_HP_MULT), `vida ×${CHAMPION_HP_MULT} del presupuesto (${champ.maxHp} == ${Math.round(baseHp * CHAMPION_HP_MULT)})`);
+  assert(champ.speedMult === CHAMPION_SPEED_MULT, `velocidad ×${CHAMPION_SPEED_MULT} (${champ.speedMult})`);
+  assert(
+    Math.abs(champ.bountyMult - waveBountyMult(23, 'endless') * CHAMPION_BOUNTY_MULT) < 1e-9,
+    `botín ×${CHAMPION_BOUNTY_MULT} sobre el multiplicador de oleada (${champ.bountyMult.toFixed(2)})`,
+  );
+  assert(!champ.elite && champ.affixes.length === 0, 'un campeón NO es élite (arquetipo propio, sin afijos)');
+  // fuga carísima: livesCost + floor(oleada/10) + CHAMPION_EXTRA_LIVES
+  {
+    const st2 = createGame('sendero', 'endless', 'normal', 909091, [{ id: 'p1', name: 'A', color: '#fff' }]);
+    st2.wave = 23; st2.waveState = 'active'; st2.spawnQueue = []; st2.pendingWave = [];
+    st2.lives = 30;
+    const wps = pathWaypoints(map, 0).length;
+    const leaker = mkEnemy('brute', { id: 6001, champion: true, x: 0, y: 0, wpIdx: wps, travelled: 999 });
+    st2.enemies.push(leaker);
+    const evs = stepGame(st2, simCtx, []);
+    const leak = evs.find((e) => e.e === 'leak');
+    const expected = ENEMIES.brute.livesCost + Math.floor(23 / 10) + CHAMPION_EXTRA_LIVES;
+    assert(leak !== undefined && 30 - st2.lives === expected, `la fuga de un campeón cuesta ${expected} vidas (costó ${30 - st2.lives})`);
+    // pedido del lote de mapas XL: el leak lleva el pathIdx de la ruta del enemigo
+    assert(leak !== undefined && leak.e === 'leak' && leak.pathIdx === leaker.pathIdx, `el evento leak lleva pathIdx (${leak && leak.e === 'leak' ? leak.pathIdx : '?'} == ${leaker.pathIdx})`);
+  }
+}
+
+console.log('— F9a · Barril: coste escalado POR EQUIPO, validado server-side —');
+{
+  const map = getMap('sendero');
+  const simCtx = makeSimContext(map, makePlacementContext(map));
+  const st = createGame('sendero', 'endless', 'normal', 606060, [
+    { id: 'p1', name: 'A', color: '#fff' },
+    { id: 'p2', name: 'B', color: '#000' },
+  ]);
+  st.wave = 1; st.waveState = 'active'; st.pendingWave = [];
+  // cola "congelada": impide que waveCleared dispare el bono de fin de oleada
+  // (ensuciaba las cuentas exactas de oro de este test)
+  st.spawnQueue = [{ type: 'goblin', delay: 2, pathIdx: 0 }];
+  st.spawnCooldown = 999999;
+  const cells = [...pathCells(map)].map((k) => k.split(',').map(Number) as [number, number]);
+  const p1 = st.players[0];
+  const p2 = st.players[1];
+  p1.gold = 1000; p2.gold = 118; // p2 puede pagar el 2.º precio (117) pero no el 3.º
+  const base = TOWERS.boom.levels[0].cost;
+  assert(boomCost(st) === base, `precio inicial del barril = base (${base})`);
+  stepGame(st, simCtx, [{ playerId: 'p1', cmd: { kind: 'place', towerType: 'boom', cx: cells[0][0], cy: cells[0][1] } }]);
+  assert(st.boomsBought === 1 && p1.gold === 1000 - base, `la 1.ª compra cuesta ${base} y sube el contador del equipo`);
+  const second = Math.round(base * BOOM_COST_TEAM_STEP);
+  assert(boomCost(st) === second, `el 2.º barril cuesta ×1.3 (${second})`);
+  // p2 compra al precio NUEVO aunque el "precio viejo" fuera pagable — server manda
+  stepGame(st, simCtx, [{ playerId: 'p2', cmd: { kind: 'place', towerType: 'boom', cx: cells[1][0], cy: cells[1][1] } }]);
+  assert(st.boomsBought === 2 && p2.gold === 118 - second, `p2 pagó el precio ESCALADO (${second}), no el base`);
+  const third = Math.round(base * BOOM_COST_TEAM_STEP * BOOM_COST_TEAM_STEP);
+  // p2 con 1 de oro: rechazo limpio al precio real
+  const evs = stepGame(st, simCtx, [{ playerId: 'p2', cmd: { kind: 'place', towerType: 'boom', cx: cells[2][0], cy: cells[2][1] } }]);
+  assert(evs.some((e) => e.e === 'reject' && e.reason.includes('oro')), `sin oro para el 3.º (${third}): rechazado server-side`);
+  assert(st.boomsBought === 2, 'un rechazo NO sube el contador');
+  // vender un barril NO devuelve el escalón (sin ciclos de reset)
+  const boomTower = st.towers.find((t) => t.type === 'boom')!;
+  stepGame(st, simCtx, [{ playerId: 'p1', cmd: { kind: 'sell', towerId: boomTower.id } }]);
+  assert(st.boomsBought === 2 && boomCost(st) === third, 'vender el barril NO baja el precio del equipo');
+  // el snapshot expone el precio efectivo para el cliente
+  assert(buildSnap(st).boomCost === third, `el snapshot lleva boomCost=${third} (el cliente solo lo pinta)`);
+}
+
+console.log('— F9a · Niveles 5→10: veteranía con oro+madera, tope clásico, pozo endless —');
+{
+  const map = getMap('sendero');
+  const simCtx = makeSimContext(map, makePlacementContext(map));
+  const mk = (mode: 'classic' | 'endless') => {
+    const st = createGame('sendero', mode, 'normal', 505050, [{ id: 'p1', name: 'A', color: '#fff' }]);
+    st.wave = 1; st.waveState = 'active'; st.pendingWave = [];
+    // cola congelada: sin bono de fin de oleada que ensucie las cuentas de oro
+    st.spawnQueue = [{ type: 'goblin', delay: 2, pathIdx: 0 }];
+    st.spawnCooldown = 999999;
+    st.players[0].gold = 100000; st.players[0].wood = 10000;
+    return st;
+  };
+  // (a) subir del Rango II al 5..10 cobrando la tabla exacta
+  {
+    const st = mk('classic');
+    const t = mkTower('archer', { id: 7001, level: 4, spec: 1, invested: 800 });
+    st.towers.push(t);
+    const baseDmg = (activeStats('archer', 4, 1) as { damage: number }).damage;
+    for (let step = 1; step <= 6; step++) {
+      const goldBefore = st.players[0].gold;
+      stepGame(st, simCtx, [{ playerId: 'p1', cmd: { kind: 'upgrade', towerId: 7001 } }]);
+      assert(
+        t.level === 4 + step && goldBefore - st.players[0].gold === ELITE_LEVEL_GOLD[step - 1],
+        `paso ${step}: nivel ${4 + step} cobrando 🪙${ELITE_LEVEL_GOLD[step - 1]}`,
+      );
+    }
+    // stats: +8% daño y +4% cadencia por nivel, compuestos (statsOf)
+    const s10 = statsOf({ type: 'archer', level: 10, spec: 1, fusion: -1 });
+    assert(s10.damage === Math.round(baseDmg * Math.pow(1.08, 6)), `nivel 10: daño ×1.08^6 (${s10.damage})`);
+    assert(
+      Math.abs(s10.cooldown - (activeStats('archer', 4, 1) as { cooldown: number }).cooldown / Math.pow(1.04, 6)) < 1e-9,
+      `nivel 10: cadencia ÷1.04^6 (${s10.cooldown.toFixed(3)}s)`,
+    );
+    // (b) TOPE del clásico: nivel 10 es la cima
+    const evs = stepGame(st, simCtx, [{ playerId: 'p1', cmd: { kind: 'upgrade', towerId: 7001 } }]);
+    assert(evs.some((e) => e.e === 'reject' && e.reason.includes('cima')), 'en CLÁSICO el nivel 10 es la cima (reject)');
+    assert(t.level === 10, 'la torre queda en nivel 10');
+  }
+  // (c) endless: el tope se ABRE con curva ×1.5 compuesta
+  {
+    const st = mk('endless');
+    const t = mkTower('archer', { id: 7002, level: 10, spec: 1, invested: 5000 });
+    st.towers.push(t);
+    const goldBefore = st.players[0].gold;
+    stepGame(st, simCtx, [{ playerId: 'p1', cmd: { kind: 'upgrade', towerId: 7002 } }]);
+    const step7 = Math.round(ELITE_LEVEL_GOLD[5] * 1.5);
+    assert(t.level === 11 && goldBefore - st.players[0].gold === step7, `endless: nivel 11 cuesta 🪙${step7} (×1.5 sobre el paso 6)`);
+    assert(nextEliteLevelCost(t, 'endless') !== null, 'y el 12 sigue disponible (pozo del oro tardío)');
+    assert(nextEliteLevelCost(t, 'classic') === null, 'el MISMO nivel 11 no existiría en clásico');
+  }
+  // (d) sin madera no hay veteranía (cuesta ORO + MADERA)
+  {
+    const st = mk('classic');
+    st.players[0].wood = ELITE_LEVEL_WOOD[0] - 1;
+    const t = mkTower('archer', { id: 7003, level: 4, spec: 1 });
+    st.towers.push(t);
+    const evs = stepGame(st, simCtx, [{ playerId: 'p1', cmd: { kind: 'upgrade', towerId: 7003 } }]);
+    assert(evs.some((e) => e.e === 'reject' && e.reason.includes('madera')), 'sin madera: rechazado (no se compra nivel 10 sin pagar madera)');
+    assert(t.level === 4, 'la torre no sube');
+  }
+  // (e) las torres que NO disparan no compran veteranía (+8% de nada = trampa)
+  {
+    const st = mk('classic');
+    const t = mkTower('banner', { id: 7004, level: 4, spec: 0, invested: 800 });
+    st.towers.push(t);
+    const evs = stepGame(st, simCtx, [{ playerId: 'p1', cmd: { kind: 'upgrade', towerId: 7004 } }]);
+    assert(evs.some((e) => e.e === 'reject'), 'un Estandarte ★★ NO compra veteranía (no dispara)');
+  }
+  // (f) una torre SIN especializar sigue clavada en el nivel 3 (refuerza especializar)
+  {
+    const st = mk('classic');
+    const t = mkTower('archer', { id: 7005, level: 3, spec: -1 });
+    st.towers.push(t);
+    const evs = stepGame(st, simCtx, [{ playerId: 'p1', cmd: { kind: 'upgrade', towerId: 7005 } }]);
+    assert(evs.some((e) => e.e === 'reject' && e.reason.includes('máximo')), 'sin especializar: nivel 3 es su techo');
+  }
+}
+
+console.log('— F9a · Reparar fortaleza: solo infinito/horda, precio compuesto de equipo —');
+{
+  const map = getMap('sendero');
+  const simCtx = makeSimContext(map, makePlacementContext(map));
+  // (a) endless: +1 vida, precio 500 → ×1.5 compuesto
+  {
+    const st = createGame('sendero', 'endless', 'normal', 404040, [{ id: 'p1', name: 'A', color: '#fff' }]);
+    st.wave = 5; st.waveState = 'active'; st.pendingWave = [];
+    st.spawnQueue = [{ type: 'goblin', delay: 2, pathIdx: 0 }]; // cola congelada (sin bono)
+    st.spawnCooldown = 999999;
+    st.lives = 20;
+    st.players[0].gold = 5000;
+    assert(repairCost(st) === REPAIR_COST_BASE, `precio inicial ${REPAIR_COST_BASE}`);
+    stepGame(st, simCtx, [{ playerId: 'p1', cmd: { kind: 'repair' } }]);
+    assert(st.lives === 21 && st.players[0].gold === 5000 - REPAIR_COST_BASE, 'repara +1 vida cobrando 500');
+    const second = Math.round(REPAIR_COST_BASE * REPAIR_COST_STEP);
+    assert(repairCost(st) === second, `la 2.ª reparación cuesta ${second} (×1.5 compuesto)`);
+    stepGame(st, simCtx, [{ playerId: 'p1', cmd: { kind: 'repair' } }]);
+    assert(st.lives === 22 && st.repairsBought === 2, 'la 2.ª compra también entra');
+    assert(buildSnap(st).repairCost === Math.round(REPAIR_COST_BASE * REPAIR_COST_STEP * REPAIR_COST_STEP), 'el snapshot expone el precio vivo');
+    // vidas al máximo → rechazo (no se puede "acumular" por encima del tope)
+    st.lives = st.maxLives;
+    st.players[0].gold = 99999;
+    const evs = stepGame(st, simCtx, [{ playerId: 'p1', cmd: { kind: 'repair' } }]);
+    assert(evs.some((e) => e.e === 'reject' && e.reason.includes('intacta')), 'con la fortaleza intacta se rechaza');
+  }
+  // (b) clásico: JAMÁS (los récords y la carrera cerrada de 36 se protegen)
+  {
+    const st = createGame('sendero', 'classic', 'normal', 404041, [{ id: 'p1', name: 'A', color: '#fff' }]);
+    st.wave = 5; st.waveState = 'active'; st.spawnQueue = []; st.pendingWave = [];
+    st.lives = 10;
+    st.players[0].gold = 99999;
+    const evs = stepGame(st, simCtx, [{ playerId: 'p1', cmd: { kind: 'repair' } }]);
+    assert(evs.some((e) => e.e === 'reject' && e.reason.includes('infinito')), 'en CLÁSICO reparar se rechaza');
+    assert(st.lives === 10 && st.repairsBought === 0, 'y no cambia nada');
+  }
+  // (c) horda: +1 de AFORO de saturación (el equivalente coherente de +1 vida)
+  {
+    const mkHorde = (repairs: number, enemies: number) => {
+      const st = createGame('sendero', 'horde', 'normal', 404042, [{ id: 'p1', name: 'A', color: '#fff' }]);
+      st.wave = 3; st.waveState = 'active'; st.spawnQueue = []; st.pendingWave = [];
+      st.repairsBought = repairs;
+      for (let i = 0; i < enemies; i++) st.enemies.push(mkEnemy('goblin', { id: 9000 + i, x: 5.5, y: 2.5, wpIdx: 1, speedMult: 0 }));
+      stepGame(st, simCtx, []);
+      return st;
+    };
+    const cap = HORDE_CAP.normal;
+    assert(mkHorde(0, cap).over !== null, `sin reparaciones, ${cap} enemigos = derrota por saturación`);
+    assert(mkHorde(1, cap).over === null, `con 1 reparación el aforo sube a ${cap + 1}: se sobrevive`);
+    assert(mkHorde(1, cap + 1).over !== null, 'y con cap+1 enemigos vuelve a caer (el aforo es exacto)');
+  }
+}
+
+console.log('— F9a · Estandarte del Vencedor: crítico determinista y CERTEZA —');
+{
+  const map = getMap('sendero');
+  const simCtx = makeSimContext(map, makePlacementContext(map));
+  // arquero + Vencedor adyacente vs dummy esquivo: medimos crits/misses/daño
+  function runCrit(seed: number, withBanner: boolean, dodge = 0): { crits: number; misses: number; dmg: number } {
+    const st = createGame('sendero', 'endless', 'normal', seed, [{ id: 'p1', name: 'A', color: '#fff' }]);
+    st.nextId = 9000; st.wave = 1; st.waveState = 'active'; st.spawnQueue = []; st.pendingWave = [];
+    const dummy = mkEnemy('brute', { id: 9001, hp: 1e9, maxHp: 1e9, speedMult: 0, x: 5.5, y: 2.5, wpIdx: 1, dodgeBonus: dodge });
+    st.enemies.push(dummy);
+    st.towers.push(mkTower('archer', { id: 9002, cx: 5, cy: 1, level: 3, spec: -1 }));
+    if (withBanner) st.towers.push(mkTower('banner', { id: 9003, cx: 6, cy: 1, level: 3, spec: 2 }));
+    let crits = 0;
+    let misses = 0;
+    for (let i = 0; i < TICK_RATE * 20; i++) {
+      for (const ev of stepGame(st, simCtx, [])) {
+        if (ev.e === 'crit') crits++;
+        if (ev.e === 'miss') misses++;
+      }
+    }
+    return { crits, misses, dmg: Math.round(1e9 - dummy.hp) };
+  }
+  const plain = runCrit(313131, false);
+  const buffed = runCrit(313131, true);
+  assert(plain.crits === 0, 'sin Vencedor no hay críticos');
+  assert(buffed.crits > 0, `bajo el Vencedor caen críticos (${buffed.crits} en 20s)`);
+  assert(buffed.dmg > plain.dmg, `el crítico ×${CRIT_MULT} sube el daño total (${plain.dmg} → ${buffed.dmg})`);
+  // determinismo: misma semilla → mismos críticos y mismo daño exacto
+  const again = runCrit(313131, true);
+  assert(again.crits === buffed.crits && again.dmg === buffed.dmg, 'el crítico es DETERMINISTA (rand(state) de la sim)');
+  // CERTEZA: contra un esquivo total (dodge 0.9 clamp), bajo el aura NUNCA falla
+  const dodgy = runCrit(313132, false, 0.9);
+  const sure = runCrit(313132, true, 0.9);
+  assert(dodgy.misses > 0, `sin Certeza el esquivo hace fallar (${dodgy.misses} misses)`);
+  assert(sure.misses === 0, 'con CERTEZA ningún proyectil del arquero falla');
+  // el Vencedor exige su coste gordo: oro 750 + madera propia 120
+  const spec = TOWERS.banner.specs[2];
+  assert(spec.key === 'victorybanner' && spec.cost === 750 && spec.woodCost === 120, 'la spec índice 2 del Estandarte es el Vencedor (750🪙 + 120🪵)');
+  // regla MAX: dos Vencedores no apilan (computeAuras toma el máximo)
+  {
+    const st = createGame('sendero', 'endless', 'normal', 313133, [{ id: 'p1', name: 'A', color: '#fff' }]);
+    st.towers.push(mkTower('archer', { id: 9010, cx: 5, cy: 1, level: 3 }));
+    st.towers.push(mkTower('banner', { id: 9011, cx: 6, cy: 1, level: 3, spec: 2 }));
+    st.towers.push(mkTower('banner', { id: 9012, cx: 4, cy: 1, level: 3, spec: 2 }));
+    const buff = computeAuras(st).get(9010);
+    assert(buff !== undefined && buff.critChance === 0.15, `dos Vencedores no apilan: crítico se queda en 15% (${buff?.critChance})`);
+  }
+}
+
+console.log('— F9a · Poder Vital: +20% con ≥25 vidas; se apaga al fugar; reparar lo reenciende —');
+{
+  const map = getMap('sendero');
+  const simCtx = makeSimContext(map, makePlacementContext(map));
+  function vitalShot(lives: number): number {
+    const st = createGame('sendero', 'endless', 'normal', 212121, [{ id: 'p1', name: 'A', color: '#fff' }]);
+    st.nextId = 9100; st.wave = 1; st.waveState = 'active'; st.spawnQueue = []; st.pendingWave = [];
+    st.lives = lives;
+    // a 2.4 celdas: el dardo (speed 17/15 ≈ 1.13/tick) tarda 3 ticks — se puede leer
+    st.enemies.push(mkEnemy('brute', { id: 9101, hp: 1e9, maxHp: 1e9, speedMult: 0, x: 5.5, y: 3.9, wpIdx: 1, dodgeBonus: -1 }));
+    st.towers.push(mkTower('archer', { id: 9102, cx: 5, cy: 1, level: 3, spec: 2 })); // Poder Vital ★
+    stepGame(st, simCtx, []);
+    return st.projectiles.find((p) => p.towerId === 9102)?.damage ?? 0;
+  }
+  const specDmg = (TOWERS.archer.specs[2] as { damage: number }).damage;
+  assert(vitalShot(30) === Math.round(specDmg * 1.2), `con 30 vidas el buff está ENCENDIDO (+20%: ${vitalShot(30)})`);
+  assert(vitalShot(VITAL_LIVES_MIN) === Math.round(specDmg * 1.2), `en el umbral exacto (${VITAL_LIVES_MIN}) sigue encendido`);
+  assert(vitalShot(VITAL_LIVES_MIN - 1) === specDmg, `bajo el umbral se APAGA (daño base ${specDmg})`);
+  // sinergia con Reparar (item 7): pasar de 24 → 25 vidas reenciende el buff
+  {
+    const st = createGame('sendero', 'endless', 'normal', 212122, [{ id: 'p1', name: 'A', color: '#fff' }]);
+    st.nextId = 9100; st.wave = 1; st.waveState = 'active'; st.spawnQueue = []; st.pendingWave = [];
+    st.lives = VITAL_LIVES_MIN - 1;
+    st.players[0].gold = 5000;
+    st.enemies.push(mkEnemy('brute', { id: 9103, hp: 1e9, maxHp: 1e9, speedMult: 0, x: 5.5, y: 3.9, wpIdx: 1, dodgeBonus: -1 }));
+    st.towers.push(mkTower('archer', { id: 9104, cx: 5, cy: 1, level: 3, spec: 2, cooldownLeft: 3 }));
+    stepGame(st, simCtx, [{ playerId: 'p1', cmd: { kind: 'repair' } }]);
+    for (let i = 0; i < 10 && st.projectiles.length === 0; i++) stepGame(st, simCtx, []);
+    const dmg = st.projectiles.find((p) => p.towerId === 9104)?.damage ?? 0;
+    assert(st.lives === VITAL_LIVES_MIN && dmg === Math.round(specDmg * 1.2), `REPARAR reenciende el Poder Vital (${dmg})`);
+  }
+}
+
+console.log('— F9a · Afijos de jefe: Adaptativo (resistencia por tipo) y Aura Gélida —');
+{
+  const map = getMap('sendero');
+  const simCtx = makeSimContext(map, makePlacementContext(map));
+  // (a) ADAPTATIVO: tras ADAPT_HITS impactos del mismo tipo, ese tipo pega ×0.5
+  {
+    const st = createGame('sendero', 'endless', 'normal', 111111, [{ id: 'p1', name: 'A', color: '#fff' }]);
+    st.nextId = 9200; st.wave = 1; st.waveState = 'active'; st.spawnQueue = []; st.pendingWave = [];
+    const boss = mkEnemy('golem', { id: 9201, hp: 1e9, maxHp: 1e9, speedMult: 0, x: 5.5, y: 2.5, wpIdx: 1, affixes: ['adaptive'] });
+    st.enemies.push(boss);
+    // francotirador (perforante instantáneo, sin armadura por pierce): daño limpio
+    st.towers.push(mkTower('sniper', { id: 9202, cx: 5, cy: 1, level: 3 }));
+    const deltas: number[] = [];
+    let sawAdapt = false;
+    let prevHp = boss.hp;
+    for (let i = 0; i < TICK_RATE * 120 && deltas.length < ADAPT_HITS + 3; i++) {
+      for (const ev of stepGame(st, simCtx, [])) if (ev.e === 'adapt') sawAdapt = true;
+      if (boss.hp !== prevHp) {
+        deltas.push(prevHp - boss.hp);
+        prevHp = boss.hp;
+      }
+    }
+    const full = deltas[0];
+    const adapted = deltas[ADAPT_HITS]; // el impacto ADAPT_HITS+1 (índice ADAPT_HITS) ya resiste
+    assert(deltas.slice(0, ADAPT_HITS).every((d) => d === full), `los primeros ${ADAPT_HITS} impactos entran enteros (${full})`);
+    assert(adapted < full && Math.abs(adapted - Math.round(full * (1 - ADAPT_RESIST))) <= 1, `del ${ADAPT_HITS + 1}.º en adelante resiste ×${1 - ADAPT_RESIST} (${full} → ${adapted})`);
+    assert(sawAdapt, 'la adaptación emite su evento (🧬) para el aviso visual');
+  }
+  // (b) AURA GÉLIDA: la torre dentro del aura recarga ×CHILL_AURA_SLOW más lento
+  {
+    function cdAfterShot(withChill: boolean): number {
+      const st = createGame('sendero', 'endless', 'normal', 111112, [{ id: 'p1', name: 'A', color: '#fff' }]);
+      st.nextId = 9300; st.wave = 1; st.waveState = 'active'; st.spawnQueue = []; st.pendingWave = [];
+      st.enemies.push(mkEnemy('golem', {
+        id: 9301, hp: 1e9, maxHp: 1e9, speedMult: 0, x: 5.5, y: 2.5, wpIdx: 1,
+        affixes: withChill ? ['chillaura'] : [],
+      }));
+      const t = mkTower('archer', { id: 9302, cx: 5, cy: 1, level: 3 });
+      st.towers.push(t);
+      stepGame(st, simCtx, []);
+      return t.cooldownLeft;
+    }
+    const baseCd = (statsOf({ type: 'archer', level: 3, spec: -1, fusion: -1 }) as { cooldown: number }).cooldown * TICK_RATE;
+    const normalCd = cdAfterShot(false);
+    const chilled = cdAfterShot(true);
+    assert(normalCd === Math.round(baseCd), `sin aura la recarga es la normal (${normalCd})`);
+    assert(chilled === Math.round(baseCd * CHILL_AURA_SLOW), `bajo el Aura Gélida la recarga sale ×${CHILL_AURA_SLOW} (${normalCd} → ${chilled})`);
+  }
+  // (c) los afijos de jefe son determinavailable desde generateWave (endless: SIEMPRE)
+  {
+    const r = { rng: 111113 };
+    const g10 = generateWave(r, 10, 1, 1, 'endless');
+    assert(g10.bossAffix !== null && BOSS_AFFIX_POOL.includes(g10.bossAffix), `en endless TODO jefe trae afijo (o10: ${g10.bossAffix})`);
+    // determinismo del afijo: misma semilla → mismo afijo
+    const r2 = { rng: 111113 };
+    assert(generateWave(r2, 10, 1, 1, 'endless').bossAffix === g10.bossAffix, 'el afijo del jefe es determinista');
+  }
+}
+
+console.log('— F9a · Monstruos nuevos: aura de celeridad y presencia en el pool —');
+{
+  const map = getMap('sendero');
+  const simCtx = makeSimContext(map, makePlacementContext(map));
+  // (a) Portaestandarte: acelera a los cercanos, NUNCA a sí mismo, sin apilar
+  {
+    const st = createGame('sendero', 'endless', 'normal', 141414, [{ id: 'p1', name: 'A', color: '#fff' }]);
+    st.wave = 1; st.waveState = 'active'; st.spawnQueue = []; st.pendingWave = [];
+    st.lives = 1e9; st.maxLives = 1e9;
+    const carrier = mkEnemy('bannerman', { id: 9401, x: 5.5, y: 2.34, wpIdx: 1 });
+    const buddy = mkEnemy('goblin', { id: 9402, x: 5.5, y: 2.5, wpIdx: 1 });
+    const loner = mkEnemy('goblin', { id: 9403, x: 20.5, y: 2.5, travelled: 15, wpIdx: 2 });
+    st.enemies.push(carrier, buddy, loner);
+    const lonerT0 = loner.travelled;
+    stepGame(st, simCtx, []);
+    // `travelled` acumula la distancia REAL recorrida (inmune a giros del camino)
+    const speedRatio = buddy.travelled / (loner.travelled - lonerT0); // mismo tipo, mismo tick
+    assert(Math.abs(speedRatio - ENEMIES.bannerman.hasteAura!.mult) < 0.05, `el goblin junto al Portaestandarte va ×${ENEMIES.bannerman.hasteAura!.mult} (${speedRatio.toFixed(2)})`);
+  }
+  // (b) los 7 nuevos aparecen por el pool del endless en oleadas altas
+  {
+    const r = { rng: 151515 };
+    const seen = new Set<string>();
+    for (let w = 20; w <= 60; w++) {
+      if (isChampionWave(w) || waveHasBoss(w)) continue;
+      for (const e of generateWave(r, w, 4, 1, 'endless').entries) seen.add(e.type);
+    }
+    const nuevos = ['gargoyle', 'harpy', 'stalker', 'runebrat', 'bannerman', 'knight', 'mammoth'].filter((t) => seen.has(t));
+    assert(nuevos.length >= 6, `los monstruos nuevos entran al generador del endless (${nuevos.join(',')})`);
+  }
 }
 
 console.log('— Determinismo: misma semilla + mismos comandos → mismo estado —');
