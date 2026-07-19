@@ -2,7 +2,7 @@ import './style.css';
 import { ATTACK_TYPE_INFO, ENEMIES, ENEMY_ORDER, FUSIONS, GAME_SPEEDS, START_LIVES, TOWERS, type GameEvent, type Snap } from '@td/shared';
 import { net, wsPathJoin } from './net.js';
 import { pushFrame, roomPrevToken, saveName, saveRoomToken, seedRoomPrevToken, startGameStore, store } from './store.js';
-import { addPing, addShake, initRenderer, isMinimapOn, resetRenderer, toggleMinimap, towerFired } from './renderer.js';
+import { activeTier, addPing, addShake, flashDanger, getQualityMode, initRenderer, isMinimapOn, resetRenderer, setQualityMode, toggleMinimap, towerFired, type QualityMode } from './renderer.js';
 import { initInput } from './input.js';
 import { initBestiary } from './bestiary.js';
 import { applySpectatorUI, buildTowerBar, hidePanel, initMarket, initScoreboard, initShop, onTick, toast, addChat, refreshPanel, syncSpeedButton, syncTowerBar, toggleSpectatorTowers } from './hud.js';
@@ -186,6 +186,9 @@ function processEvents(events: GameEvent[]): void {
         toast(`💔 ¡Se escapó un ${ENEMIES[ev.type].name}! Quedan ${ev.lives} vidas`);
         addShake(4);
         sfx.leak();
+        // F9c · radar: la puerta que fugó parpadea en rojo en el minimapa (clave
+        // con la cámara capada, donde esa puerta puede estar fuera de pantalla)
+        if (ev.pathIdx !== undefined) flashDanger(ev.pathIdx);
         break;
       case 'steal':
         toast(`🪙 ¡El Ladrón te robó ${ev.gold} de oro!`);
@@ -742,6 +745,7 @@ function wireHudButtons(): void {
     settingsBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
     if (open) {
       syncSliders();
+      syncQuality(); // refresca el escalón activo mostrado en Auto
       // «Continuar en otro dispositivo» (issue #6): solo jugadores reales, nunca
       // espectadores ni el reproductor de repeticiones (store.replay también
       // marca store.spectator=true, pero por claridad se comprueban ambos).
@@ -752,6 +756,36 @@ function wireHudButtons(): void {
   panel.addEventListener('click', (e) => e.stopPropagation());
   document.addEventListener('click', () => {
     if (!panel.hidden) closePanel();
+  });
+
+  // ---------- selector de calidad ✨ (Auto / Alta / Ligera) ----------
+  // Auto ajusta el escalón según los FPS (lo decide el renderer); Alta/Ligera lo
+  // fijan. En Auto mostramos discretamente el escalón activo junto a la etiqueta.
+  const qualityBox = $('set-quality');
+  const qualityActive = $('set-quality-active');
+  const qBtns = [...qualityBox.querySelectorAll<HTMLButtonElement>('button[data-quality]')];
+  const TIER_ES: Record<string, string> = { alta: 'Alta', media: 'Media', ligera: 'Ligera' };
+  const syncQuality = () => {
+    const mode = getQualityMode();
+    for (const b of qBtns) b.classList.toggle('active', b.dataset.quality === mode);
+    qualityActive.textContent = mode === 'auto' ? `· ${TIER_ES[activeTier()]}` : '';
+  };
+  syncQuality();
+  for (const b of qBtns) {
+    b.addEventListener('click', () => {
+      setQualityMode((b.dataset.quality as QualityMode) ?? 'auto');
+      syncQuality();
+    });
+  }
+  // el renderer emite td:quality al cambiar de escalón (auto) o de modo. Refrescamos
+  // la etiqueta y, la PRIMERA vez que baja SOLO por debajo de Alta, un toast discreto.
+  window.addEventListener('td:quality', (e) => {
+    syncQuality();
+    const detail = (e as CustomEvent<{ tier: string; reason: string }>).detail;
+    if (detail.reason === 'auto-drop' && detail.tier !== 'alta' && localStorage.getItem('td_lite_toast') !== '1') {
+      localStorage.setItem('td_lite_toast', '1');
+      toast('Modo ligero activado para mantener la fluidez', 'info');
+    }
   });
 
   // ---------- menú hamburguesa ☰ (móvil apaisado) ----------

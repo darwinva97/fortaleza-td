@@ -321,122 +321,221 @@ export const MAPS: MapDef[] = [
     ],
   },
   {
-    id: 'ochopuertas',
-    name: 'Las Ocho Puertas',
-    desc: 'Ocho huestes por ocho puertas convergen en la Ciudadela del noroeste. Cada color guarda su carril; todos suben la muralla oeste hasta el trono. Derrota compartida.',
-    gridW: 56,
-    gridH: 32,
+    id: 'granconcilio',
+    name: 'El Gran Concilio',
+    desc: 'Nueve huestes por nueve puertas descienden por niveles —columna central, bulevar y recta final— hasta el trono del sur. Cada quien guarda su puerta; con ocho manos una queda siempre sin dueño. Las vidas se pierden juntas.',
+    gridW: 52,
+    gridH: 60,
     theme: 'grass',
-    // Escala y estructura Green TD (§9 de GREENTD.md): OCHO carriles independientes
-    // y separados, cada uno con su spawn en el perímetro, que CONVERGEN a un trono
-    // «de fondo» en la esquina noroeste (la Ciudadela en (4,1)) subiendo por un
-    // TRONCO compartido en la muralla oeste (col 4). Es exactamente el patrón de
-    // Green TD: territorios propios que confluyen en una zona común antes del trono
-    // (allí las vidas se pierden juntas). Cuatro puertas del ESTE (peines rectos
-    // desde el borde derecho, filas 3/6/9/12) y cuatro del SUR (ganchos anidados
-    // desde el borde inferior) — nunca se cruzan entre sí (nido concéntrico).
-    // Longitudes equilibradas ±10% por construcción (verificado con pathLength:
-    // 53..62, media ~57): los peines del este acortan tronco a más alcance de rib;
-    // los ganchos del sur cambian rib por tronco a la inversa. La sim reparte los
-    // spawns entre rutas (i % nºrutas) y todos fugan al mismo trono compartido.
+    // Cámara CAPADA a ~1/4 del mapa: es un mapa XL «de fondo», no debe abarcarse de
+    // un vistazo ni con el zoom-out máximo (lo aplica la cámara del cliente).
+    viewCap: { w: 30, h: 26 },
+    // Estructura Green TD «retrato» (minimapa original): espejo bilateral perfecto y
+    // CONVERGENCIA PROGRESIVA por niveles — la clave de que sea defendible (el radial
+    // puro mataba al bot en la o3; los tramos compartidos jerárquicos dan puntos de
+    // defensa colectivos). NUEVE puertas:
+    //  · 2 ARRIBA a los lados (TL/TR): una vuelta rectangular y se funden en la
+    //    COLUMNA CENTRAL (col 25) en la fila 16.
+    //  · 1 ARRIBA-CENTRO (TC): baja casi recta por la columna central (la ruta más
+    //    corta de arriba; un diente breve la mete en el ±10%).
+    //  · 4 en la BANDA MEDIA (exterior+interior por flanco): ganchos que desembocan
+    //    en el gran BULEVAR horizontal (fila 38), que cruza el mapa de lado a lado.
+    //  · 2 ABAJO en las esquinas (BL/BR): suben con gancho hacia afuera (están cerca
+    //    del castillo → recorrido extra) y se unen a la RECTA FINAL (col 25, fila 50).
+    // La columna central toca el bulevar en (25,38); el bulevar converge al centro y
+    // baja por la recta final hasta el lazo pequeño (último dps) y el trono (25,57).
+    // Longitudes por puerta a ±6% (media 77.7; verificado por pathLength). Solo
+    // ángulos rectos, separación ≥2 entre tramos no relacionados, cero cruces
+    // incidentales y cero colisiones blocked↔camino. Con MAX_PLAYERS=8 una puerta
+    // queda SIEMPRE neutral (deseado). La sim reparte los spawns (i % 9) y todas las
+    // rutas fugan al mismo trono; el reclamo de puerta del lobby itera paths.length.
     paths: [
-      // ——— cuatro puertas del ESTE: peines rectos hacia la muralla oeste ———
-      // Este-1 (fila 3): rib largo (borde derecho) + tronco corto (2)
+      // TL · arriba-izquierda: vuelta rectangular y fusión a la columna central
       [
-        [55, 3],
-        [4, 3],
-        [4, 1],
+        [18, 0],
+        [18, 8],
+        [15, 8],
+        [15, 12],
+        [19, 12],
+        [19, 16],
+        [25, 16],
+        [25, 38],
+        [25, 53],
+        [30, 53],
+        [30, 56],
+        [25, 56],
+        [25, 57],
       ],
-      // Este-2 (fila 6)
+      // TC · arriba-centro: baja casi recta por el eje (la más corta de arriba)
       [
-        [55, 6],
-        [4, 6],
-        [4, 1],
+        [25, 0],
+        [25, 10],
+        [22, 10],
+        [22, 15],
+        [25, 15],
+        [25, 38],
+        [25, 53],
+        [30, 53],
+        [30, 56],
+        [25, 56],
+        [25, 57],
       ],
-      // Este-3 (fila 9)
+      // TR · arriba-derecha (espejo exacto de TL)
       [
-        [55, 9],
-        [4, 9],
-        [4, 1],
+        [33, 0],
+        [33, 8],
+        [36, 8],
+        [36, 12],
+        [32, 12],
+        [32, 16],
+        [26, 16],
+        [25, 16],
+        [25, 38],
+        [25, 53],
+        [30, 53],
+        [30, 56],
+        [25, 56],
+        [25, 57],
       ],
-      // Este-4 (fila 12)
+      // MLE · media-izquierda EXTERIOR: gancho que desemboca en el bulevar
       [
-        [55, 12],
-        [4, 12],
-        [4, 1],
+        [0, 22],
+        [16, 22],
+        [16, 27],
+        [11, 27],
+        [11, 33],
+        [16, 33],
+        [16, 38],
+        [25, 38],
+        [25, 53],
+        [30, 53],
+        [30, 56],
+        [25, 56],
+        [25, 57],
       ],
-      // ——— cuatro puertas del SUR: ganchos ANIDADOS (no se cruzan) ———
-      // Sur-1 (el más exterior: col 34, sube pronto a la fila 16)
+      // MLI · media-izquierda INTERIOR: quiebre corto + tramo largo de bulevar
       [
-        [34, 31],
-        [34, 16],
-        [4, 16],
-        [4, 1],
+        [0, 28],
+        [8, 28],
+        [8, 32],
+        [3, 32],
+        [3, 38],
+        [25, 38],
+        [25, 53],
+        [30, 53],
+        [30, 56],
+        [25, 56],
+        [25, 57],
       ],
-      // Sur-2 (col 32, fila 19)
+      // MRE · media-derecha exterior (espejo de MLE)
       [
-        [32, 31],
-        [32, 19],
-        [4, 19],
-        [4, 1],
+        [51, 22],
+        [35, 22],
+        [35, 27],
+        [40, 27],
+        [40, 33],
+        [35, 33],
+        [35, 38],
+        [25, 38],
+        [25, 53],
+        [30, 53],
+        [30, 56],
+        [25, 56],
+        [25, 57],
       ],
-      // Sur-3 (col 30, fila 22)
+      // MRI · media-derecha interior (espejo de MLI)
       [
-        [30, 31],
-        [30, 22],
-        [4, 22],
-        [4, 1],
+        [51, 28],
+        [43, 28],
+        [43, 32],
+        [48, 32],
+        [48, 38],
+        [25, 38],
+        [25, 53],
+        [30, 53],
+        [30, 56],
+        [25, 56],
+        [25, 57],
       ],
-      // Sur-4 (el más interior: col 28, fila 25)
+      // BL · abajo-izquierda: sube y gancha hacia afuera hasta la recta final
       [
-        [28, 31],
-        [28, 25],
-        [4, 25],
-        [4, 1],
+        [0, 59],
+        [0, 43],
+        [11, 43],
+        [11, 46],
+        [5, 46],
+        [5, 50],
+        [25, 50],
+        [25, 53],
+        [30, 53],
+        [30, 56],
+        [25, 56],
+        [25, 57],
+      ],
+      // BR · abajo-derecha (espejo de BL)
+      [
+        [51, 59],
+        [51, 43],
+        [40, 43],
+        [40, 46],
+        [46, 46],
+        [46, 50],
+        [25, 50],
+        [25, 53],
+        [30, 53],
+        [30, 56],
+        [25, 56],
+        [25, 57],
       ],
     ],
-    // murallas/decoración: separan los ocho territorios y adornan el mapa. NINGUNA
-    // pisa un carril (verificado por pathCells en tools/simtest). Filas de camino:
-    // 3/6/9/12 (este) y 16/19/22/25 (sur); tronco en col 4; verticales sur en cols
-    // 28/30/32/34. Todo lo demás es libre para construir o decorar.
+    // Arboledas de decoración en zonas muertas (simétricas; ninguna pisa un carril,
+    // verificado por pathCells): coronan el concilio, rellenan huecos entre brazos y
+    // flanquean el trono.
     blocked: [
-      // muros entre los peines del este (filas pares intermedias, cols altas)
-      [20, 4],
-      [38, 4],
-      [50, 5],
-      [14, 5],
-      [28, 7],
-      [44, 8],
-      [18, 8],
-      [52, 10],
-      [34, 10],
-      [10, 11],
-      [46, 11],
-      [24, 11],
-      // corona sobre la Ciudadela (fila 0-2, lejos del trono)
-      [20, 0],
-      [40, 0],
-      [30, 1],
-      [50, 1],
-      [46, 2],
-      // campos del sureste, abiertos (los ganchos sur no llegan más allá de col 34)
-      [44, 18],
-      [50, 20],
-      [40, 24],
-      [48, 27],
-      [42, 29],
-      [52, 31],
-      [38, 21],
-      // huecos entre ganchos del sur (cols bajas, filas impares intermedias)
-      [12, 20],
-      [20, 24],
-      [10, 28],
-      [16, 30],
-      [22, 18],
-      [8, 27],
-      // muralla oeste bajo el tronco (col 0-2, no pisa la col 4)
-      [1, 29],
-      [2, 30],
+      [2, 2],
+      [49, 2],
+      [7, 4],
+      [44, 4],
+      [12, 2],
+      [39, 2],
+      [3, 10],
+      [48, 10],
+      [21, 6],
+      [30, 6],
+      [22, 20],
+      [29, 20],
+      [10, 20],
+      [41, 20],
+      [2, 24],
+      [49, 24],
+      [20, 42],
+      [31, 42],
+      [13, 40],
+      [38, 40],
+      [2, 38],
+      [49, 38],
+      [9, 55],
+      [42, 55],
+      [15, 52],
+      [36, 52],
+      [19, 54],
+      [32, 54],
+      [12, 57],
+      [39, 57],
+      [6, 52],
+      [45, 52],
+      [24, 59],
+      [27, 59],
+      [20, 58],
+      [31, 58],
+      [28, 58],
+      [23, 58],
+      [33, 51],
+      [18, 51],
+      [21, 49],
+      [30, 49],
+      [17, 47],
+      [34, 47],
     ],
   },
   {

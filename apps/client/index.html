@@ -311,6 +311,17 @@
           <input id="set-music" type="range" min="0" max="100" step="1" />
           <span id="set-music-val" class="set-val">60%</span>
         </label>
+        <!-- calidad de gráficos: Auto ajusta el escalón según los FPS; Alta fija todo;
+             Ligera fija el modo bajo (sin blur, sin viñeta, DPR=1). En Auto, el texto
+             junto a la etiqueta muestra el escalón activo. Persistido por el renderer. -->
+        <div class="set-row set-quality-row">
+          <span>✨ Calidad <small id="set-quality-active" class="set-q-active"></small></span>
+          <div id="set-quality" class="set-quality" role="group" aria-label="Calidad de gráficos">
+            <button type="button" data-quality="auto">Auto</button>
+            <button type="button" data-quality="alta">Alta</button>
+            <button type="button" data-quality="ligera">Ligera</button>
+          </div>
+        </div>
         <!-- continuar en otro dispositivo (issue #6): copia un enlace con el
              código de sala + el token de reconexión. Solo jugadores (no
              espectadores/replay: main.ts lo oculta al abrir el panel). -->

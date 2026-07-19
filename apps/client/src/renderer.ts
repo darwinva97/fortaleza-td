@@ -185,6 +185,126 @@ let zoom = 1;
 let panX = 0;
 let panY = 0;
 const MAX_ZOOM = 3.2;
+// El techo de zoom debe garantizar un ACERCAMIENTO real (celdas de ~96px) sin
+// importar el tamaño del mapa: MAX_ZOOM es relativo al fit, y en mapas gigantes
+// (El Gran Concilio: fit ≈ 13px/celda) 3.2× seguía siendo lejano — en monitores
+// anchos el techo chocaba con el suelo del viewCap y el zoom quedaba CONGELADO
+// (reporte real: «quiero ver más de cerca»). En mapas chicos 96/baseScale < 3.2
+// y no cambia nada.
+const CLOSEUP_CELL_PX = 96;
+// F9c · zoom MÍNIMO/MÁXIMO efectivos del mapa actual (min 1 = puede verse
+// entero). En mapas con MapDef.viewCap (El Gran Concilio) el mínimo sube por
+// encima de 1: NO se permite ver el tablero completo — se juega navegando, como
+// en el Green TD original. Recalculados por frame en computeView (dependen del
+// viewport).
+let minZoomCur = 1;
+let maxZoomCur = MAX_ZOOM;
+
+// F9c · pulsos de PELIGRO en el minimapa: fugas recientes por ruta (pathIdx →
+// timestamp). Con la cámara capada el jugador no ve todo el mapa; esto es su
+// radar: la puerta que fuga parpadea en rojo aunque esté fuera de pantalla.
+const dangerFlashes = new Map<number, number>();
+const DANGER_FLASH_MS = 2600;
+export function flashDanger(pathIdx: number): void {
+  dangerFlashes.set(pathIdx, performance.now());
+}
+
+// ---------- calidad adaptativa (modo ligero autoadaptativo) ----------
+// Tres escalones. ALTA dibuja TODO. MEDIA recorta la decoración NO informativa
+// (partículas de ambiente del clima y las animaciones decorativas del decorado —
+// portal/estandarte del castillo — que pasan a estáticas). LIGERA, además, fuerza
+// DPR=1, quita la viñeta y apaga los backdrop-filter del HUD (el blur es de lo más
+// caro en GPUs viejas; el cristal cae a su fondo sólido semiopaco de fallback, ya
+// verificado como legible sin blur — ver style.css). Las partículas INFORMATIVAS
+// (impactos, críticos, oro) se conservan SIEMPRE.
+export type QualityMode = 'auto' | 'alta' | 'ligera';
+export type QualityTier = 'alta' | 'media' | 'ligera';
+const QUALITY_KEY = 'td_quality'; // prefijo del proyecto (como td_sprites, td_muted…)
+const TIER_NAME: QualityTier[] = ['alta', 'media', 'ligera'];
+
+function loadQualityMode(): QualityMode {
+  const v = localStorage.getItem(QUALITY_KEY);
+  return v === 'alta' || v === 'ligera' ? v : 'auto';
+}
+let qualityMode: QualityMode = loadQualityMode();
+// escalón activo cuando el modo es AUTO (0=alta, 1=media, 2=ligera)
+let autoStep = 0;
+// media móvil (EMA) del tiempo de frame en ms, para decidir subir/bajar de escalón
+let frameEMA = 16;
+let overSince = 0; // instante en que el frame EMPEZÓ a sostenerse sobre MS_DROP (0 = no)
+let underSince = 0; // idem por debajo de MS_RAISE
+const MS_DROP = 28; // si el frame se sostiene > esto ~HOLD_DROP, baja un escalón
+const MS_RAISE = 14; // si sobra holgura < esto ~HOLD_RAISE, sube (histéresis amplia)
+const HOLD_DROP = 3000;
+const HOLD_RAISE = 10000;
+let lastTierEmitted: QualityTier | null = null;
+
+function tierIndex(): number {
+  if (qualityMode === 'alta') return 0;
+  if (qualityMode === 'ligera') return 2;
+  return autoStep;
+}
+export function activeTier(): QualityTier {
+  return TIER_NAME[tierIndex()];
+}
+export function getQualityMode(): QualityMode {
+  return qualityMode;
+}
+export function setQualityMode(m: QualityMode): void {
+  qualityMode = m;
+  localStorage.setItem(QUALITY_KEY, m);
+  // al fijar manualmente reiniciamos los temporizadores de auto para que no rebote
+  overSince = 0;
+  underSince = 0;
+  applyTier('manual');
+}
+
+// DPR efectivo: en LIGERA forzamos 1 (rasterizar a la resolución nativa del CSS es
+// mucho más barato en GPUs viejas); en el resto hasta 2 (retina, sin pasarse).
+function currentDpr(): number {
+  return tierIndex() >= 2 ? 1 : Math.min(window.devicePixelRatio || 1, 2);
+}
+
+// Aplica los efectos de escalón que viven FUERA del bucle: la clase del <body> (que
+// el CSS usa para apagar el blur) y el aviso a la UI. Lo demás (saltarse ambiente/
+// viñeta, DPR) lo consultan los dibujantes cada frame vía tierIndex()/currentDpr().
+function applyTier(reason: 'auto-drop' | 'auto-raise' | 'manual'): void {
+  const tier = activeTier();
+  document.body.classList.toggle('q-lite', tier === 'ligera');
+  if (tier !== lastTierEmitted) {
+    lastTierEmitted = tier;
+    // evento desacoplado: main.ts refresca la etiqueta de Ajustes y, la primera vez
+    // que baja SOLO, muestra el toast «Modo ligero activado…».
+    window.dispatchEvent(new CustomEvent('td:quality', { detail: { mode: qualityMode, tier, reason } }));
+  }
+}
+
+// Ajusta el escalón AUTO según la media móvil del tiempo de frame.
+function updateAutoTier(rawMs: number, now: number): void {
+  // ignora picos enormes (cambio de pestaña/alt-tab) para no falsear la media
+  frameEMA += (Math.min(rawMs, 100) - frameEMA) * 0.1;
+  if (qualityMode !== 'auto') return;
+  if (frameEMA > MS_DROP && autoStep < 2) {
+    overSince = overSince || now;
+    underSince = 0;
+    if (now - overSince >= HOLD_DROP) {
+      autoStep++;
+      overSince = 0;
+      applyTier('auto-drop');
+    }
+  } else if (frameEMA < MS_RAISE && autoStep > 0) {
+    underSince = underSince || now;
+    overSince = 0;
+    if (now - underSince >= HOLD_RAISE) {
+      autoStep--;
+      underSince = 0;
+      applyTier('auto-raise');
+    }
+  } else {
+    overSince = 0;
+    underSince = 0;
+  }
+}
 
 let mapLayer: HTMLCanvasElement | null = null;
 let mapLayerKey = '';
@@ -256,7 +376,10 @@ export function zoomAt(px: number, py: number, factor: number): void {
   const worldX = (px - view.ox) / view.scale;
   const worldY = (py - view.oy) / view.scale;
   autoFrame = false; // el jugador toma el control: ya no reencuadramos solos
-  zoom = Math.min(MAX_ZOOM, Math.max(1, zoom * factor));
+  // el suelo del zoom es minZoomCur: en mapas con viewCap no se puede alejar
+  // hasta ver el tablero entero; el techo maxZoomCur garantiza acercamiento
+  // real (~96px/celda) también en mapas gigantes (F9c)
+  zoom = Math.min(maxZoomCur, Math.max(minZoomCur, zoom * factor));
   const s2 = baseScale * zoom;
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
@@ -347,11 +470,13 @@ export function resetRenderer(): void {
   shake = 0;
   ambient.length = 0;
   pings.length = 0;
+  dangerFlashes.clear();
   towerAnim.clear();
   projSeen.clear();
   projPrev.clear();
   orcCampsKey = ''; // los campamentos dependen del mapa y del nº de jugadores
   orcWoodSeen.clear();
+  enemyBodyCache.clear(); // atlas de cuerpos: se libera al cambiar de mapa/partida
 }
 
 export function addShake(mag: number): void {
@@ -534,6 +659,9 @@ export function getPlacementCtx(map: MapDef): PlacementContext {
 export function initRenderer(c: HTMLCanvasElement): void {
   canvas = c;
   g = canvas.getContext('2d')!;
+  applyTier('manual'); // fija la clase del <body> y emite el estado inicial de calidad
+  // gancho de medición para el QA: `window.__tdPerf()` en consola (ver benchEnemyDraw)
+  (window as unknown as { __tdPerf?: typeof benchEnemyDraw }).__tdPerf = benchEnemyDraw;
   requestAnimationFrame(loop);
 }
 
@@ -603,7 +731,7 @@ function lerpAngle(a: number, b: number, t: number): number {
 // El canvas nace con la pantalla de juego oculta (0×0), así que el tamaño se
 // comprueba en CADA frame: cubre la primera aparición, resize, rotación y DPR.
 function ensureCanvasSize(): boolean {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const dpr = currentDpr(); // en LIGERA cae a 1 (mitad de píxeles que rasterizar)
   const w = Math.round(canvas.clientWidth * dpr);
   const h = Math.round(canvas.clientHeight * dpr);
   if (w === 0 || h === 0) return false; // pantalla aún oculta
@@ -630,6 +758,20 @@ function computeView(map: MapDef): void {
   // el mapa completo y el resto del código (clamps, minimapa, buckets) no cambia.
   baseScale = Math.max(6, Math.min(availW / map.gridW, availH / map.gridH));
 
+  // F9c · viewCap: tope de celdas visibles por mapa. Espectadores y repeticiones
+  // quedan EXENTOS (están para mirar, no para jugar); y nunca por encima de
+  // MAX_ZOOM (en pantallas diminutas el cap cedería antes que romper el zoom).
+  const cap = map.viewCap;
+  maxZoomCur = Math.max(MAX_ZOOM, CLOSEUP_CELL_PX / baseScale);
+  minZoomCur = 1;
+  if (cap && !store.spectator && !store.replay) {
+    // el suelo cede ante el techo con un margen ×0.8: SIEMPRE debe quedar
+    // recorrido de zoom entre "lo más lejos permitido" y "de cerca"
+    minZoomCur = Math.min(maxZoomCur * 0.8, Math.max(1, w / (baseScale * cap.w), h / (baseScale * cap.h)));
+  }
+  if (zoom < minZoomCur) zoom = minZoomCur;
+  if (zoom > maxZoomCur) zoom = maxZoomCur;
+
   // Re-encuadre "cover": al arrancar/resetear (pendingFrame) o al cambiar el
   // TAMAÑO del viewport mientras la cámara está en modo automático. Si el jugador
   // ya movió la cámara (autoFrame=false) respetamos su zoom/pan y solo reclampamos.
@@ -639,9 +781,9 @@ function computeView(map: MapDef): void {
     // margen a cada lado (de ahí el +1 en la dimensión: gridN celdas de mapa +
     // 1 celda repartida como marco). El eje que sobra desborda y se recorta.
     const coverScale = Math.max(availW / (map.gridW + 1), availH / (map.gridH + 1));
-    // como zoom relativo al fit; clamp a [1, MAX_ZOOM] (1 = ya cabe entero;
-    // MAX_ZOOM = tope, aspectos extremos dejan bandas que rellena el decorado).
-    zoom = Math.min(MAX_ZOOM, Math.max(1, coverScale / baseScale));
+    // como zoom relativo al fit; clamp a [minZoomCur, maxZoomCur] (minZoom sube
+    // por encima de 1 en mapas con viewCap; en el resto es 1 = mapa entero).
+    zoom = Math.min(maxZoomCur, Math.max(minZoomCur, coverScale / baseScale));
     const c = pendingFrame ?? actionCenter(map);
     const s0 = baseScale * zoom;
     panX = (map.gridW * s0) / 2 - c.x * s0;
@@ -682,7 +824,7 @@ function decorAt(theme: Theme, r: number): Theme['decor'][number] {
 }
 
 function buildMapLayer(map: MapDef): void {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const dpr = currentDpr(); // en LIGERA cae a 1: media textura de mapa que rasterizar
   // la capa se construye en "cubetas" de zoom para mantenerla nítida sin
   // regenerarla en cada frame de un pellizco
   const bucket = zoom < 1.25 ? 1 : zoom < 1.75 ? 1.5 : zoom < 2.5 ? 2 : 3;
@@ -3061,6 +3203,153 @@ function muzzleFlash(dist: number, s: number, f: number): void {
 
 // ---------- enemigos ----------
 
+// ---------- precacheo del cuerpo de cada enemigo (drawEnemyArt) ----------
+// PORQUÉ: cada enemigo se dibujaba con 1-2 gradientes procedurales POR FRAME; con
+// ~95 enemigos en oleadas de enjambre eran ~150 gradientes/frame, brutal para GPUs
+// débiles. El CUERPO de un enemigo solo depende de (especie, radio, FASE de
+// animación): el color es fijo por especie, y el «bob» de caminar / aleteos /
+// pulsos / banderas son funciones de una fase (t·speed·6 + id·1.7, la MISMA que ya
+// alimenta el bob). Así que rasterizamos cada cuerpo a un canvas offscreen y lo
+// bliteamos con drawImage.
+//
+// Clave del atlas: `${especie}:${radioCuantizado}:${fase}`. Fase = cuantización de
+// esa fase de animación a ENEMY_CACHE_FRAMES pasos del ciclo; cada enemigo elige el
+// fotograma más cercano a SU fase (derivada de t+id), de modo que dos enemigos de
+// la misma especie NO marchan sincronizados y la animación avanza con el tiempo.
+// Los fotogramas se generan PEREZOSAMENTE (solo los que de verdad se ven) y se
+// liberan al cambiar de mapa (resetRenderer) o si el atlas crece demasiado.
+//
+// Qué queda FUERA del caché y por qué:
+//  · Los OVERLAYS por-individuo (barra de vida, corona 👑, iconos de afijo, escudo
+//    rúnico de inmunidad, hielo/veneno/shred, auras de élite/campeón, shimmer de
+//    sigilo) se siguen dibujando aparte ENCIMA, exactamente como hoy.
+//  · Los cuerpos MUY grandes (r > CACHE_MAX_R: jefes con hoja propia ya usan sprite,
+//    y campeones con mucho zoom) se dibujan directo: son POCOS (su gradiente se
+//    amortiza) y cachearlos costaría lienzos enormes.
+const ENEMY_CACHE_FRAMES = 12; // fases del ciclo de animación (equilibrio nitidez/RAM)
+const CACHE_MAX_R = 44; // px de radio: por encima, dibujo directo
+const CACHE_EXT = 2.5; // semi-lado del lienzo en múltiplos de r (alas/astas/banderas caben)
+const enemyBodyCache = new Map<string, HTMLCanvasElement>();
+let enemyCacheDpr = 0; // DPR con el que se rasterizó el atlas (cambia en LIGERA → se purga)
+
+// Rasteriza el cuerpo de `type` a la fase `frame` en un canvas offscreen. Reproduce
+// la fase reconstruyendo t/id sintéticos (id=0; t despeja la fase del bob) y
+// REDIRIGE temporalmente el contexto global `g` al offscreen: drawEnemyArt son 400
+// líneas de arte afinado a mano que dibujan sobre `g` en el origen; en vez de
+// duplicarlas o parametrizar todo el dibujante, hacemos un swap síncrono y lo
+// restauramos (aislado, el offscreen se descarta al terminar).
+function renderEnemyFrame(type: EnemyTypeId, color: string, rr: number, frame: number, dpr: number): HTMLCanvasElement {
+  const def = ENEMIES[type];
+  const half = CACHE_EXT * rr;
+  const cv = document.createElement('canvas');
+  cv.width = Math.max(1, Math.ceil(half * 2 * dpr));
+  cv.height = Math.max(1, Math.ceil(half * 2 * dpr));
+  const c = cv.getContext('2d')!;
+  c.setTransform(dpr, 0, 0, dpr, half * dpr, half * dpr); // origen = centro del lienzo
+  const theta = ((frame + 0.5) / ENEMY_CACHE_FRAMES) * Math.PI * 2; // fase central del bucket
+  const ts = theta / (def.speed * 6); // t·speed·6 = theta → reproduce el bob
+  const bob = Math.sin(theta);
+  const savedG = g;
+  g = c;
+  try {
+    drawEnemyArt(type, color, rr, ts, 0, bob, rr);
+  } finally {
+    g = savedG;
+  }
+  return cv;
+}
+
+// Devuelve el fotograma cacheado del cuerpo (generándolo perezosamente) y el radio
+// cuantizado con el que se rasterizó, para escalar el blit al radio EXACTO.
+function enemyBodyFrame(type: EnemyTypeId, color: string, r: number, t: number, id: number): { cv: HTMLCanvasElement; rr: number } {
+  const dpr = currentDpr();
+  if (dpr !== enemyCacheDpr) {
+    enemyBodyCache.clear();
+    enemyCacheDpr = dpr;
+  }
+  // presupuesto de RAM: si el atlas crece mucho (muchos buckets de zoom acumulados),
+  // se vacía y se reconstruye perezosamente.
+  if (enemyBodyCache.size > 480) enemyBodyCache.clear();
+  const rr = Math.min(CACHE_MAX_R, Math.max(4, Math.round(r / 2) * 2)); // buckets de 2px
+  const def = ENEMIES[type];
+  const theta = t * def.speed * 6 + id * 1.7; // = argumento del bob en drawEnemies
+  const norm = ((theta % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+  let frame = Math.floor((norm / (Math.PI * 2)) * ENEMY_CACHE_FRAMES);
+  if (frame >= ENEMY_CACHE_FRAMES) frame = ENEMY_CACHE_FRAMES - 1;
+  const key = `${type}:${rr}:${frame}`;
+  let cv = enemyBodyCache.get(key);
+  if (!cv) {
+    cv = renderEnemyFrame(type, color, rr, frame, dpr);
+    enemyBodyCache.set(key, cv);
+  }
+  return { cv, rr };
+}
+
+// Instrumentación de rendimiento (dev): compara el coste medio de dibujar el CUERPO
+// de un enemigo con el arte vectorial DIRECTO (antes) frente al BLIT cacheado
+// (después). El orquestador la ejecuta en el navegador con `window.__tdPerf()`
+// durante una partida. Usa un canvas scratch propio (no toca la pantalla) y no
+// necesita partida en curso; devuelve microsegundos/enemigo de cada ruta.
+export function benchEnemyDraw(iters = 2000): Record<string, number> {
+  const species: EnemyTypeId[] = ['goblin', 'runner', 'bat', 'armored', 'slime', 'ghost', 'knight', 'mammoth'];
+  const r = 16; // radio típico de enjambre
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const half = CACHE_EXT * r;
+  const scratch = document.createElement('canvas');
+  scratch.width = Math.ceil(half * 2 * dpr);
+  scratch.height = Math.ceil(half * 2 * dpr);
+  const sctx = scratch.getContext('2d')!;
+  const savedG = g;
+
+  // --- ruta VIEJA: drawEnemyArt directo al scratch, un cuerpo por iteración ---
+  g = sctx;
+  let vecMs = 0;
+  for (const type of species) {
+    const def = ENEMIES[type];
+    const t0 = performance.now();
+    for (let i = 0; i < iters; i++) {
+      sctx.setTransform(dpr, 0, 0, dpr, half * dpr, half * dpr);
+      sctx.clearRect(-half, -half, half * 2, half * 2);
+      const t = i * 0.016;
+      drawEnemyArt(type, def.color, r, t, i, Math.sin(t * def.speed * 6 + i * 1.7), r);
+    }
+    vecMs += performance.now() - t0;
+  }
+  g = savedG;
+
+  // --- ruta NUEVA: warm del atlas + blit (lo que hace drawEnemies) ---
+  enemyBodyCache.clear();
+  enemyCacheDpr = 0;
+  for (const type of species) {
+    for (let i = 0; i < 300; i++) enemyBodyFrame(type, ENEMIES[type].color, r, i * 0.016, i); // warm
+  }
+  let blitMs = 0;
+  for (const type of species) {
+    const def = ENEMIES[type];
+    const t0 = performance.now();
+    for (let i = 0; i < iters; i++) {
+      sctx.setTransform(dpr, 0, 0, dpr, half * dpr, half * dpr);
+      sctx.clearRect(-half, -half, half * 2, half * 2);
+      const t = i * 0.016;
+      const { cv } = enemyBodyFrame(type, def.color, r, t, i);
+      sctx.drawImage(cv, -half, -half, half * 2, half * 2);
+    }
+    blitMs += performance.now() - t0;
+  }
+  enemyBodyCache.clear();
+  enemyCacheDpr = 0;
+
+  const n = species.length * iters;
+  const out = {
+    perEnemyVectorUs: Math.round((vecMs / n) * 1000 * 10) / 10,
+    perEnemyCachedUs: Math.round((blitMs / n) * 1000 * 10) / 10,
+    speedup: Math.round((vecMs / blitMs) * 100) / 100,
+    samples: n,
+  };
+  console.log('[td perf] cuerpo de enemigo · vector directo vs blit cacheado', out);
+  return out;
+}
+
 function drawEnemies(interp: InterpResult, now: number): void {
   const s = view.scale;
   const t = now / 1000;
@@ -3134,6 +3423,13 @@ function drawEnemies(interp: InterpResult, now: number): void {
       const bh = r * 3.0;
       const bw = (bossSprite.naturalWidth / bossSprite.naturalHeight) * bh;
       g.drawImage(bossSprite, -bw / 2, r * 0.9 - bh, bw, bh);
+    } else if (r <= CACHE_MAX_R) {
+      // cuerpo cacheado: un solo drawImage en vez de recrear gradientes cada frame.
+      // El lienzo se rasterizó al radio-bucket `rr`; lo bliteamos escalado al radio
+      // EXACTO `r` para que el tamaño no salte al cruzar buckets durante el zoom.
+      const { cv } = enemyBodyFrame(type, def.color, r, t, e.id);
+      const half = CACHE_EXT * r;
+      g.drawImage(cv, -half, -half, half * 2, half * 2);
     } else {
       drawEnemyArt(type, def.color, r, t, e.id, bob, s);
     }
@@ -4690,6 +4986,28 @@ function drawMiniMap(gs: GameStore, now: number): void {
     }
   }
 
+  // F9c · pulsos de PELIGRO: la puerta por la que acaba de fugar un enemigo
+  // parpadea en rojo ~2.6s. Con la cámara capada (viewCap) es el radar que
+  // sustituye al "ver todo el mapa": miras el minimapa y sabes qué puerta arde.
+  for (const [idx, t0] of dangerFlashes) {
+    const age = now - t0;
+    if (age > DANGER_FLASH_MS) {
+      dangerFlashes.delete(idx);
+      continue;
+    }
+    const spawn = map.paths[idx]?.[0];
+    if (!spawn) continue;
+    const fade = 1 - age / DANGER_FLASH_MS;
+    const pulse = 0.5 + Math.sin(now / 110) * 0.5;
+    g.globalAlpha = fade * (0.55 + pulse * 0.45);
+    g.strokeStyle = '#ff5252';
+    g.lineWidth = 2;
+    g.beginPath();
+    g.arc(bx + (spawn[0] + 0.5) * s, by + (spawn[1] + 0.5) * s, Math.max(3, s * (0.8 + pulse * 0.7)), 0, Math.PI * 2);
+    g.stroke();
+  }
+  g.globalAlpha = 0.92;
+
   // pings cooperativos: también visibles en el minimapa, como anillo/punto
   // pulsante del color de quien los lanzó, mientras el ping viva.
   for (const p of pings) {
@@ -4766,8 +5084,10 @@ function drawVignette(): void {
 function loop(): void {
   requestAnimationFrame(loop);
   const now = performance.now();
-  const dt = Math.min(0.1, (now - lastTime) / 1000);
+  const rawMs = now - lastTime; // duración real del frame anterior (para la EMA de calidad)
+  const dt = Math.min(0.1, rawMs / 1000);
   lastTime = now;
+  updateAutoTier(rawMs, now); // decide subir/bajar de escalón en modo AUTO
 
   updateParticles(dt);
 
@@ -4775,10 +5095,15 @@ function loop(): void {
   if (store.screen !== 'game' || !gs) return;
   if (!ensureCanvasSize()) return;
 
+  const tier = tierIndex(); // 0=alta, 1=media, 2=ligera
+
   computeView(gs.map);
   buildMapLayer(gs.map);
   buildSurroundLayer(gs.map);
-  spawnAmbient(gs.map, dt);
+  // clima decorativo (nieve/brasas/hojas/arena/destellos): solo en ALTA. En MEDIA/
+  // LIGERA no aporta información y se descarta el que quedara en vuelo.
+  if (tier === 0) spawnAmbient(gs.map, dt);
+  else if (ambient.length) ambient.length = 0;
 
   g.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
   // fondo = tono "lejano" del decorado (no negro): así, más allá de la capa de
@@ -4815,7 +5140,9 @@ function loop(): void {
   g.lineWidth = 3;
   g.strokeRect(view.ox, view.oy, gs.map.gridW * view.scale, gs.map.gridH * view.scale);
 
-  drawMapAnimations(gs.map, now);
+  // animaciones decorativas del decorado (espiral del portal, bandera del castillo):
+  // solo en ALTA; en MEDIA/LIGERA quedan estáticas (las pinta la capa del mapa).
+  if (tier === 0) drawMapAnimations(gs.map, now);
   drawDoorBanners(gs, now);
   drawOrcs(gs, now);
 
@@ -4825,15 +5152,15 @@ function loop(): void {
     drawEnemies(interp, now);
     drawProjectiles(interp);
   }
-  drawParticles(g, toX, toY, view.scale);
-  drawAmbient(now);
+  drawParticles(g, toX, toY, view.scale); // partículas INFORMATIVAS: siempre
+  if (tier === 0) drawAmbient(now); // clima decorativo: solo ALTA
   drawPings(dt);
   drawPlacement(gs, now);
   drawPremoves(gs, now);
 
   g.restore();
 
-  drawVignette();
+  if (tier < 2) drawVignette(); // la viñeta (gradiente a pantalla completa) se corta en LIGERA
   drawMiniMap(gs, now);
   syncPlaceBubble(gs);
 }

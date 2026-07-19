@@ -251,6 +251,13 @@ export interface MapDef {
   paths: [number, number][][];
   blocked: [number, number][]; // celdas decorativas no construibles
   theme: 'grass' | 'desert' | 'snow' | 'volcano' | 'crystal';
+  // Tope opcional de celdas visibles al ALEJAR la cámara del todo (ancho×alto en
+  // celdas). PORQUÉ: en mapas XL «de fondo» (p. ej. El Gran Concilio, 52×60) el
+  // diseño pierde tensión si el jugador abarca el mapa entero de un vistazo; capar
+  // el zoom-out a ~un cuarto del mapa conserva la escala monumental y la niebla de
+  // guerra estratégica. Ausente = sin tope (se ve el mapa completo, como hasta
+  // ahora). Lo consume la cámara/renderer del cliente; la sim lo ignora.
+  viewCap?: { w: number; h: number };
 }
 
 // ---------- Estado de partida (runtime, vive en el servidor) ----------

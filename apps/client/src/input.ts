@@ -493,6 +493,19 @@ export function initInput(canvas: HTMLCanvasElement): void {
     const active = document.activeElement;
     if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) return;
 
+    // F9c · panear con las FLECHAS (escritorio): imprescindible en mapas con
+    // viewCap donde no se ve el tablero entero. Solo flechas — WASD ya son
+    // atajos de torre (W = barril). El auto-repeat del teclado da la continuidad.
+    const ARROW_PAN = 72;
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      panBy(
+        e.key === 'ArrowLeft' ? ARROW_PAN : e.key === 'ArrowRight' ? -ARROW_PAN : 0,
+        e.key === 'ArrowUp' ? ARROW_PAN : e.key === 'ArrowDown' ? -ARROW_PAN : 0,
+      );
+      return;
+    }
+
     if (e.key === 'Escape') {
       if (store.spectator) {
         store.suggestType = null;
