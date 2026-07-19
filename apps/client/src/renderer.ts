@@ -185,11 +185,20 @@ let zoom = 1;
 let panX = 0;
 let panY = 0;
 const MAX_ZOOM = 3.2;
-// F9c · zoom MÍNIMO efectivo del mapa actual (1 = puede verse entero). En mapas
-// con MapDef.viewCap (El Gran Concilio) sube por encima de 1: NO se permite ver
-// el tablero completo — se juega navegando con cámara y minimapa, como en el
-// Green TD original. Recalculado por frame en computeView (depende del viewport).
+// El techo de zoom debe garantizar un ACERCAMIENTO real (celdas de ~96px) sin
+// importar el tamaño del mapa: MAX_ZOOM es relativo al fit, y en mapas gigantes
+// (El Gran Concilio: fit ≈ 13px/celda) 3.2× seguía siendo lejano — en monitores
+// anchos el techo chocaba con el suelo del viewCap y el zoom quedaba CONGELADO
+// (reporte real: «quiero ver más de cerca»). En mapas chicos 96/baseScale < 3.2
+// y no cambia nada.
+const CLOSEUP_CELL_PX = 96;
+// F9c · zoom MÍNIMO/MÁXIMO efectivos del mapa actual (min 1 = puede verse
+// entero). En mapas con MapDef.viewCap (El Gran Concilio) el mínimo sube por
+// encima de 1: NO se permite ver el tablero completo — se juega navegando, como
+// en el Green TD original. Recalculados por frame en computeView (dependen del
+// viewport).
 let minZoomCur = 1;
+let maxZoomCur = MAX_ZOOM;
 
 // F9c · pulsos de PELIGRO en el minimapa: fugas recientes por ruta (pathIdx →
 // timestamp). Con la cámara capada el jugador no ve todo el mapa; esto es su
@@ -368,8 +377,9 @@ export function zoomAt(px: number, py: number, factor: number): void {
   const worldY = (py - view.oy) / view.scale;
   autoFrame = false; // el jugador toma el control: ya no reencuadramos solos
   // el suelo del zoom es minZoomCur: en mapas con viewCap no se puede alejar
-  // hasta ver el tablero entero (F9c)
-  zoom = Math.min(MAX_ZOOM, Math.max(minZoomCur, zoom * factor));
+  // hasta ver el tablero entero; el techo maxZoomCur garantiza acercamiento
+  // real (~96px/celda) también en mapas gigantes (F9c)
+  zoom = Math.min(maxZoomCur, Math.max(minZoomCur, zoom * factor));
   const s2 = baseScale * zoom;
   const w = canvas.clientWidth;
   const h = canvas.clientHeight;
@@ -752,11 +762,15 @@ function computeView(map: MapDef): void {
   // quedan EXENTOS (están para mirar, no para jugar); y nunca por encima de
   // MAX_ZOOM (en pantallas diminutas el cap cedería antes que romper el zoom).
   const cap = map.viewCap;
+  maxZoomCur = Math.max(MAX_ZOOM, CLOSEUP_CELL_PX / baseScale);
   minZoomCur = 1;
   if (cap && !store.spectator && !store.replay) {
-    minZoomCur = Math.min(MAX_ZOOM, Math.max(1, w / (baseScale * cap.w), h / (baseScale * cap.h)));
+    // el suelo cede ante el techo con un margen ×0.8: SIEMPRE debe quedar
+    // recorrido de zoom entre "lo más lejos permitido" y "de cerca"
+    minZoomCur = Math.min(maxZoomCur * 0.8, Math.max(1, w / (baseScale * cap.w), h / (baseScale * cap.h)));
   }
   if (zoom < minZoomCur) zoom = minZoomCur;
+  if (zoom > maxZoomCur) zoom = maxZoomCur;
 
   // Re-encuadre "cover": al arrancar/resetear (pendingFrame) o al cambiar el
   // TAMAÑO del viewport mientras la cámara está en modo automático. Si el jugador
@@ -767,9 +781,9 @@ function computeView(map: MapDef): void {
     // margen a cada lado (de ahí el +1 en la dimensión: gridN celdas de mapa +
     // 1 celda repartida como marco). El eje que sobra desborda y se recorta.
     const coverScale = Math.max(availW / (map.gridW + 1), availH / (map.gridH + 1));
-    // como zoom relativo al fit; clamp a [minZoomCur, MAX_ZOOM] (minZoom sube
+    // como zoom relativo al fit; clamp a [minZoomCur, maxZoomCur] (minZoom sube
     // por encima de 1 en mapas con viewCap; en el resto es 1 = mapa entero).
-    zoom = Math.min(MAX_ZOOM, Math.max(minZoomCur, coverScale / baseScale));
+    zoom = Math.min(maxZoomCur, Math.max(minZoomCur, coverScale / baseScale));
     const c = pendingFrame ?? actionCenter(map);
     const s0 = baseScale * zoom;
     panX = (map.gridW * s0) / 2 - c.x * s0;
