@@ -445,8 +445,23 @@ export function resetCamera(): void {
   panX = 0;
   panY = 0;
   autoFrame = true;
-  // computeView consume esto con el baseScale/dims frescos del próximo frame
-  pendingFrame = gs ? actionCenter(gs.map) : null;
+  // computeView consume esto con el baseScale/dims frescos del próximo frame.
+  // Si RECLAMASTE una puerta en el lobby, la cámara arranca EN TU PUERTA (tu
+  // territorio), no en el centro genérico — reclamar debe significar algo
+  // (reporte directo: «marqué todas las puertas y me sigue enviando al mismo
+  // lugar céntrico»). Un par de celdas camino adentro para ver también el
+  // primer tramo a defender.
+  let center = gs ? actionCenter(gs.map) : null;
+  if (gs) {
+    const myDoor = gs.init.players.find((p) => p.id === store.playerId)?.door;
+    const path = myDoor !== undefined ? gs.map.paths[myDoor] : undefined;
+    if (path) {
+      const [sc, sr] = path[0];
+      const inward = path[Math.min(2, path.length - 1)];
+      center = { x: (sc + inward[0]) / 2 + 0.5, y: (sr + inward[1]) / 2 + 0.5 };
+    }
+  }
+  pendingFrame = center;
 }
 
 // Centra la cámara sobre un punto del mundo (celdas). Ajusta panX/panY; el
@@ -1282,31 +1297,50 @@ function drawCastle(m: CanvasRenderingContext2D, x: number, y: number, s: number
 }
 
 // animaciones sobre la capa estática: espiral del portal y bandera del castillo
-function drawMapAnimations(map: MapDef, now: number): void {
+function drawMapAnimations(gs: GameStore, now: number): void {
+  const map = gs.map;
   const s = view.scale;
   const t = now / 1000;
-  for (const path of map.paths) {
+  // F9c · portal TINTADO del color de quien reclamó la puerta (pedido directo:
+  // el estandarte solo era demasiado tímido). Sin reclamo, morado de siempre.
+  const doorColor: (string | undefined)[] = new Array(map.paths.length).fill(undefined);
+  for (const p of gs.init.players) {
+    if (p.door !== undefined && p.door >= 0 && p.door < map.paths.length) doorColor[p.door] = p.color;
+  }
+  for (let pi = 0; pi < map.paths.length; pi++) {
+    const path = map.paths[pi];
     const [sc, sr] = path[0];
     const x = toX(sc + 0.5);
     const y = toY(sr + 0.5);
+    const own = doorColor[pi];
     g.save();
     g.translate(x, y);
     g.rotate(t * 1.8);
     for (let i = 0; i < 3; i++) {
-      g.strokeStyle = i % 2 ? 'rgba(179,136,255,0.8)' : 'rgba(124,77,255,0.8)';
+      g.strokeStyle = own
+        ? (i % 2 ? own : shade(own, 0.65))
+        : (i % 2 ? 'rgba(179,136,255,0.8)' : 'rgba(124,77,255,0.8)');
+      if (own) g.globalAlpha = 0.9;
       g.lineWidth = Math.max(1.5, s * 0.05);
       g.beginPath();
       g.arc(0, 0, s * (0.12 + i * 0.09), i * 2.1, i * 2.1 + Math.PI * 1.2);
       g.stroke();
     }
+    g.globalAlpha = 1;
     g.restore();
-    // pulso exterior
+    // pulso exterior (del color del dueño si la puerta está reclamada)
     const pulse = (t * 0.7 + sc * 0.3) % 1;
-    g.strokeStyle = `rgba(149,117,205,${0.5 * (1 - pulse)})`;
+    if (own) {
+      g.strokeStyle = own;
+      g.globalAlpha = 0.6 * (1 - pulse);
+    } else {
+      g.strokeStyle = `rgba(149,117,205,${0.5 * (1 - pulse)})`;
+    }
     g.lineWidth = 2;
     g.beginPath();
     g.arc(x, y, s * (0.42 + pulse * 0.25), 0, Math.PI * 2);
     g.stroke();
+    g.globalAlpha = 1;
   }
   const exits = new Set(map.paths.map((p) => p[p.length - 1].join(',')));
   for (const e of exits) {
@@ -5142,7 +5176,7 @@ function loop(): void {
 
   // animaciones decorativas del decorado (espiral del portal, bandera del castillo):
   // solo en ALTA; en MEDIA/LIGERA quedan estáticas (las pinta la capa del mapa).
-  if (tier === 0) drawMapAnimations(gs.map, now);
+  if (tier === 0) drawMapAnimations(gs, now);
   drawDoorBanners(gs, now);
   drawOrcs(gs, now);
 
