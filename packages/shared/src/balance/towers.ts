@@ -80,6 +80,32 @@ export const TOWERS: Record<TowerTypeId, TowerDef> = {
           growth: 8,
         },
       },
+      // F9a (v19) · 3.ª rama — AL FINAL (el índice de spec viaja en el snapshot).
+      // PORQUÉ el Arquero como huésped del Poder Vital (ELEMENTTD §9.3, Bloom
+      // *Lifepower*): es la torre más barata y más construida — la "torre del
+      // pueblo" — así el buff colectivo de "no fugar" lo siente TODO el equipo,
+      // no solo quien pagó un Estandarte (que además ya recibió la otra spec
+      // nueva). Sus números viven entre la Repetidora (dps) y el Arco Largo
+      // (pegada): con el buff encendido gana a ambos; apagado, pierde — el drama
+      // de la racha es su identidad completa.
+      {
+        key: 'vitalbow',
+        name: 'Poder Vital',
+        desc: 'Late con la fortaleza: +20% de daño mientras el equipo conserve ≥25 vidas. Si fugáis, se apaga.',
+        cost: 260,
+        damage: 34,
+        range: 3.4,
+        cooldown: 0.45,
+        projectileSpeed: 17,
+        vitalPower: 0.2,
+        rank2: {
+          cost: 380,
+          desc: 'Poder Vital II: más daño base; el latido (+20% con ≥25 vidas) se mantiene.',
+          damage: 58,
+          range: 3.7,
+          cooldown: 0.42,
+        },
+      },
     ],
   },
   cannon: {
@@ -558,6 +584,25 @@ export const TOWERS: Record<TowerTypeId, TowerDef> = {
           auraHaste: 0.6,
         },
       },
+      // F9a (v19) · 3.ª rama — AL FINAL. *Estandarte del Vencedor* (pedido directo):
+      // rama de ALTO NIVEL del Estandarte — coste gordo en oro Y madera (woodCost
+      // propio, 120 en vez de 45). Su aura da a las torres en rango +15% de prob.
+      // de CRÍTICO (golpe ×1.75, rand(state) por disparo — mecánica nueva de sim)
+      // y CERTEZA (sus ataques no pueden ser esquivados). Regla MAX como toda aura.
+      // Su esperanza de daño (~+11%) es MENOR que Guerra ★ (+60%): pagas por la
+      // Certeza (LA respuesta a Acechadores/Escurridizos) y por los picos de burst
+      // que disparan ejecuciones porcentuales. Sin Rango II: es la cima de su rama.
+      {
+        key: 'victorybanner',
+        name: 'Estandarte del Vencedor',
+        desc: 'Aura de gloria: +15% de prob. de golpe CRÍTICO (×1.75) y CERTEZA (nada esquiva sus ataques) para las torres en rango.',
+        cost: 750,
+        woodCost: 120,
+        damage: 0,
+        range: 3.2,
+        cooldown: 0,
+        auraCrit: 0.15,
+      },
     ],
   },
 
@@ -644,7 +689,11 @@ export const TOWERS: Record<TowerTypeId, TowerDef> = {
   boom: {
     id: 'boom',
     name: 'Barril explosivo',
-    desc: 'Se coloca SOBRE el camino. Detona UNA vez cuando lo pisan: ELIMINA a los enemigos terrestres del área (los jefes solo reciben daño). Funciona contra inmunes.',
+    // F9a (v19) · NERF doble: (a) el precio ESCALA ×1.3 por cada compra del EQUIPO
+    // (contador en GameState; el server valida el precio real); (b) ya no elimina
+    // todo: daño VERDADERO = 100% de la vida máxima con TOPE (limpia morralla;
+    // élites gordos/tanques/campeones sobreviven). Ver BOOM_HP_CAP_BASE.
+    desc: 'Se coloca SOBRE el camino. Detona UNA vez cuando lo pisan: borra a la morralla terrestre del área (con tope de daño — tanques, élites gordos y jefes SOBREVIVEN). Funciona contra inmunes. Cada compra del equipo encarece el siguiente.',
     color: '#ff7043',
     hotkey: 'w',
     targetsAir: false,

@@ -6,6 +6,7 @@ import {
   ENEMY_ORDER,
   fusionByIndex,
   INTERP_DELAY_MS,
+  statsOf,
   TICK_RATE,
   TOWERS,
   TOWER_ORDER,
@@ -92,7 +93,21 @@ export const ENEMY_ICONS: Record<EnemyTypeId, string> = {
   wraith: '👤',
   chimera: '🦁',
   behemoth: '🦏',
+  // F9a (v19)
+  gargoyle: '🗿',
+  harpy: '🦅',
+  stalker: '🥷',
+  runebrat: '🧝',
+  bannerman: '🚩',
+  knight: '🛡️',
+  mammoth: '🦣',
 };
+
+// F9a (v19) · los 7 monstruos nuevos ya tienen SU PROPIO dibujo vectorial en
+// drawEnemyArt (silueta y animación distintivas), así que ninguno usa alias. Se
+// deja la tabla (vacía) para que un futuro tipo pueda apoyarse en un pariente sin
+// tocar el dispatch: `type = ENEMY_ART_ALIAS[rawType] ?? rawType`.
+const ENEMY_ART_ALIAS: Partial<Record<EnemyTypeId, EnemyTypeId>> = {};
 
 // ---------- paletas por tema ----------
 
@@ -1175,6 +1190,53 @@ function drawMapAnimations(map: MapDef, now: number): void {
   }
 }
 
+// F9b · estandartes de puerta: en cada spawn RECLAMADO en el lobby (mapas
+// multi-ruta) ondea una bandera del COLOR del jugador. Puro dibujo del cliente
+// leyendo gs.init.players[i].door (viajó en el GameInit): cero sim, cero snapshot.
+// Es responsabilidad SOCIAL, no restringe dónde construye nadie.
+function drawDoorBanners(gs: GameStore, now: number): void {
+  const map = gs.map;
+  const s = view.scale;
+  const t = now / 1000;
+  for (const p of gs.init.players) {
+    const door = p.door;
+    if (door === undefined || door < 0 || door >= map.paths.length) continue;
+    const [sc, sr] = map.paths[door][0];
+    const x = toX(sc + 0.5);
+    const y = toY(sr + 0.5);
+    g.save();
+    g.translate(x, y);
+    // mástil de madera con remate dorado
+    const poleTop = -s * 0.98;
+    g.strokeStyle = '#3e2f26';
+    g.lineWidth = Math.max(1.5, s * 0.07);
+    g.lineCap = 'round';
+    g.beginPath();
+    g.moveTo(0, s * 0.16);
+    g.lineTo(0, poleTop);
+    g.stroke();
+    g.fillStyle = '#ffd54f';
+    g.beginPath();
+    g.arc(0, poleTop, Math.max(1.5, s * 0.075), 0, Math.PI * 2);
+    g.fill();
+    // gallardete ondeante (cola de golondrina) del color del dueño
+    const wave = Math.sin(t * 3 + sc * 0.7) * s * 0.06;
+    g.fillStyle = p.color;
+    g.beginPath();
+    g.moveTo(0, poleTop + s * 0.05);
+    g.lineTo(s * 0.44, poleTop + s * 0.14 + wave);
+    g.lineTo(s * 0.31, poleTop + s * 0.24);
+    g.lineTo(s * 0.44, poleTop + s * 0.34 + wave);
+    g.lineTo(0, poleTop + s * 0.42);
+    g.closePath();
+    g.fill();
+    g.strokeStyle = 'rgba(0,0,0,0.3)';
+    g.lineWidth = Math.max(1, s * 0.02);
+    g.stroke();
+    g.restore();
+  }
+}
+
 // ---------- partículas ambientales ----------
 
 function spawnAmbient(map: MapDef, dt: number): void {
@@ -1441,13 +1503,13 @@ function nearestEnemyAngle(interp: InterpResult | null, cx: number, cy: number, 
 export interface ClientAura {
   dmg: number;
   haste: number;
+  crit: number; // F9a · prob. de crítico del Estandarte del Vencedor (0 = sin aura)
 }
 
-// Stats de una torre del snapshot TENIENDO EN CUENTA su fusión (F4.3): si la
-// tupla trae índice de fusión, mandan los stats de la receta; espeja `statsOf`.
+// Stats de una torre del snapshot TENIENDO EN CUENTA su fusión (F4.3) Y su
+// veteranía (F9a, niveles 5→10): espeja `statsOf` de la sim usando la tupla.
 function tupleStats(tw: SnapTower): TowerLevelDef {
-  const f = fusionByIndex(tw[13] ?? -1);
-  return f ? f.stats : activeStats(TOWER_ORDER[tw[1]], tw[4], tw[9] ?? -1);
+  return statsOf({ type: TOWER_ORDER[tw[1]], level: tw[4], spec: tw[9] ?? -1, fusion: tw[13] ?? -1 });
 }
 
 export function computeBannerAuras(snap: Snap): Map<number, ClientAura> {
@@ -1456,7 +1518,8 @@ export function computeBannerAuras(snap: Snap): Map<number, ClientAura> {
     const blvl = tupleStats(banner);
     const dmg = blvl.auraDamage ?? 0;
     const haste = blvl.auraHaste ?? 0;
-    if (dmg <= 0 && haste <= 0) continue; // no es estandarte (o aura nula)
+    const crit = blvl.auraCrit ?? 0; // F9a · Estandarte del Vencedor
+    if (dmg <= 0 && haste <= 0 && crit <= 0) continue; // no es estandarte (o aura nula)
     const bx = banner[2] + 0.5;
     const by = banner[3] + 0.5;
     for (const tw of snap.towers) {
@@ -1464,18 +1527,19 @@ export function computeBannerAuras(snap: Snap): Map<number, ClientAura> {
       const twType = TOWER_ORDER[tw[1]];
       const tlvl = tupleStats(tw);
       // un estandarte puro no recibe auras; el Señor de la Guerra (alsoFires) sí
-      if ((tlvl.auraDamage !== undefined || tlvl.auraHaste !== undefined) && !tlvl.alsoFires) continue;
+      if ((tlvl.auraDamage !== undefined || tlvl.auraHaste !== undefined || tlvl.auraCrit !== undefined) && !tlvl.alsoFires) continue;
       if (tlvl.incomePerWave) continue; // la mina
       if (tlvl.auraBounty !== undefined) continue; // el Alquimista (no dispara)
       if (TOWERS[twType].onPathOnly) continue; // la Trampa de púas
       if (Math.hypot(bx - (tw[2] + 0.5), by - (tw[3] + 0.5)) > blvl.range) continue;
       let a = out.get(tw[0]);
       if (!a) {
-        a = { dmg: 0, haste: 0 };
+        a = { dmg: 0, haste: 0, crit: 0 };
         out.set(tw[0], a);
       }
       if (dmg > a.dmg) a.dmg = dmg;
       if (haste > a.haste) a.haste = haste;
+      if (crit > a.crit) a.crit = crit;
     }
   }
   return out;
@@ -1487,7 +1551,7 @@ export function countBannerTargets(snap: Snap, bannerId: number): number {
   const banner = snap.towers.find((t) => t[0] === bannerId);
   if (!banner) return 0;
   const blvl = tupleStats(banner);
-  if (blvl.auraDamage === undefined && blvl.auraHaste === undefined) return 0;
+  if (blvl.auraDamage === undefined && blvl.auraHaste === undefined && blvl.auraCrit === undefined) return 0;
   const bx = banner[2] + 0.5;
   const by = banner[3] + 0.5;
   let n = 0;
@@ -1495,7 +1559,7 @@ export function countBannerTargets(snap: Snap, bannerId: number): number {
     if (tw[0] === bannerId) continue;
     const twType = TOWER_ORDER[tw[1]];
     const tlvl = tupleStats(tw);
-    if ((tlvl.auraDamage !== undefined || tlvl.auraHaste !== undefined) && !tlvl.alsoFires) continue;
+    if ((tlvl.auraDamage !== undefined || tlvl.auraHaste !== undefined || tlvl.auraCrit !== undefined) && !tlvl.alsoFires) continue;
     if (tlvl.incomePerWave) continue;
     if (tlvl.auraBounty !== undefined) continue;
     if (TOWERS[twType].onPathOnly) continue;
@@ -3015,11 +3079,13 @@ function drawEnemies(interp: InterpResult, now: number): void {
     const isBoss = (e.flags & 4) !== 0;
     const isElite = (e.flags & 8) !== 0;
     const isImmune = (e.flags & 16) !== 0;
-    const affixes = isElite ? affixesFromMask(e.affix) : [];
+    const isChampion = (e.flags & 256) !== 0; // F9a · campeón 👑
+    // F9a · los JEFES con afijo también mandan máscara (icono sobre la cabeza)
+    const affixes = isElite || isBoss ? affixesFromMask(e.affix) : [];
     if (stealth) g.globalAlpha = 0.5;
     const x = toX(e.x);
     let y = toY(e.y);
-    const r = Math.max(4, def.radius * s * (isElite ? 1.3 : 1));
+    const r = Math.max(4, def.radius * s * (isElite ? 1.3 : isChampion ? 1.45 : 1));
     const bob = Math.sin(t * def.speed * 6 + e.id * 1.7);
 
     // sombra
@@ -3040,6 +3106,19 @@ function drawEnemies(interp: InterpResult, now: number): void {
       g.fillStyle = halo;
       g.beginPath();
       g.arc(x, y, r * (1.6 + pulse * 0.3), 0, Math.PI * 2);
+      g.fill();
+    }
+
+    // F9a · halo DORADO del campeón 👑 (mini-jefe de pelotón): más lento y regio
+    // que el de élite, para que "pocos y gordos" se lea desde lejos.
+    if (isChampion) {
+      const pulse = 0.5 + Math.sin(t * 2.2 + e.id) * 0.5;
+      const halo = g.createRadialGradient(x, y, r * 0.7, x, y, r * 2.2);
+      halo.addColorStop(0, 'rgba(255,213,79,0.4)');
+      halo.addColorStop(1, 'rgba(255,213,79,0)');
+      g.fillStyle = halo;
+      g.beginPath();
+      g.arc(x, y, r * (1.7 + pulse * 0.25), 0, Math.PI * 2);
       g.fill();
     }
 
@@ -3164,8 +3243,8 @@ function drawEnemies(interp: InterpResult, now: number): void {
       g.fill();
     }
 
-    // corona + iconos de afijos sobre los élites
-    if (isElite && s > 22) {
+    // corona + iconos de afijos sobre los élites (F9a: también jefes con afijo)
+    if ((isElite || (isBoss && affixes.length > 0)) && s > 22) {
       const iconY = y - r - (e.hpFrac < 1 ? s * 0.34 : s * 0.22);
       g.font = `${Math.max(9, s * 0.34)}px serif`;
       g.textAlign = 'center';
@@ -3174,6 +3253,15 @@ function drawEnemies(interp: InterpResult, now: number): void {
       affixes.forEach((a, i) => {
         g.fillText(AFFIXES[a].icon, x + (i - (total - 1) / 2) * s * 0.32, iconY);
       });
+    }
+
+    // F9a · corona 👑 sobre los CAMPEONES (su marca de arquetipo)
+    if (isChampion && s > 22) {
+      const iconY = y - r - (e.hpFrac < 1 ? s * 0.34 : s * 0.22);
+      g.font = `${Math.max(10, s * 0.38)}px serif`;
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      g.fillText('👑', x, iconY);
     }
 
     if (isBoss && (!boss || e.hpFrac > boss.hpFrac)) {
@@ -3187,7 +3275,10 @@ function drawEnemies(interp: InterpResult, now: number): void {
 }
 
 // Arte vectorial de cada enemigo, centrado en (0,0) con radio r.
-function drawEnemyArt(type: EnemyTypeId, color: string, r: number, t: number, id: number, bob: number, s: number): void {
+function drawEnemyArt(rawType: EnemyTypeId, color: string, r: number, t: number, id: number, bob: number, s: number): void {
+  // F9a · arte provisional: los tipos nuevos dibujan el cuerpo de su pariente
+  // visual (el color propio ya viene en `color`). Ver ENEMY_ART_ALIAS.
+  const type = ENEMY_ART_ALIAS[rawType] ?? rawType;
   const dark = shade(color, 0.55);
   const lite = shade(color, 1.35);
 
@@ -3803,6 +3894,444 @@ function drawEnemyArt(type: EnemyTypeId, color: string, r: number, t: number, id
       g.fill();
       break;
     }
+
+    // ---------- F9a (v19) · arte propio de los 7 monstruos nuevos ----------
+    case 'gargoyle': {
+      // Volador BLINDADO de PIEDRA: alas de murciélago RÍGIDAS y angulosas (líneas
+      // rectas, no las curvas blandas del murciélago) con aleteo LENTO y corto —
+      // "roca que planea", no bicho blandito. Cuerpo pétreo facetado y encorvado.
+      const flap = Math.sin(t * 6 + id); // el murciélago va a t*16: éste es pesado
+      const wing = 0.14 + Math.max(0, flap) * 0.34; // sube poco y cae seco
+      g.strokeStyle = dark;
+      g.lineWidth = Math.max(1, r * 0.08);
+      for (const side of [-1, 1]) {
+        g.save();
+        g.scale(side, 1);
+        g.rotate(-wing);
+        g.fillStyle = shade(color, 0.7);
+        // membrana entre "dedos" rectos: todo lineTo (angular = pétreo)
+        g.beginPath();
+        g.moveTo(r * 0.35, -r * 0.1);
+        g.lineTo(r * 1.1, -r * 0.7);
+        g.lineTo(r * 1.05, -r * 0.15);
+        g.lineTo(r * 1.7, -r * 0.3);
+        g.lineTo(r * 1.35, r * 0.25);
+        g.lineTo(r * 1.5, r * 0.6);
+        g.lineTo(r * 0.8, r * 0.35);
+        g.lineTo(r * 0.35, r * 0.4);
+        g.closePath();
+        g.fill();
+        g.stroke();
+        g.restore();
+      }
+      // cuerpo anguloso (heptágono facetado), NO un círculo
+      const gbg = g.createRadialGradient(-r * 0.35, -r * 0.4, r * 0.2, 0, 0, r * 1.1);
+      gbg.addColorStop(0, lite);
+      gbg.addColorStop(1, shade(color, 0.8));
+      g.fillStyle = gbg;
+      g.strokeStyle = dark;
+      g.lineWidth = Math.max(1.2, r * 0.12);
+      g.beginPath();
+      const gpts: [number, number][] = [
+        [-0.7, 0.7], [-0.85, -0.15], [-0.4, -0.8], [0.4, -0.8], [0.85, -0.15], [0.7, 0.7], [0, 0.98],
+      ];
+      g.moveTo(gpts[0][0] * r, gpts[0][1] * r);
+      for (const [px, py] of gpts.slice(1)) g.lineTo(px * r, py * r);
+      g.closePath();
+      g.fill();
+      g.stroke();
+      // faceta de luz (arista de piedra)
+      g.fillStyle = 'rgba(255,255,255,0.13)';
+      g.beginPath();
+      g.moveTo(-r * 0.4, -r * 0.8);
+      g.lineTo(0, -r * 0.3);
+      g.lineTo(-r * 0.7, -r * 0.15);
+      g.closePath();
+      g.fill();
+      // cuernos cortos
+      g.fillStyle = shade(color, 0.55);
+      for (const side of [-1, 1]) {
+        g.beginPath();
+        g.moveTo(side * r * 0.34, -r * 0.7);
+        g.lineTo(side * r * 0.62, -r * 1.15);
+        g.lineTo(side * r * 0.16, -r * 0.76);
+        g.closePath();
+        g.fill();
+      }
+      // ojos tallados con brillo ámbar tenue
+      g.fillStyle = 'rgba(255,214,120,0.9)';
+      g.beginPath();
+      g.arc(-r * 0.3, -r * 0.26, r * 0.11, 0, Math.PI * 2);
+      g.arc(r * 0.3, -r * 0.26, r * 0.11, 0, Math.PI * 2);
+      g.fill();
+      break;
+    }
+    case 'harpy': {
+      // El chamán del CIELO: alas EMPLUMADAS cálidas de aleteo FLUIDO + penacho, y
+      // destellos de cura (✚ verdes que suben) — su healAura hecha luz.
+      const flap = Math.sin(t * 7 + id);
+      for (const side of [-1, 1]) {
+        g.save();
+        g.scale(side, 1);
+        g.rotate(-0.12 - Math.max(0, flap) * 0.4);
+        for (let f = 0; f < 4; f++) {
+          const fr = 1.0 + f * 0.26;
+          g.fillStyle = shade(color, 0.92 - f * 0.12);
+          g.strokeStyle = dark;
+          g.lineWidth = Math.max(1, r * 0.05);
+          g.beginPath();
+          g.moveTo(r * 0.35, -r * 0.05 + f * r * 0.12);
+          g.quadraticCurveTo(r * fr * 1.1, -r * (0.15 + f * 0.12), r * fr * 1.5, r * 0.14 + f * r * 0.14);
+          g.quadraticCurveTo(r * fr * 0.9, r * 0.2 + f * r * 0.1, r * 0.35, r * 0.22 + f * r * 0.08);
+          g.closePath();
+          g.fill();
+          g.stroke();
+        }
+        g.restore();
+      }
+      bodyCircle(r * 0.85);
+      // penacho de plumas
+      g.fillStyle = shade(color, 0.75);
+      for (let i = -1; i <= 1; i++) {
+        g.beginPath();
+        g.moveTo(i * r * 0.18, -r * 0.6);
+        g.lineTo(i * r * 0.3, -r * 1.05);
+        g.lineTo(i * r * 0.36, -r * 0.55);
+        g.closePath();
+        g.fill();
+      }
+      eyes(r * 0.28, -r * 0.14, Math.max(1, r * 0.12));
+      // pico
+      g.fillStyle = '#ffb300';
+      g.beginPath();
+      g.moveTo(-r * 0.1, r * 0.02);
+      g.lineTo(r * 0.1, r * 0.02);
+      g.lineTo(0, r * 0.28);
+      g.closePath();
+      g.fill();
+      // destellos de cura ✚ que ascienden (pulso desincronizado por id)
+      const hph = (t * 0.8 + id * 0.5) % 1;
+      g.strokeStyle = `rgba(129,230,150,${0.9 - hph * 0.9})`;
+      g.lineWidth = Math.max(1.2, r * 0.1);
+      const hy = -r * 0.2 - hph * r * 1.3;
+      for (const hx of [-r * 0.55, r * 0.55]) {
+        g.beginPath();
+        g.moveTo(hx - r * 0.13, hy);
+        g.lineTo(hx + r * 0.13, hy);
+        g.moveTo(hx, hy - r * 0.13);
+        g.lineTo(hx, hy + r * 0.13);
+        g.stroke();
+      }
+      break;
+    }
+    case 'stalker': {
+      // Evasor terrestre de CARNE (no espectro): esbelto y embozado, con paso furtivo.
+      // Una estela desplazada MUY tenue insinúa su esquiva sin volverlo etéreo (es
+      // opaco, tiene piernas y máscara — lo contrario del fantasma vaporoso).
+      const sway = Math.sin(t * 5 + id);
+      // estela de esquiva (silueta desplazada casi transparente)
+      g.save();
+      g.globalAlpha = 0.16;
+      g.translate(-sway * r * 0.4, 0);
+      g.fillStyle = color;
+      g.beginPath();
+      g.moveTo(0, -r * 1.15);
+      g.lineTo(r * 0.6, r * 0.95);
+      g.lineTo(-r * 0.6, r * 0.95);
+      g.closePath();
+      g.fill();
+      g.restore();
+      // cuerpo esbelto encapuchado, inclinado al acecho
+      g.save();
+      g.rotate(sway * 0.05);
+      const sgr = g.createLinearGradient(-r * 0.6, -r, r * 0.6, r);
+      sgr.addColorStop(0, lite);
+      sgr.addColorStop(1, dark);
+      g.fillStyle = sgr;
+      g.strokeStyle = dark;
+      g.lineWidth = Math.max(1.2, r * 0.1);
+      g.beginPath();
+      g.moveTo(0, -r * 1.22); // punta de la capucha
+      g.quadraticCurveTo(r * 0.55, -r * 0.7, r * 0.5, r * 0.2);
+      g.lineTo(r * 0.34, r * 1.0); // faldón estrecho
+      g.lineTo(-r * 0.34, r * 1.0);
+      g.quadraticCurveTo(-r * 0.55, -r * 0.7, 0, -r * 1.22);
+      g.closePath();
+      g.fill();
+      g.stroke();
+      // banda del embozo
+      g.fillStyle = dark;
+      roundRect(g, -r * 0.48, -r * 0.42, r * 0.96, r * 0.26, r * 0.1);
+      g.fill();
+      // ojos afilados brillantes en la sombra
+      g.fillStyle = '#b0f0ff';
+      for (const side of [-1, 1]) {
+        g.beginPath();
+        g.moveTo(side * r * 0.12, -r * 0.3);
+        g.lineTo(side * r * 0.34, -r * 0.24);
+        g.lineTo(side * r * 0.12, -r * 0.18);
+        g.closePath();
+        g.fill();
+      }
+      // pies al paso furtivo (zancada alternada)
+      g.strokeStyle = dark;
+      g.lineWidth = Math.max(1.4, r * 0.14);
+      g.beginPath();
+      g.moveTo(-r * 0.15, r * 0.95);
+      g.lineTo(-r * 0.15 + sway * r * 0.32, r * 1.2);
+      g.moveTo(r * 0.15, r * 0.95);
+      g.lineTo(r * 0.15 - sway * r * 0.32, r * 1.2);
+      g.stroke();
+      g.restore();
+      break;
+    }
+    case 'runebrat': {
+      // Morralla celeste inmune a magia: duendecillo con RUNAS grabadas que laten.
+      // (El overlay de inmunidad ya le pone su escudo runado exterior; esto es su
+      // identidad de especie: cuerpo pequeño de duende + glifos brillantes propios.)
+      g.fillStyle = color;
+      g.strokeStyle = dark;
+      g.lineWidth = Math.max(1, r * 0.09);
+      for (const side of [-1, 1]) {
+        g.beginPath();
+        g.moveTo(side * r * 0.45, -r * 0.25);
+        g.lineTo(side * r * 1.2, -r * 0.78 + bob * r * 0.06);
+        g.lineTo(side * r * 0.65, r * 0.05);
+        g.closePath();
+        g.fill();
+        g.stroke();
+      }
+      bodyCircle(r * 0.85);
+      eyes(r * 0.28, -r * 0.12, Math.max(1, r * 0.12));
+      // runas que laten (frente + torso)
+      const rune = 0.55 + Math.sin(t * 3 + id) * 0.45;
+      g.strokeStyle = `rgba(185,246,255,${rune})`;
+      g.lineWidth = Math.max(1, r * 0.09);
+      g.beginPath();
+      // glifo frente (asterisco rúnico)
+      g.moveTo(0, -r * 0.44);
+      g.lineTo(0, -r * 0.16);
+      g.moveTo(-r * 0.14, -r * 0.42);
+      g.lineTo(r * 0.14, -r * 0.2);
+      g.moveTo(r * 0.14, -r * 0.42);
+      g.lineTo(-r * 0.14, -r * 0.2);
+      // glifo torso (cruz corta)
+      g.moveTo(-r * 0.2, r * 0.34);
+      g.lineTo(r * 0.2, r * 0.34);
+      g.moveTo(0, r * 0.18);
+      g.lineTo(0, r * 0.5);
+      g.stroke();
+      break;
+    }
+    case 'bannerman': {
+      // Portaestandarte: su SILUETA es la BANDERA. Cuerpo humanoide que porta un asta
+      // alta con un pendón que ONDEA (la ola viaja por la tela, amplitud creciente
+      // hacia el extremo libre). Un pulso cálido en la base insinúa su aura de celeridad.
+      const ap = (t * 1.1 + id * 0.4) % 1;
+      g.strokeStyle = `rgba(255,138,101,${0.45 * (1 - ap)})`;
+      g.lineWidth = Math.max(1, r * 0.1);
+      g.beginPath();
+      g.arc(0, r * 0.4, r * (0.9 + ap * 0.9), 0, Math.PI * 2);
+      g.stroke();
+      bodyCircle(r * 0.8);
+      eyes(r * 0.26, -r * 0.08, Math.max(1, r * 0.11), true);
+      // asta + remate
+      const poleX = r * 0.5;
+      const flagTop = -r * 1.45;
+      const flagH = r * 0.95;
+      const flagW = r * 1.5;
+      g.strokeStyle = '#6d4c41';
+      g.lineWidth = Math.max(1.5, r * 0.12);
+      g.beginPath();
+      g.moveTo(poleX, r * 0.9);
+      g.lineTo(poleX, flagTop - r * 0.1);
+      g.stroke();
+      g.fillStyle = '#ffca28';
+      g.beginPath();
+      g.arc(poleX, flagTop - r * 0.15, r * 0.12, 0, Math.PI * 2);
+      g.fill();
+      // pendón ondeante (swallowtail): onda viajera con amplitud ∝ distancia al asta
+      g.fillStyle = color;
+      g.strokeStyle = dark;
+      g.lineWidth = Math.max(1, r * 0.06);
+      const seg = 6;
+      g.beginPath();
+      g.moveTo(poleX, flagTop);
+      for (let i = 0; i <= seg; i++) {
+        const tx = i / seg;
+        g.lineTo(poleX + tx * flagW, flagTop + Math.sin(t * 6 + id + tx * 4) * r * 0.14 * tx);
+      }
+      g.lineTo(poleX + flagW - r * 0.28, flagTop + flagH * 0.5); // muesca del pendón
+      for (let i = seg; i >= 0; i--) {
+        const tx = i / seg;
+        g.lineTo(poleX + tx * flagW, flagTop + flagH + Math.sin(t * 6 + id + tx * 4) * r * 0.14 * tx);
+      }
+      g.closePath();
+      g.fill();
+      g.stroke();
+      // emblema
+      g.fillStyle = 'rgba(255,255,255,0.5)';
+      g.beginPath();
+      g.arc(poleX + flagW * 0.42, flagTop + flagH * 0.5, r * 0.2, 0, Math.PI * 2);
+      g.fill();
+      break;
+    }
+    case 'knight': {
+      // Caballero corrupto: armadura completa morada/negra con grietas de corrupción
+      // que laten, yelmo con cresta y visor, hombreras. Marcha MARCIAL (piernas al
+      // compás del bob) — distinto del Blindado (cuerpo redondo + casco simple).
+      const march = bob;
+      g.strokeStyle = shade(color, 0.45);
+      g.lineWidth = Math.max(1.6, r * 0.18);
+      g.beginPath();
+      g.moveTo(-r * 0.3, r * 0.55);
+      g.lineTo(-r * 0.3 + march * r * 0.28, r * 1.15);
+      g.moveTo(r * 0.3, r * 0.55);
+      g.lineTo(r * 0.3 - march * r * 0.28, r * 1.15);
+      g.stroke();
+      // torso acorazado
+      const kgr = g.createLinearGradient(-r * 0.7, -r * 0.7, r * 0.7, r * 0.7);
+      kgr.addColorStop(0, lite);
+      kgr.addColorStop(0.5, color);
+      kgr.addColorStop(1, shade(color, 0.5));
+      g.fillStyle = kgr;
+      g.strokeStyle = dark;
+      g.lineWidth = Math.max(1.4, r * 0.12);
+      roundRect(g, -r * 0.75, -r * 0.5, r * 1.5, r * 1.15, r * 0.28);
+      g.fill();
+      g.stroke();
+      // hombreras
+      g.fillStyle = shade(color, 0.7);
+      for (const side of [-1, 1]) {
+        g.beginPath();
+        g.arc(side * r * 0.78, -r * 0.3, r * 0.34, 0, Math.PI * 2);
+        g.fill();
+      }
+      // grietas de corrupción
+      const corr = 0.5 + Math.sin(t * 4 + id) * 0.5;
+      g.strokeStyle = `rgba(209,140,255,${0.5 + corr * 0.5})`;
+      g.lineWidth = Math.max(1, r * 0.06);
+      g.beginPath();
+      g.moveTo(-r * 0.3, -r * 0.3);
+      g.lineTo(-r * 0.1, r * 0.1);
+      g.lineTo(-r * 0.26, r * 0.42);
+      g.moveTo(r * 0.3, -r * 0.2);
+      g.lineTo(r * 0.14, r * 0.22);
+      g.stroke();
+      // yelmo
+      g.fillStyle = shade(color, 0.75);
+      g.strokeStyle = dark;
+      g.lineWidth = Math.max(1, r * 0.1);
+      g.beginPath();
+      g.arc(0, -r * 0.55, r * 0.5, 0, Math.PI * 2);
+      g.fill();
+      g.stroke();
+      // cresta
+      g.fillStyle = '#d18cff';
+      g.beginPath();
+      g.moveTo(-r * 0.05, -r * 1.05);
+      g.quadraticCurveTo(r * 0.28, -r * 0.95, r * 0.06, -r * 0.6);
+      g.lineTo(-r * 0.12, -r * 0.72);
+      g.closePath();
+      g.fill();
+      // visor + ojos de corrupción
+      g.fillStyle = '#10141c';
+      roundRect(g, -r * 0.38, -r * 0.62, r * 0.76, r * 0.2, r * 0.06);
+      g.fill();
+      g.fillStyle = `rgba(209,140,255,${0.6 + corr * 0.4})`;
+      g.beginPath();
+      g.arc(-r * 0.18, -r * 0.52, r * 0.08, 0, Math.PI * 2);
+      g.arc(r * 0.18, -r * 0.52, r * 0.08, 0, Math.PI * 2);
+      g.fill();
+      break;
+    }
+    case 'mammoth': {
+      // Colosal terrestre no-jefe: el "muro que camina". Masa peluda, arreos de
+      // guerra con remaches, orejas, colmillos curvos y trompa. Pisada PESADA: el
+      // cuerpo se hunde en la fase de apoyo (dip) y levanta polvo en la pisada.
+      const dip = Math.max(0, bob) * r * 0.12;
+      g.save();
+      g.translate(0, dip);
+      // polvo de la pisada
+      if (bob > 0.8) {
+        g.fillStyle = 'rgba(210,190,160,0.3)';
+        for (const side of [-1, 1]) {
+          g.beginPath();
+          g.arc(side * r * 0.75, r * 1.15, r * 0.22 * (bob - 0.75) * 4, 0, Math.PI * 2);
+          g.fill();
+        }
+      }
+      // patas gruesas
+      g.fillStyle = shade(color, 0.7);
+      for (const px of [-r * 0.7, -r * 0.25, r * 0.25, r * 0.7]) {
+        roundRect(g, px - r * 0.16, r * 0.55, r * 0.32, r * 0.6, r * 0.08);
+        g.fill();
+      }
+      // masa peluda
+      const mgr = g.createRadialGradient(-r * 0.4, -r * 0.5, r * 0.3, 0, 0, r * 1.5);
+      mgr.addColorStop(0, lite);
+      mgr.addColorStop(1, shade(color, 0.75));
+      g.fillStyle = mgr;
+      g.strokeStyle = dark;
+      g.lineWidth = Math.max(1.5, r * 0.1);
+      g.beginPath();
+      g.ellipse(0, 0, r * 1.35, r * 1.0, 0, 0, Math.PI * 2);
+      g.fill();
+      g.stroke();
+      // arreos de guerra sobre el lomo
+      g.fillStyle = shade(color, 0.5);
+      g.beginPath();
+      g.moveTo(-r * 1.25, -r * 0.3);
+      g.quadraticCurveTo(0, -r * 1.2, r * 1.25, -r * 0.3);
+      g.quadraticCurveTo(0, -r * 0.5, -r * 1.25, -r * 0.3);
+      g.fill();
+      g.fillStyle = '#cfd8dc';
+      for (let i = -1; i <= 1; i++) {
+        g.beginPath();
+        g.arc(i * r * 0.55, -r * 0.62, r * 0.08, 0, Math.PI * 2);
+        g.fill();
+      }
+      // orejas
+      g.fillStyle = shade(color, 0.8);
+      for (const side of [-1, 1]) {
+        g.beginPath();
+        g.ellipse(side * r * 1.05, -r * 0.05, r * 0.4, r * 0.55, side * 0.3, 0, Math.PI * 2);
+        g.fill();
+      }
+      // cara frontal
+      g.fillStyle = mgr;
+      g.strokeStyle = dark;
+      g.lineWidth = Math.max(1.2, r * 0.09);
+      g.beginPath();
+      g.arc(0, r * 0.1, r * 0.75, 0, Math.PI * 2);
+      g.fill();
+      g.stroke();
+      eyes(r * 0.32, -r * 0.05, Math.max(1, r * 0.12), true);
+      // trompa central (se mece con el paso)
+      g.strokeStyle = shade(color, 0.85);
+      g.lineWidth = Math.max(2, r * 0.26);
+      g.lineCap = 'round';
+      g.beginPath();
+      g.moveTo(0, r * 0.35);
+      g.quadraticCurveTo(r * 0.2 + bob * r * 0.1, r * 0.95, -r * 0.1, r * 1.25);
+      g.stroke();
+      g.lineCap = 'butt';
+      // colmillos curvos
+      g.fillStyle = '#efebe9';
+      g.strokeStyle = '#bdbdbd';
+      g.lineWidth = Math.max(1, r * 0.05);
+      for (const side of [-1, 1]) {
+        g.beginPath();
+        g.moveTo(side * r * 0.28, r * 0.45);
+        g.quadraticCurveTo(side * r * 0.72, r * 0.95, side * r * 0.4, r * 1.28);
+        g.quadraticCurveTo(side * r * 0.3, r * 0.95, side * r * 0.12, r * 0.55);
+        g.closePath();
+        g.fill();
+        g.stroke();
+      }
+      g.restore();
+      break;
+    }
   }
   void s;
 }
@@ -4287,6 +4816,7 @@ function loop(): void {
   g.strokeRect(view.ox, view.oy, gs.map.gridW * view.scale, gs.map.gridH * view.scale);
 
   drawMapAnimations(gs.map, now);
+  drawDoorBanners(gs, now);
   drawOrcs(gs, now);
 
   const interp = interpolate(gs, now - INTERP_DELAY_MS);

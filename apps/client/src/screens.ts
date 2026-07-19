@@ -17,6 +17,10 @@ const DIFF_LABELS: Record<string, string> = { easy: 'Fácil', normal: 'Normal', 
 const DIFF_EMOJI: Record<string, string> = { easy: '😊', normal: '🙂', hard: '😈' };
 const MODE_LABELS: Record<string, string> = { classic: 'Clásico', endless: 'Infinito', horde: 'Horda 🌀' };
 
+// F9b · nº mínimo de rutas para habilitar la selección de puerta por color.
+// Debe coincidir con MULTI_DOOR_MIN del RoomDO (apps/worker/src/room-do.ts).
+const DOOR_MIN_ROUTES = 4;
+
 // colores de las miniaturas por tema (versión compacta de las paletas del renderer)
 const MINI_THEME: Record<MapDef['theme'], { bg: string; path: string; blocked: string }> = {
   grass: { bg: '#2e4b2c', path: '#8a6f4d', blocked: '#1b5e20' },
@@ -41,7 +45,10 @@ export function homeError(msg: string): void {
 
 // ---------- tarjetas de mapa con miniatura ----------
 
-function drawMiniMap(canvas: HTMLCanvasElement, map: MapDef): void {
+// `doorColors`: F9b · color reclamado por puerta (índice de ruta), para teñir la
+// entrada correspondiente con el color del jugador que la reclamó. undefined en
+// las entradas sin reclamo (se pintan del morado por defecto).
+function drawMiniMap(canvas: HTMLCanvasElement, map: MapDef, doorColors?: (string | undefined)[]): void {
   const W = 180;
   const H = Math.round((W * map.gridH) / map.gridW);
   canvas.width = W;
@@ -75,14 +82,22 @@ function drawMiniMap(canvas: HTMLCanvasElement, map: MapDef): void {
     c.arc((bx + 0.5) * s, (by + 0.5) * s, s * 0.32, 0, Math.PI * 2);
     c.fill();
   }
-  // entradas (morado) y salidas (dorado)
-  for (const path of map.paths) {
+  // entradas (morado, o el color de quien reclamó la puerta) y salidas (dorado)
+  for (let i = 0; i < map.paths.length; i++) {
+    const path = map.paths[i];
     const [sc, sr] = path[0];
     const [ec, er] = path[path.length - 1];
-    c.fillStyle = '#9575cd';
+    const claimed = doorColors?.[i];
+    c.fillStyle = claimed ?? '#9575cd';
     c.beginPath();
-    c.arc((sc + 0.5) * s, (sr + 0.5) * s, s * 0.5, 0, Math.PI * 2);
+    c.arc((sc + 0.5) * s, (sr + 0.5) * s, s * (claimed ? 0.62 : 0.5), 0, Math.PI * 2);
     c.fill();
+    // aro blanco sobre la puerta reclamada, para que resalte a este tamaño
+    if (claimed) {
+      c.strokeStyle = 'rgba(255,255,255,0.9)';
+      c.lineWidth = Math.max(1, s * 0.12);
+      c.stroke();
+    }
     c.fillStyle = '#ffd54f';
     c.fillRect((ec + 0.1) * s, (er + 0.1) * s, s * 0.8, s * 0.8);
   }
@@ -93,6 +108,9 @@ function renderMapCards(
   selectedId: string,
   disabled: boolean,
   onSelect: (mapId: string) => void,
+  // F9b · colores de puerta reclamada (por índice de ruta), solo para el mapa
+  // SELECCIONADO: tiñe sus entradas con el color de cada jugador que reclamó.
+  doorColors?: (string | undefined)[],
 ): void {
   const box = $(containerId);
   box.innerHTML = '';
@@ -102,7 +120,7 @@ function renderMapCards(
     card.className = `map-card${map.id === selectedId ? ' selected' : ''}`;
     card.disabled = disabled;
     const mini = document.createElement('canvas');
-    drawMiniMap(mini, map);
+    drawMiniMap(mini, map, map.id === selectedId ? doorColors : undefined);
     card.appendChild(mini);
     const name = document.createElement('span');
     name.className = 'map-name';
@@ -119,6 +137,59 @@ function renderMapCards(
 
 function mapDesc(mapId: string): string {
   return MAPS.find((m) => m.id === mapId)?.desc ?? '';
+}
+
+// ---------- F9b · selección de puerta por color ----------
+
+// ¿el mapa admite reclamo de puerta? (multi-ruta ≥4, estilo Green TD)
+function mapHasDoors(map: MapDef | undefined): map is MapDef {
+  return !!map && map.paths.length >= DOOR_MIN_ROUTES;
+}
+
+// color reclamado por cada puerta (índice de ruta) del mapa dado, para teñir sus
+// entradas en la miniatura. undefined si el mapa no admite puertas.
+function doorColorsFor(map: MapDef | undefined): (string | undefined)[] | undefined {
+  if (!mapHasDoors(map)) return undefined;
+  const colors: (string | undefined)[] = new Array(map.paths.length).fill(undefined);
+  for (const p of store.lobby.players) {
+    if (p.door !== undefined && p.door >= 0 && p.door < colors.length) colors[p.door] = p.color;
+  }
+  return colors;
+}
+
+// lista de puertas reclamables. Cada chip: clic para reclamar la libre o liberar
+// la propia; las de otros quedan deshabilitadas. Solo jugadores (no espectadores).
+function renderDoors(map: MapDef | undefined): void {
+  const box = $('lobby-doors-box');
+  const list = $('lobby-doors');
+  if (!mapHasDoors(map) || store.spectator) {
+    box.hidden = true;
+    list.innerHTML = '';
+    return;
+  }
+  box.hidden = false;
+  const players = store.lobby.players;
+  const ownerByDoor = new Map<number, (typeof players)[number]>();
+  for (const p of players) if (p.door !== undefined) ownerByDoor.set(p.door, p);
+  list.innerHTML = map.paths
+    .map((_, i) => {
+      const owner = ownerByDoor.get(i);
+      const mine = owner?.id === store.playerId;
+      const state = mine ? 'mine' : owner ? 'taken' : 'free';
+      const dotStyle = owner
+        ? `background:${owner.color};color:${owner.color}`
+        : 'background:transparent;color:#6b7280;box-shadow:none;border:1.5px solid #6b7280';
+      const owned = owner ? `${escapeHtml(owner.name)}${mine ? ' (tú)' : ''}` : 'Libre';
+      const disabled = owner && !mine ? ' disabled' : '';
+      return `<li>
+        <button type="button" class="door-chip ${state}" data-door="${i}"${disabled}>
+          <span class="player-dot" style="${dotStyle}"></span>
+          <span class="door-num">Puerta ${i + 1}</span>
+          <span class="door-owner">${owned}</span>
+        </button>
+      </li>`;
+    })
+    .join('');
 }
 
 // ---------- controles segmentados ----------
@@ -488,6 +559,16 @@ export function initLobby(): void {
     if (btn) net.send({ type: 'claim_slot', slot: btn.dataset.claim! });
   });
 
+  // F9b · reclamar/liberar puerta (delegación): clic en la propia la libera; clic
+  // en una libre la reclama. Las de otros están deshabilitadas (no roban puerta).
+  $('lobby-doors').addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-door]');
+    if (!btn || btn.disabled) return;
+    const door = Number(btn.dataset.door);
+    const me = store.lobby.players.find((p) => p.id === store.playerId);
+    net.send({ type: 'claim_door', door: me?.door === door ? null : door });
+  });
+
   $('btn-leave').addEventListener('click', () => {
     net.disconnect(); // cierra el socket: el servidor nos saca de la sala
     store.roomCode = '';
@@ -577,8 +658,12 @@ export function renderLobby(): void {
 
   renderSpectatorZone();
 
-  renderMapCards('lobby-maps', settings.mapId, !store.isHost, (id) => sendSettings({ mapId: id }));
+  const selectedMap = MAPS.find((m) => m.id === settings.mapId);
+  const doorColors = doorColorsFor(selectedMap);
+  renderMapCards('lobby-maps', settings.mapId, !store.isHost, (id) => sendSettings({ mapId: id }), doorColors);
   $('lobby-map-desc').textContent = mapDesc(settings.mapId);
+  // F9b · lista de puertas reclamables (solo mapas multi-ruta; oculta si no)
+  renderDoors(selectedMap);
   setSeg('lobby-mode', settings.mode, !store.isHost);
   setSeg('lobby-diff', settings.difficulty, !store.isHost);
   setSeg('lobby-visibility', settings.public ? 'public' : 'private', !store.isHost);

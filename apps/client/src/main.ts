@@ -1,5 +1,5 @@
 import './style.css';
-import { ENEMIES, ENEMY_ORDER, FUSIONS, GAME_SPEEDS, START_LIVES, TOWERS, type GameEvent, type Snap } from '@td/shared';
+import { ATTACK_TYPE_INFO, ENEMIES, ENEMY_ORDER, FUSIONS, GAME_SPEEDS, START_LIVES, TOWERS, type GameEvent, type Snap } from '@td/shared';
 import { net, wsPathJoin } from './net.js';
 import { pushFrame, roomPrevToken, saveName, saveRoomToken, seedRoomPrevToken, startGameStore, store } from './store.js';
 import { addPing, addShake, initRenderer, isMinimapOn, resetRenderer, toggleMinimap, towerFired } from './renderer.js';
@@ -313,9 +313,27 @@ function processEvents(events: GameEvent[]): void {
         }
         break;
       case 'boss':
-        toast(`🗿 ¡${ev.name} se acerca!`);
+        // F9a · el afijo telegrafiado viaja en el evento ("☠ Gólem · Adaptativo")
+        toast(ev.affix ? `🗿 ¡${ev.name} ${ev.affix} se acerca!` : `🗿 ¡${ev.name} se acerca!`);
         addShake(6);
         sfx.boss();
+        break;
+      // F9a (v19) · GOLPE CRÍTICO (Estandarte del Vencedor): número DORADO grande
+      case 'crit':
+        floatText(ev.x, ev.y - 0.35, `¡${ev.dmg}!`, '#ffd700', 17);
+        fx(ev.x, ev.y, 'spark', '#ffd700', 0.7, 0.3, { add: true });
+        break;
+      // F9a (v19) · el jefe ADAPTATIVO completó su adaptación a un tipo de ataque
+      case 'adapt': {
+        const info = ATTACK_TYPE_INFO[ev.attackType];
+        floatText(ev.x, ev.y - 0.5, `🧬 resiste ${info.name.toLowerCase()}`, '#ce93d8', 13);
+        toast(`🧬 ¡El jefe se ADAPTÓ al daño ${info.name.toLowerCase()} (${info.icon})! Cambia de torres`, 'info');
+        break;
+      }
+      // F9a (v19) · REPARACIÓN de la fortaleza (el sys del server ya narra el detalle)
+      case 'repair':
+        addShake(2);
+        sfx.upgrade(0);
         break;
       case 'gameover':
         if (ev.victory) sfx.victory();

@@ -321,6 +321,175 @@ export const MAPS: MapDef[] = [
     ],
   },
   {
+    id: 'ochopuertas',
+    name: 'Las Ocho Puertas',
+    desc: 'Ocho huestes por ocho puertas convergen en la Ciudadela del noroeste. Cada color guarda su carril; todos suben la muralla oeste hasta el trono. Derrota compartida.',
+    gridW: 56,
+    gridH: 32,
+    theme: 'grass',
+    // Escala y estructura Green TD (§9 de GREENTD.md): OCHO carriles independientes
+    // y separados, cada uno con su spawn en el perímetro, que CONVERGEN a un trono
+    // «de fondo» en la esquina noroeste (la Ciudadela en (4,1)) subiendo por un
+    // TRONCO compartido en la muralla oeste (col 4). Es exactamente el patrón de
+    // Green TD: territorios propios que confluyen en una zona común antes del trono
+    // (allí las vidas se pierden juntas). Cuatro puertas del ESTE (peines rectos
+    // desde el borde derecho, filas 3/6/9/12) y cuatro del SUR (ganchos anidados
+    // desde el borde inferior) — nunca se cruzan entre sí (nido concéntrico).
+    // Longitudes equilibradas ±10% por construcción (verificado con pathLength:
+    // 53..62, media ~57): los peines del este acortan tronco a más alcance de rib;
+    // los ganchos del sur cambian rib por tronco a la inversa. La sim reparte los
+    // spawns entre rutas (i % nºrutas) y todos fugan al mismo trono compartido.
+    paths: [
+      // ——— cuatro puertas del ESTE: peines rectos hacia la muralla oeste ———
+      // Este-1 (fila 3): rib largo (borde derecho) + tronco corto (2)
+      [
+        [55, 3],
+        [4, 3],
+        [4, 1],
+      ],
+      // Este-2 (fila 6)
+      [
+        [55, 6],
+        [4, 6],
+        [4, 1],
+      ],
+      // Este-3 (fila 9)
+      [
+        [55, 9],
+        [4, 9],
+        [4, 1],
+      ],
+      // Este-4 (fila 12)
+      [
+        [55, 12],
+        [4, 12],
+        [4, 1],
+      ],
+      // ——— cuatro puertas del SUR: ganchos ANIDADOS (no se cruzan) ———
+      // Sur-1 (el más exterior: col 34, sube pronto a la fila 16)
+      [
+        [34, 31],
+        [34, 16],
+        [4, 16],
+        [4, 1],
+      ],
+      // Sur-2 (col 32, fila 19)
+      [
+        [32, 31],
+        [32, 19],
+        [4, 19],
+        [4, 1],
+      ],
+      // Sur-3 (col 30, fila 22)
+      [
+        [30, 31],
+        [30, 22],
+        [4, 22],
+        [4, 1],
+      ],
+      // Sur-4 (el más interior: col 28, fila 25)
+      [
+        [28, 31],
+        [28, 25],
+        [4, 25],
+        [4, 1],
+      ],
+    ],
+    // murallas/decoración: separan los ocho territorios y adornan el mapa. NINGUNA
+    // pisa un carril (verificado por pathCells en tools/simtest). Filas de camino:
+    // 3/6/9/12 (este) y 16/19/22/25 (sur); tronco en col 4; verticales sur en cols
+    // 28/30/32/34. Todo lo demás es libre para construir o decorar.
+    blocked: [
+      // muros entre los peines del este (filas pares intermedias, cols altas)
+      [20, 4],
+      [38, 4],
+      [50, 5],
+      [14, 5],
+      [28, 7],
+      [44, 8],
+      [18, 8],
+      [52, 10],
+      [34, 10],
+      [10, 11],
+      [46, 11],
+      [24, 11],
+      // corona sobre la Ciudadela (fila 0-2, lejos del trono)
+      [20, 0],
+      [40, 0],
+      [30, 1],
+      [50, 1],
+      [46, 2],
+      // campos del sureste, abiertos (los ganchos sur no llegan más allá de col 34)
+      [44, 18],
+      [50, 20],
+      [40, 24],
+      [48, 27],
+      [42, 29],
+      [52, 31],
+      [38, 21],
+      // huecos entre ganchos del sur (cols bajas, filas impares intermedias)
+      [12, 20],
+      [20, 24],
+      [10, 28],
+      [16, 30],
+      [22, 18],
+      [8, 27],
+      // muralla oeste bajo el tronco (col 0-2, no pisa la col 4)
+      [1, 29],
+      [2, 30],
+    ],
+  },
+  {
+    id: 'calzada',
+    name: 'La Calzada Real',
+    desc: 'Dos calzadas imperiales, anchas y monumentales, que se cruzan camino del palacio. Organiza la defensa en dos frentes.',
+    gridW: 48,
+    gridH: 28,
+    theme: 'desert',
+    // Dos autopistas SEPARADAS con exactamente 2 puntos de cruce (en (8,14) y
+    // (40,14)). La calzada A cruza el mapa de oeste a este con una plaza elevada
+    // en el centro; la avenida B entra por el noroeste, baja por la ciudad y sale
+    // por el noreste, cruzando A en sus dos «arcos». Layout monumental y legible.
+    paths: [
+      // A · calzada real oeste→este con plaza central elevada
+      [
+        [0, 14],
+        [20, 14],
+        [20, 10],
+        [28, 10],
+        [28, 14],
+        [47, 14],
+      ],
+      // B · gran avenida en arco (noroeste → noreste), cruza A dos veces en
+      // (8,14) y (40,14). El fondo del arco (fila 17) queda equilibrado con A
+      // a ±10% (verificado con pathLength: 66 vs 55, media 60.5).
+      [
+        [8, 0],
+        [8, 17],
+        [40, 17],
+        [40, 0],
+      ],
+    ],
+    blocked: [
+      // monumentos y estatuas a lo largo de las calzadas (ninguno pisa un carril)
+      [24, 4],
+      [14, 6],
+      [34, 6],
+      [4, 8],
+      [44, 8],
+      [24, 14],
+      [12, 18],
+      [36, 18],
+      [24, 24],
+      [4, 24],
+      [44, 24],
+      [2, 2],
+      [46, 2],
+      [2, 26],
+      [46, 26],
+    ],
+  },
+  {
     id: 'torre',
     name: 'La Torre',
     desc: 'Vertical, pensado para el móvil en retrato: una larga escalera helada que serpentea hasta el pie de la torre.',

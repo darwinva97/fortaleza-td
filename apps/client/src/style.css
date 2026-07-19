@@ -734,6 +734,30 @@ html, body {
 .ready-tag { font-size: 0.7rem; font-weight: 600; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
 .ready-tag.on { color: #06281c; background: #34d399; }
 .ready-tag.off { color: var(--h-muted-2); border: 1px solid var(--h-border); }
+/* F9b · selección de puerta por color (lobby, mapas multi-ruta). Chips en fila:
+   clic en la libre para reclamar, en la propia para liberar; las de otros van
+   deshabilitadas. El punto lleva el color del dueño (o hueco gris si está libre). */
+.lobby-doors-title { margin: 12px 0 6px; font-size: 0.82rem; color: var(--h-fg); }
+.door-list { list-style: none; display: flex; flex-wrap: wrap; gap: 6px; }
+.door-list li { margin: 0; }
+.door-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px 5px 8px;
+  background: var(--h-card-2);
+  border: 1px solid var(--h-border);
+  border-radius: 999px;
+  cursor: pointer;
+  font-size: 0.76rem;
+  color: var(--h-fg);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.door-chip .door-num { font-weight: 600; white-space: nowrap; }
+.door-chip .door-owner { color: var(--h-muted-2, var(--fg-dim)); white-space: nowrap; }
+.door-chip.free:hover { border-color: var(--h-border-hover); }
+.door-chip.mine { border-color: #34d399; background: rgba(52, 211, 153, 0.12); }
+.door-chip.mine .door-owner { color: #34d399; }
+.door-chip.taken { opacity: 0.7; }
+.door-chip[disabled] { cursor: not-allowed; }
 .kick-btn, .cede-btn, .spectate-btn, .ban-btn {
   flex-shrink: 0;
   width: 24px; height: 24px;
@@ -2161,6 +2185,15 @@ html, body {
   padding: 2px 8px;
   border-radius: 999px;
 }
+
+/* F9a (v19) · 📅 calendario clásico de 36: reutiliza la tabla de la matriz
+   (tokens --h-*), con texto alineado a la izquierda y filas especiales doradas */
+.cal-table th, .cal-table td { text-align: left; font-weight: 500; }
+.cal-table td.cal-w { text-align: right; font-weight: 700; color: var(--h-muted); width: 2ch; }
+.cal-table td.cal-tags { white-space: nowrap; }
+.cal-table td.cal-theme { color: var(--h-muted); font-size: 0.74rem; white-space: normal; }
+.cal-table tr.cal-special td { background: rgba(242, 177, 0, 0.07); }
+.cal-table tr.cal-special td.cal-species { color: var(--h-accent-hi); }
 
 @media (max-width: 700px) {
   .overlay-card.bestiary-card { padding: 18px 14px; }

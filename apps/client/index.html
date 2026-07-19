@@ -172,6 +172,14 @@
             <h3><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 4.2 3.5 6v13.8L9 18l6 2 5.5-1.8V4.4L15 6.2 9 4.2Z"/><path d="M9 4.2v13.8M15 6.2V20"/></svg>Mapa</h3>
             <div id="lobby-maps" class="map-grid"></div>
             <p id="lobby-map-desc" class="hint map-desc"></p>
+            <!-- F9b · selección de puerta por color (solo mapas multi-ruta ≥4).
+                 Cada jugador reclama UNA puerta; en partida su spawn luce un
+                 estandarte de su color. Opcional y social (no limita construcción). -->
+            <div id="lobby-doors-box" hidden>
+              <h4 class="lobby-doors-title">🚩 Tu puerta</h4>
+              <ul id="lobby-doors" class="door-list"></ul>
+              <p class="hint">Reclama una puerta para plantar tu estandarte en su entrada. Es opcional y social: no limita dónde construyes.</p>
+            </div>
           </div>
 
           <div class="lobby-box lobby-settings-box">
@@ -445,12 +453,14 @@
         <h2>📖 Guía</h2>
         <div class="guide-tabs">
           <button id="guide-tab-enemies" class="tab active">👾 Enemigos</button>
+          <button id="guide-tab-calendar" class="tab">📅 Calendario</button>
           <button id="guide-tab-elites" class="tab">👑 Élites y oleadas</button>
           <button id="guide-tab-towers" class="tab">🏰 Torres</button>
           <button id="guide-tab-fusions" class="tab">⚗ Fusiones</button>
           <button id="guide-tab-shortcuts" class="tab">⌨️ Atajos</button>
         </div>
         <div id="bestiary-grid" class="bestiary-grid"></div>
+        <div id="guide-calendar" hidden></div>
         <div id="guide-elites" hidden></div>
         <div id="guide-towers" hidden></div>
         <div id="guide-fusions" hidden></div>

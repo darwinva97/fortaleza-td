@@ -1,5 +1,13 @@
-import type { AttackTypeId, FusionId, TowerLevelDef, TowerSpecDef, TowerTypeId } from '../types.js';
-import { activeStats, TOWERS } from './towers.js';
+import type { AttackTypeId, FusionId, GameMode, TowerLevelDef, TowerSpecDef, TowerTypeId } from '../types.js';
+import { activeStats, hasRank2, TOWERS } from './towers.js';
+import {
+  ELITE_LEVEL_CAP_CLASSIC,
+  ELITE_LEVEL_DMG,
+  ELITE_LEVEL_GOLD,
+  ELITE_LEVEL_HASTE,
+  ELITE_LEVEL_OPEN_STEP,
+  ELITE_LEVEL_WOOD,
+} from '../constants.js';
 
 // ---------- F4.3 · Fusión de torres — 6 recetas curadas estilo Element TD ----------
 //
@@ -395,9 +403,73 @@ export function fusionOf(t: { fusion: number }): FusionDef | null {
   return fusionByIndex(t.fusion);
 }
 
+// ---------- F9a (v19) · NIVELES 5→10 post-élite ("veteranía") ----------
+// Una torre en su CÚSPIDE (Rango II ★★, o fusión) puede seguir subiendo: +8% de
+// daño y +4% de cadencia por nivel, compuestos. `level` reutiliza el campo de
+// snapshot que ya existía: 5..10 en clásico (una fusión salta de 3 a 5 al comprar
+// su primer paso — así "nivel 5-10" significa lo mismo para specs y fusiones).
+
+// Pasos de veteranía comprados (0 = ninguno). Vale para specs y fusiones.
+export function eliteSteps(level: number): number {
+  return Math.max(0, level - 4);
+}
+
+// Coste del paso `step` (1..6 tabulado; >6 = infinito/horda, compuesto ×1.5).
+export function eliteLevelCost(step: number): { gold: number; wood: number } {
+  const n = ELITE_LEVEL_GOLD.length;
+  if (step <= n) return { gold: ELITE_LEVEL_GOLD[step - 1], wood: ELITE_LEVEL_WOOD[step - 1] };
+  const extra = Math.pow(ELITE_LEVEL_OPEN_STEP, step - n);
+  return { gold: Math.round(ELITE_LEVEL_GOLD[n - 1] * extra), wood: Math.round(ELITE_LEVEL_WOOD[n - 1] * extra) };
+}
+
+// Coste del SIGUIENTE nivel de veteranía de una torre, o null si no puede:
+// - solo torres que DISPARAN (subirle +8% de daño a una mina/aura sería una
+//   trampa para novatos — y el Estandarte del Vencedor no la necesita);
+// - cúspide: fusión (nivel 3+) o spec en Rango II (nivel 4+);
+// - en CLÁSICO hay tope (6 pasos = nivel 10); en infinito/horda el tope se ABRE
+//   con curva más dura (es el pozo del oro tardío).
+// La MISMA función valida server-side (commands.ts) y pinta el botón (cliente).
+export function nextEliteLevelCost(
+  t: { type: TowerTypeId; level: number; spec: number; fusion: number },
+  mode: GameMode,
+): { gold: number; wood: number; step: number } | null {
+  if (!towerFires(t)) return null;
+  if (t.fusion >= 0) {
+    if (t.level < 3) return null; // no debería ocurrir: las fusiones nacen en 3
+  } else {
+    if (t.spec < 0 || t.level < 4 || !hasRank2(t.type, t.spec)) return null;
+  }
+  const step = eliteSteps(t.level) + 1;
+  if (mode === 'classic' && step > ELITE_LEVEL_CAP_CLASSIC) return null;
+  return { ...eliteLevelCost(step), step };
+}
+
+// Cache de stats con veteranía aplicada (por tipo/spec/fusión/pasos): los defs
+// base son objetos compartidos e inmutables — jamás se mutan.
+const eliteStatsCache = new Map<string, TowerLevelDef | TowerSpecDef>();
+
+function applyEliteSteps(
+  base: TowerLevelDef | TowerSpecDef,
+  key: string,
+  steps: number,
+): TowerLevelDef | TowerSpecDef {
+  const hit = eliteStatsCache.get(key);
+  if (hit) return hit;
+  // Solo daño y cadencia (el diseño de F9a es literal: +8% daño, +4% cadencia).
+  // Compuestos y deterministas (potencias + round de aritmética pura).
+  const merged: TowerLevelDef | TowerSpecDef = {
+    ...base,
+    damage: Math.round(base.damage * Math.pow(1 + ELITE_LEVEL_DMG, steps)),
+    cooldown: base.cooldown / Math.pow(1 + ELITE_LEVEL_HASTE, steps),
+  };
+  eliteStatsCache.set(key, merged);
+  return merged;
+}
+
 // Stats activos de una torre TENIENDO EN CUENTA la fusión: si está fusionada,
 // mandan los stats de la fusión; si no, los de activeStats (nivel/spec/Rango II).
 // Es el reemplazo fusion-aware de activeStats para todo lo que lea TowerState.
+// F9a (v19) · aplica encima los pasos de veteranía (niveles 5→10) si los hay.
 export function statsOf(t: {
   type: TowerTypeId;
   level: number;
@@ -405,7 +477,10 @@ export function statsOf(t: {
   fusion: number;
 }): TowerLevelDef | TowerSpecDef {
   const f = fusionByIndex(t.fusion);
-  return f ? f.stats : activeStats(t.type, t.level, t.spec);
+  const base = f ? f.stats : activeStats(t.type, Math.min(t.level, t.spec >= 0 ? t.level : 3), t.spec);
+  const steps = eliteSteps(t.level);
+  if (steps <= 0) return base;
+  return applyEliteSteps(base, `${t.type}:${t.spec}:${t.fusion}:${steps}`, steps);
 }
 
 // ¿Esta torre DISPARA? No disparan: la mina (incomePerWave), la Escarcha Eterna

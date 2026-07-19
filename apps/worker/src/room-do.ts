@@ -70,6 +70,11 @@ interface RoomPlayer {
   // reclama (por hash de token automático o «Adoptar»). Al reanudar, el jugador
   // adopta ESA identidad (id/nombre/color) de la sim reconstruida.
   claimedSlot?: string;
+  // F9b · PUERTA reclamada (índice de ruta del mapa) en el lobby de mapas
+  // multi-ruta. Social/decorativa: viaja en lobby_state (LobbyPlayer.door) y en
+  // GameInit para pintar el estandarte del color del jugador en su spawn. Se
+  // libera sola al salir (el RoomPlayer se elimina del lobby) o al cambiar de mapa.
+  door?: number;
 }
 
 // Espectador: entra con la partida en curso. Ve la partida y puede guiar (chat
@@ -94,6 +99,10 @@ type JoinResult =
 
 const CHAT_MAX = 200;
 const MAX_SPECTATORS = 8;
+// F9b · nº mínimo de rutas para habilitar la selección de puerta por color (los
+// mapas «tipo Green TD» con un carril por jugador). Debe coincidir con el umbral
+// del cliente (screens.ts).
+const MULTI_DOOR_MIN = 4;
 // segundos de cuenta regresiva antes de iniciar o reanudar la partida
 const COUNTDOWN_SEC = 3;
 // código de cierre de socket cuando el anfitrión expulsa a un jugador (el cliente
@@ -578,6 +587,9 @@ export class RoomDO {
       isHost: p.isHost,
       connected: p.ws !== null,
       ready: p.isHost || p.ready,
+      // F9b · la puerta reclamada solo se anuncia si la lleva Y el mapa la admite
+      // (multi-ruta): así el lobby no muestra reclamos de un mapa ya cambiado.
+      ...(p.door !== undefined ? { door: p.door } : {}),
     }));
   }
 
@@ -696,12 +708,20 @@ export class RoomDO {
   }
 
   private gameInit(forPlayerId: string) {
+    // F9b · adjuntar la puerta reclamada por cada jugador (del RoomPlayer, no de la
+    // sim) para que el cliente pinte el estandarte en el spawn de esa ruta. En una
+    // partida CARGADA los ids son de slots (sin door); el lookup simplemente no
+    // encuentra puerta y no se adjunta nada.
+    const doorById = new Map(this.players.map((p) => [p.id, p.door]));
     return {
       mapId: this.game!.mapId,
       mode: this.game!.mode,
       difficulty: this.game!.difficulty,
       turbo: this.game!.turbo, // MODO TURBO ⚡: el cliente pinta el distintivo ⚡ en el HUD
-      players: this.game!.players.map((p) => ({ id: p.id, name: p.name, color: p.color })),
+      players: this.game!.players.map((p) => {
+        const door = doorById.get(p.id);
+        return { id: p.id, name: p.name, color: p.color, ...(door !== undefined ? { door } : {}) };
+      }),
       youAre: forPlayerId,
     };
   }
@@ -1253,9 +1273,14 @@ export class RoomDO {
       case 'set_settings': {
         if (!player.isHost || this.game) break;
         const wasPublic = this.settings.public === true;
+        const prevMapId = this.settings.mapId;
         this.settings = sanitizeSettings(msg.settings);
         // pública → privada: salir de la lista al instante (no esperar la poda)
         if (wasPublic && !this.settings.public) this.unlistPublic();
+        // F9b · cambiar de MAPA invalida los reclamos de puerta (los índices de
+        // ruta ya no corresponden): liberarlos todos para no arrastrar reclamos
+        // fantasma de un mapa a otro con distinto nº de rutas.
+        if (prevMapId !== this.settings.mapId) for (const p of this.players) p.door = undefined;
         // cambiar la configuración invalida los «Listo»: que el equipo reconfirme
         for (const p of this.players) if (!p.isHost) p.ready = false;
         this.broadcastLobby();
@@ -1380,6 +1405,40 @@ export class RoomDO {
         if (!player.ready) this.cancelStartCountdown(`${player.name} ya no está listo`);
         this.broadcastLobby();
         break;
+
+      // F9b · RECLAMAR/LIBERAR una puerta (selección de puerta por color). Estado de
+      // lobby, no comando de sim. Cada jugador reclama la SUYA (el anfitrión no la
+      // fuerza): la petición solo toca el RoomPlayer del emisor. Validaciones: solo
+      // en el lobby, solo en mapas multi-ruta, índice de ruta existente y NO ocupado
+      // por otro. door=null libera. Se libera sola al salir (el RoomPlayer se quita).
+      case 'claim_door': {
+        if (this.game && !this.game.over) break; // solo en el lobby
+        if (this.savedGame) break; // el lobby de un guardado usa slots, no puertas
+        const door = msg.door;
+        if (door === null) {
+          // liberar la puerta propia (idempotente)
+          if (player.door !== undefined) {
+            player.door = undefined;
+            this.broadcastLobby();
+          }
+          break;
+        }
+        const map = getMap(this.settings.mapId);
+        if (map.paths.length < MULTI_DOOR_MIN) {
+          this.send(player, { type: 'error', msg: 'Este mapa no tiene puertas que reclamar' });
+          break;
+        }
+        if (!Number.isInteger(door) || door < 0 || door >= map.paths.length) break; // índice inválido
+        if (player.door === door) break; // ya es la suya: nada que hacer
+        // no reclamar una puerta que otro jugador ya tiene
+        if (this.players.some((p) => p !== player && p.door === door)) {
+          this.send(player, { type: 'error', msg: 'Esa puerta ya está reclamada' });
+          break;
+        }
+        player.door = door;
+        this.broadcastLobby();
+        break;
+      }
 
       case 'start_game':
         if (!player.isHost) {

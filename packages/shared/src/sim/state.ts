@@ -63,6 +63,8 @@ export function createGame(
     nextWaveFlying: false,
     nextWaveInvisible: false,
     nextWaveBoss: null,
+    nextWaveChampion: false,
+    nextWaveBossAffix: null,
     pendingWave: null,
     pendingBoss: false,
     pendingBossType: null,
@@ -76,5 +78,9 @@ export function createGame(
     woodPrice: WOOD_PRICE_BASE,
     nextId: 1,
     over: null,
+    // F9a (v19) · contadores de equipo: barriles comprados (coste ×1.3 compuesto)
+    // y reparaciones de la fortaleza (coste ×1.5 compuesto; solo infinito/horda)
+    boomsBought: 0,
+    repairsBought: 0,
   };
 }

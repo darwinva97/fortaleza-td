@@ -4,11 +4,14 @@
 // Requiere el WORKER de Cloudflare corriendo (pnpm cf:dev y PORT=8787).
 import WebSocket from 'ws';
 import {
+  BOOM_COST_TEAM_STEP,
   getMap,
   makePlacementContext,
+  pathCells,
   placementError,
   replayTo,
   sha256Hex,
+  TOWERS,
   type ClientMsg,
   type ReplayData,
   type SaveData,
@@ -154,6 +157,48 @@ async function main(): Promise<void> {
   assert(cell !== null, 'hay una celda construible');
   ana.send({ type: 'cmd', cmd: { kind: 'place', towerType: 'archer', cx: cell![0], cy: cell![1] } });
 
+  // 5.5 · F9a (v19) — protocolo nuevo, validado SERVER-SIDE (RoomDO re-valida):
+  //   (a) `repair` en CLÁSICO se rechaza (solo existe en infinito/horda)
+  //   (b) el precio del Barril ESCALA por compra del EQUIPO y lo cobra el server
+  //       (el cliente no manda precio: no hay nada que falsificar)
+  // Se prueba EN EL INTERLUDIO: sin botines ni bonos que ensucien las cuentas.
+  {
+    const ticksAt = ana.ticks.length;
+    ana.send({ type: 'cmd', cmd: { kind: 'repair' } });
+    await sleep(700);
+    const evs1 = ana.ticks.slice(ticksAt).flatMap((t) => t.events);
+    assert(
+      evs1.some((e) => e.e === 'reject' && /infinito/i.test(e.reason)),
+      'F9a · `repair` en CLÁSICO se rechaza server-side',
+    );
+
+    const boomBase = TOWERS.boom.levels[0].cost;
+    const snap0 = ana.ticks[ana.ticks.length - 1].snap;
+    assert(snap0.boomCost === boomBase, `F9a · el snapshot expone el precio del Barril (${snap0.boomCost} == ${boomBase})`);
+
+    // Ana compra el 1.º barril sobre el camino
+    const pcs = [...pathCells(map)].map((k) => k.split(',').map(Number) as [number, number]);
+    ana.send({ type: 'cmd', cmd: { kind: 'place', towerType: 'boom', cx: pcs[0][0], cy: pcs[0][1] } });
+    await sleep(700);
+    const snap1 = ana.ticks[ana.ticks.length - 1].snap;
+    const second = Math.round(boomBase * BOOM_COST_TEAM_STEP);
+    assert(snap1.boomCost === second, `F9a · tras comprar 1 barril el precio de EQUIPO sube a ${second} (${snap1.boomCost})`);
+
+    // Beto compra el 2.º: el server le cobra el precio ESCALADO, no el base
+    const betoId = initB.init.youAre;
+    const betoGold0 = snap1.players.find((p) => p.id === betoId)?.gold ?? -1;
+    beto.send({ type: 'cmd', cmd: { kind: 'place', towerType: 'boom', cx: pcs[2][0], cy: pcs[2][1] } });
+    await sleep(700);
+    const snap2 = ana.ticks[ana.ticks.length - 1].snap;
+    const betoGold1 = snap2.players.find((p) => p.id === betoId)?.gold ?? -1;
+    // Beto no tiene torres: su oro solo pudo moverse por esta compra
+    assert(
+      betoGold0 - betoGold1 === second,
+      `F9a · el server cobró el precio ESCALADO al 2.º comprador (${betoGold0}−${betoGold1} == ${second})`,
+    );
+  }
+
+
   // 6. Llamar la oleada ya
   await sleep(400);
   ana.send({ type: 'cmd', cmd: { kind: 'call_wave' } });
@@ -242,6 +287,10 @@ async function main(): Promise<void> {
   // 9.6 · ZONA DE ESPECTADORES: mover/traer del lobby, y la distinción
   //   expulsar (puede volver, solo de espectador) vs banear (no vuelve jamás)
   await spectatorZoneScenario();
+
+  // 9.7 · F9b · SELECCIÓN DE PUERTA POR COLOR (mapa multi-ruta): reclamar libre OK,
+  //   reclamar ocupada rechazada, liberación al salir, y el reclamo viaja al GameInit.
+  await doorScenario();
 
   // 10. Repetición (replay): partida corta que TERMINA (sin defensa) e incluye la
   //     reconexión de Beto. Al recibir game_over con `replay`, reconstruimos con el
@@ -361,6 +410,92 @@ async function spectatorZoneScenario(): Promise<void> {
   ivan2.ws.close();
   ivan3.ws.close();
   hugo2.ws.close();
+  await sleep(200);
+}
+
+// Escenario dedicado: F9b · SELECCIÓN DE PUERTA POR COLOR. En un mapa multi-ruta
+// (ochopuertas, 8 rutas): (1) reclamar una puerta libre viaja en lobby_state; (2)
+// reclamar una puerta ocupada por otro se rechaza; (3) al salir el jugador su
+// puerta se LIBERA (otro la reclama después); (4) el reclamo viaja al GameInit
+// (para el estandarte del color del dueño en el spawn durante la partida).
+async function doorScenario(): Promise<void> {
+  console.log('\n— F9b · Selección de puerta por color —');
+  const ana = new TestClient('DoorAna', wsUrl({ create: true }));
+  await ana.open();
+  ana.send({
+    type: 'create_room',
+    name: 'Ana',
+    token: 'tok-door-ana',
+    settings: { mapId: 'ochopuertas', mode: 'classic', difficulty: 'normal' },
+  });
+  const aj = await ana.waitFor('room_joined');
+  await ana.waitFor('lobby_state');
+
+  const ben = new TestClient('DoorBen', wsUrl({ code: aj.code }));
+  await ben.open();
+  ben.send({ type: 'join_room', name: 'Ben', token: 'tok-door-ben', code: aj.code });
+  const bj = await ben.waitFor('room_joined');
+  await ana.waitFor('lobby_state');
+
+  // (1) reclamar una puerta LIBRE → aparece en lobby_state.players[].door
+  ana.send({ type: 'claim_door', door: 2 });
+  for (;;) {
+    const lb = await ana.waitFor('lobby_state');
+    if (lb.players.find((p) => p.id === aj.playerId)?.door === 2) {
+      assert(true, 'reclamar una puerta libre OK (viaja en lobby_state.players[].door)');
+      break;
+    }
+  }
+
+  // (2) reclamar una puerta OCUPADA por otro → rechazada con error
+  ben.send({ type: 'claim_door', door: 2 });
+  const dupErr = await ben.waitFor('error');
+  assert(/ocupada|reclamada/i.test(dupErr.msg), `reclamar una puerta ocupada se rechaza ("${dupErr.msg}")`);
+
+  // Ben reclama otra libre (5); ambos reclamos coexisten
+  ben.send({ type: 'claim_door', door: 5 });
+  for (;;) {
+    const lb = await ana.waitFor('lobby_state');
+    const a = lb.players.find((p) => p.id === aj.playerId);
+    const b = lb.players.find((p) => p.id === bj.playerId);
+    if (a?.door === 2 && b?.door === 5) {
+      assert(true, 'cada jugador reclama SU puerta (Ana=2, Ben=5) y coexisten');
+      break;
+    }
+  }
+
+  // (3) LIBERACIÓN al salir: Ben se va → su puerta 5 queda libre y otro la reclama
+  ben.ws.close();
+  await sleep(300);
+  const cyd = new TestClient('DoorCyd', wsUrl({ code: aj.code }));
+  await cyd.open();
+  cyd.send({ type: 'join_room', name: 'Cyd', token: 'tok-door-cyd', code: aj.code });
+  const cj = await cyd.waitFor('room_joined');
+  await ana.waitFor('lobby_state');
+  cyd.send({ type: 'claim_door', door: 5 });
+  for (;;) {
+    const lb = await ana.waitFor('lobby_state');
+    if (lb.players.find((p) => p.id === cj.playerId)?.door === 5) {
+      assert(true, 'la puerta se LIBERA al salir (otro jugador reclama la 5 después)');
+      break;
+    }
+  }
+
+  // (4) el reclamo viaja al GameInit (el cliente pinta el estandarte en el spawn)
+  cyd.send({ type: 'set_ready', ready: true });
+  for (;;) {
+    const lb = await ana.waitFor('lobby_state');
+    if (lb.players.find((p) => !p.isHost)?.ready === true) break;
+  }
+  ana.send({ type: 'start_game' });
+  await ana.waitFor('countdown');
+  const init = await ana.waitFor('game_started', 6000);
+  const aDoor = init.init.players.find((p) => p.id === aj.playerId)?.door;
+  const cDoor = init.init.players.find((p) => p.id === cj.playerId)?.door;
+  assert(aDoor === 2 && cDoor === 5, `el reclamo de puerta viaja al GameInit (Ana=${aDoor}, Cyd=${cDoor})`);
+
+  ana.ws.close();
+  cyd.ws.close();
   await sleep(200);
 }
 
