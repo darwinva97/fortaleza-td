@@ -323,219 +323,235 @@ export const MAPS: MapDef[] = [
   {
     id: 'granconcilio',
     name: 'El Gran Concilio',
-    desc: 'Nueve huestes por nueve puertas descienden por niveles —columna central, bulevar y recta final— hasta el trono del sur. Cada quien guarda su puerta; con ocho manos una queda siempre sin dueño. Las vidas se pierden juntas.',
+    desc: 'Nueve huestes por nueve puertas descienden hasta el trono del sur. Cada quien guarda su puerta; con ocho manos una queda siempre sin dueño. Las vidas se pierden juntas.',
     gridW: 52,
     gridH: 60,
     theme: 'grass',
     // Cámara CAPADA a ~1/4 del mapa: es un mapa XL «de fondo», no debe abarcarse de
     // un vistazo ni con el zoom-out máximo (lo aplica la cámara del cliente).
     viewCap: { w: 30, h: 26 },
-    // Estructura Green TD «retrato» (minimapa original): espejo bilateral perfecto y
-    // CONVERGENCIA PROGRESIVA por niveles — la clave de que sea defendible (el radial
-    // puro mataba al bot en la o3; los tramos compartidos jerárquicos dan puntos de
-    // defensa colectivos). NUEVE puertas:
-    //  · 2 ARRIBA a los lados (TL/TR): una vuelta rectangular y se funden en la
-    //    COLUMNA CENTRAL (col 25) en la fila 16.
-    //  · 1 ARRIBA-CENTRO (TC): baja casi recta por la columna central (la ruta más
-    //    corta de arriba; un diente breve la mete en el ±10%).
-    //  · 4 en la BANDA MEDIA (exterior+interior por flanco): ganchos que desembocan
-    //    en el gran BULEVAR horizontal (fila 38), que cruza el mapa de lado a lado.
-    //  · 2 ABAJO en las esquinas (BL/BR): suben con gancho hacia afuera (están cerca
-    //    del castillo → recorrido extra) y se unen a la RECTA FINAL (col 25, fila 50).
-    // La columna central toca el bulevar en (25,38); el bulevar converge al centro y
-    // baja por la recta final hasta el lazo pequeño (último dps) y el trono (25,57).
-    // Longitudes por puerta a ±6% (media 77.7; verificado por pathLength). Solo
-    // ángulos rectos, separación ≥2 entre tramos no relacionados, cero cruces
-    // incidentales y cero colisiones blocked↔camino. Con MAX_PLAYERS=8 una puerta
-    // queda SIEMPRE neutral (deseado). La sim reparte los spawns (i % 9) y todas las
-    // rutas fugan al mismo trono; el reclamo de puerta del lobby itera paths.length.
+    // TRANSCRIPCIÓN FIEL del minimapa original de Green TD (Green Td PROS Remastered
+    // v4.4). Geometría reconstruida del .w3x: las 75 regiones con nombre de
+    // war3map.w3r (coordenadas de mundo) + el encadenado de waypoints de war3map.j
+    // (cada rect ordena IssuePointOrder("move") al siguiente). Transformada afín
+    // mundo→grid retrato (mundo 96×96 celdas [-6144,6144] → 52 cols centradas, eje Y
+    // invertido; el trono END queda al sur). Ortogonalizada (segmentos H/V) y con los
+    // tramos compartidos fusionados celda-idénticos. NUEVE puertas, espejo bilateral:
+    //  · Pink/Gray: entradas mediales E/O que SUBEN al anillo superior y bajan enteras
+    //    (los carriles más largos, como en el original).
+    //  · Orange/Green: puertas superiores que rodean el anillo y caen por su flanco.
+    //  · Red: puerta superior-centro; baja por el eje y se une al tronco derecho.
+    //  · Purple/Yellow: entradas mediales interiores → bulevar de convergencia.
+    //  · Blue/Teal: esquinas inferiores SO/SE (cerca del trono → los más cortos).
+    // Los 4 flancos izquierdos (Pink/Orange/Purple/Blue) confluyen en el TRONCO
+    // IZQUIERDO (col 24→22) y los 5 derechos (Gray/Green/Red/Yellow/Teal) en el
+    // TRONCO DERECHO (col 28→30); ambos se funden en el vestíbulo (row 51) y bajan por
+    // la RECTA FINAL (col 26) al trono (26,56). Longitudes por puerta FIELES al
+    // original (fidelidad > equilibrio; en el original tampoco eran iguales): media
+    // 98, de 53 (Blue/Teal) a 138 (Green) — mismas proporciones que el minimapa
+    // original (spread 89% vs 90% original). Continuidad H/V, tramos compartidos
+    // celda-idénticos y cero colisiones blocked↔camino verificados por código. Con
+    // MAX_PLAYERS=8 una puerta queda SIEMPRE neutral (deseado); la sim reparte los
+    // spawns (i % 9) y el reclamo de puerta del lobby itera paths.length.
     paths: [
-      // TL · arriba-izquierda: vuelta rectangular y fusión a la columna central
+      // Pink · Pink Spawn
       [
-        [18, 0],
-        [18, 8],
-        [15, 8],
-        [15, 12],
-        [19, 12],
-        [19, 16],
-        [25, 16],
-        [25, 38],
-        [25, 53],
-        [30, 53],
-        [30, 56],
-        [25, 56],
-        [25, 57],
+        [4, 31],
+        [4, 8],
+        [16, 8],
+        [16, 20],
+        [24, 20],
+        [24, 29],
+        [22, 29],
+        [22, 38],
+        [4, 38],
+        [24, 38],
+        [24, 42],
+        [24, 47],
+        [22, 47],
+        [22, 51],
+        [26, 51],
+        [26, 56],
       ],
-      // TC · arriba-centro: baja casi recta por el eje (la más corta de arriba)
+      // Orange · Orange Spawn
       [
-        [25, 0],
-        [25, 10],
-        [22, 10],
-        [22, 15],
-        [25, 15],
-        [25, 38],
-        [25, 53],
-        [30, 53],
-        [30, 56],
-        [25, 56],
-        [25, 57],
+        [22, 8],
+        [4, 8],
+        [4, 13],
+        [16, 13],
+        [16, 20],
+        [24, 20],
+        [24, 29],
+        [22, 29],
+        [22, 38],
+        [4, 38],
+        [24, 38],
+        [24, 42],
+        [24, 47],
+        [22, 47],
+        [22, 51],
+        [26, 51],
+        [26, 56],
       ],
-      // TR · arriba-derecha (espejo exacto de TL)
+      // Red · Red Spawn
       [
-        [33, 0],
-        [33, 8],
-        [36, 8],
-        [36, 12],
-        [32, 12],
-        [32, 16],
         [26, 16],
-        [25, 16],
-        [25, 38],
-        [25, 53],
-        [30, 53],
-        [30, 56],
-        [25, 56],
-        [25, 57],
-      ],
-      // MLE · media-izquierda EXTERIOR: gancho que desemboca en el bulevar
-      [
-        [0, 22],
-        [16, 22],
-        [16, 27],
-        [11, 27],
-        [11, 33],
-        [16, 33],
-        [16, 38],
-        [25, 38],
-        [25, 53],
-        [30, 53],
-        [30, 56],
-        [25, 56],
-        [25, 57],
-      ],
-      // MLI · media-izquierda INTERIOR: quiebre corto + tramo largo de bulevar
-      [
-        [0, 28],
-        [8, 28],
-        [8, 32],
-        [3, 32],
-        [3, 38],
-        [25, 38],
-        [25, 53],
-        [30, 53],
-        [30, 56],
-        [25, 56],
-        [25, 57],
-      ],
-      // MRE · media-derecha exterior (espejo de MLE)
-      [
-        [51, 22],
-        [35, 22],
-        [35, 27],
-        [40, 27],
-        [40, 33],
-        [35, 33],
-        [35, 38],
-        [25, 38],
-        [25, 53],
-        [30, 53],
-        [30, 56],
-        [25, 56],
-        [25, 57],
-      ],
-      // MRI · media-derecha interior (espejo de MLI)
-      [
-        [51, 28],
-        [43, 28],
-        [43, 32],
-        [48, 32],
+        [26, 20],
+        [28, 20],
+        [28, 29],
+        [30, 29],
+        [30, 38],
         [48, 38],
-        [25, 38],
-        [25, 53],
-        [30, 53],
-        [30, 56],
-        [25, 56],
-        [25, 57],
+        [48, 45],
+        [42, 45],
+        [42, 42],
+        [32, 42],
+        [28, 42],
+        [28, 47],
+        [30, 47],
+        [30, 51],
+        [26, 51],
+        [26, 56],
       ],
-      // BL · abajo-izquierda: sube y gancha hacia afuera hasta la recta final
+      // Green · Green Spawn
       [
-        [0, 59],
-        [0, 43],
-        [11, 43],
-        [11, 46],
-        [5, 46],
-        [5, 50],
-        [25, 50],
-        [25, 53],
-        [30, 53],
-        [30, 56],
-        [25, 56],
-        [25, 57],
+        [30, 8],
+        [48, 8],
+        [48, 13],
+        [36, 13],
+        [36, 20],
+        [28, 20],
+        [28, 29],
+        [30, 29],
+        [30, 38],
+        [48, 38],
+        [48, 45],
+        [42, 45],
+        [42, 42],
+        [32, 42],
+        [28, 42],
+        [28, 47],
+        [30, 47],
+        [30, 51],
+        [26, 51],
+        [26, 56],
       ],
-      // BR · abajo-derecha (espejo de BL)
+      // Gray · Gray Spawn
       [
-        [51, 59],
-        [51, 43],
-        [40, 43],
-        [40, 46],
-        [46, 46],
-        [46, 50],
-        [25, 50],
-        [25, 53],
-        [30, 53],
-        [30, 56],
-        [25, 56],
-        [25, 57],
+        [48, 31],
+        [48, 8],
+        [36, 8],
+        [36, 20],
+        [28, 20],
+        [28, 29],
+        [30, 29],
+        [30, 38],
+        [48, 38],
+        [48, 45],
+        [42, 45],
+        [42, 42],
+        [32, 42],
+        [28, 42],
+        [28, 47],
+        [30, 47],
+        [30, 51],
+        [26, 51],
+        [26, 56],
+      ],
+      // Purple · Purple Spawn
+      [
+        [14, 31],
+        [14, 38],
+        [4, 38],
+        [4, 45],
+        [10, 45],
+        [10, 42],
+        [20, 42],
+        [24, 42],
+        [24, 47],
+        [22, 47],
+        [22, 51],
+        [26, 51],
+        [26, 56],
+      ],
+      // Yellow · Yellow Spawn
+      [
+        [38, 31],
+        [38, 38],
+        [48, 38],
+        [48, 45],
+        [42, 45],
+        [42, 42],
+        [32, 42],
+        [28, 42],
+        [28, 47],
+        [30, 47],
+        [30, 51],
+        [26, 51],
+        [26, 56],
+      ],
+      // Blue · Blue Spawn
+      [
+        [4, 55],
+        [20, 55],
+        [20, 42],
+        [24, 42],
+        [24, 47],
+        [22, 47],
+        [22, 51],
+        [26, 51],
+        [26, 56],
+      ],
+      // Teal · Teal Spawn
+      [
+        [48, 55],
+        [32, 55],
+        [32, 42],
+        [28, 42],
+        [28, 47],
+        [30, 47],
+        [30, 51],
+        [26, 51],
+        [26, 56],
       ],
     ],
-    // Arboledas de decoración en zonas muertas (simétricas; ninguna pisa un carril,
-    // verificado por pathCells): coronan el concilio, rellenan huecos entre brazos y
-    // flanquean el trono.
+    // Arboledas de decoración en zonas muertas (simétricas, Chebyshev ≥2 de todo
+    // camino → ninguna pisa ni estrangula un carril; verificado por pathCells):
+    // coronan el concilio, flanquean los márgenes y rodean el trono.
     blocked: [
-      [2, 2],
-      [49, 2],
-      [7, 4],
-      [44, 4],
-      [12, 2],
-      [39, 2],
-      [3, 10],
-      [48, 10],
-      [21, 6],
-      [30, 6],
-      [22, 20],
-      [29, 20],
-      [10, 20],
-      [41, 20],
-      [2, 24],
-      [49, 24],
-      [20, 42],
-      [31, 42],
-      [13, 40],
-      [38, 40],
-      [2, 38],
-      [49, 38],
-      [9, 55],
-      [42, 55],
-      [15, 52],
-      [36, 52],
-      [19, 54],
-      [32, 54],
-      [12, 57],
-      [39, 57],
-      [6, 52],
-      [45, 52],
-      [24, 59],
-      [27, 59],
-      [20, 58],
-      [31, 58],
-      [28, 58],
-      [23, 58],
-      [33, 51],
-      [18, 51],
-      [21, 49],
-      [30, 49],
-      [17, 47],
-      [34, 47],
+      [6, 2],
+      [45, 2],
+      [13, 2],
+      [38, 2],
+      [20, 3],
+      [31, 3],
+      [10, 5],
+      [41, 5],
+      [16, 5],
+      [35, 5],
+      [1, 7],
+      [1, 13],
+      [1, 19],
+      [1, 25],
+      [1, 31],
+      [1, 37],
+      [1, 43],
+      [1, 49],
+      [50, 49],
+      [9, 17],
+      [42, 17],
+      [9, 24],
+      [42, 24],
+      [9, 34],
+      [42, 34],
+      [20, 11],
+      [31, 11],
+      [13, 49],
+      [38, 49],
+      [9, 58],
+      [42, 58],
+      [26, 3],
+      [25, 3],
     ],
   },
   {
