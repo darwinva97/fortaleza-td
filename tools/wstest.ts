@@ -319,6 +319,13 @@ async function main(): Promise<void> {
   //     (503), y la sala determinista por instanceId resuelve host/invitado atómico.
   await discordScenario();
 
+  // 14. DURABILIDAD (causa raíz de «las salas se caen de la nada»): fuerza un
+  //     RECICLADO del Durable Object a media partida (gancho /__evict, solo dev),
+  //     que descarta la RAM y reconstruye SOLO desde ctx.storage, y verifica que los
+  //     MISMOS jugadores reconectan a su MISMO slot (por token y por prevToken) y la
+  //     partida CONTINÚA desde donde estaba, sin enterarse.
+  await durabilityScenario();
+
   if (failures.length > 0) {
     console.error(`\n💥 ${failures.length} fallos`);
     process.exit(1);
@@ -978,6 +985,141 @@ async function saveLoadScenario(): Promise<void> {
 
   h2.ws.close();
   b2.ws.close();
+  await sleep(200);
+}
+
+// Escenario dedicado: DURABILIDAD ante un RECICLADO del Durable Object. Es la CAUSA
+// RAÍZ del bug «las salas se caen de la nada»: antes el DO no persistía nada y toda
+// la partida vivía en RAM; al reciclar Cloudflare el DO (rutinario), la RAM se
+// borraba y la sala se evaporaba. Ahora el estado se persiste a ctx.storage y se
+// restaura al reconstruir el DO. Este test fuerza ese reciclado a media partida
+// (gancho de dev /__evict, que descarta la RAM y reconstruye SOLO desde storage) y
+// afirma que:
+//   (a) la partida reconstruida coincide en tick/oleada/torres con la de antes;
+//   (b) el anfitrión reconecta por su TOKEN a su MISMO slot y sigue como anfitrión;
+//   (c) el otro jugador reconecta por su PREVTOKEN (respaldo de localStorage) a su
+//       MISMO slot — el caso de móvil que pierde el token de sesión;
+//   (d) el bucle de sim REANUDA solo (ticks nuevos) al volver la gente.
+// Si el gancho no está activo (TD_TEST_HOOKS!=1) el escenario avisa y se salta sin
+// fallar (el resto del gate sigue verde).
+async function durabilityScenario(): Promise<void> {
+  console.log('\n— Durabilidad: reciclado del DO a media partida y recuperación transparente —');
+  const HOST_TOKEN = 'token-dur-host';
+  const P2_TOKEN = 'token-dur-p2';
+
+  // ¿está el gancho de reciclado disponible? (apps/worker/.dev.vars → TD_TEST_HOOKS=1)
+  let hookOn = false;
+  try {
+    const probe = await fetch(`${HTTP_BASE}/api/__evict?code=ZZZZ`);
+    if (probe.ok) {
+      const j = (await probe.json()) as { ok?: boolean };
+      hookOn = j?.ok === true;
+    }
+  } catch {
+    /* sin gancho */
+  }
+  if (!hookOn) {
+    console.log('   ⚠️  gancho /__evict no disponible (TD_TEST_HOOKS!=1): se salta el test de durabilidad.');
+    console.log('   Para ejecutarlo, arranca el worker con apps/worker/.dev.vars (TD_TEST_HOOKS=1).');
+    return;
+  }
+
+  // --- partida en curso con estado no trivial (2 jugadores, 2 torres, 1 oleada) ---
+  const host = new TestClient('DurHost', wsUrl({ create: true }));
+  await host.open();
+  host.send({ type: 'create_room', name: 'Dora', token: HOST_TOKEN, settings: { mapId: 'sendero', mode: 'classic', difficulty: 'normal' } });
+  const rj = await host.waitFor('room_joined');
+  const hostId = rj.playerId;
+  await host.waitFor('lobby_state');
+
+  const p2 = new TestClient('DurP2', wsUrl({ code: rj.code }));
+  await p2.open();
+  p2.send({ type: 'join_room', name: 'Dani', token: P2_TOKEN, code: rj.code });
+  const p2rj = await p2.waitFor('room_joined');
+  const p2Id = p2rj.playerId;
+  await host.waitFor('lobby_state');
+
+  p2.send({ type: 'set_ready', ready: true });
+  for (;;) {
+    const lb = await host.waitFor('lobby_state');
+    if (lb.players.find((p) => !p.isHost)?.ready === true) break;
+  }
+  host.send({ type: 'start_game' });
+  await host.waitFor('countdown');
+  const initH = await host.waitFor('game_started', 6000);
+  await p2.waitFor('game_started', 6000);
+
+  // colocar 2 torres y llamar la oleada para tener un estado que reconstruir
+  const map = getMap(initH.init.mapId);
+  const ctx = makePlacementContext(map);
+  const cells: [number, number][] = [];
+  outer: for (let cy = 0; cy < map.gridH; cy++) {
+    for (let cx = 0; cx < map.gridW; cx++) {
+      if (placementError(map, ctx, [], cx, cy) === null) {
+        cells.push([cx, cy]);
+        if (cells.length >= 2) break outer;
+      }
+    }
+  }
+  host.send({ type: 'cmd', cmd: { kind: 'place', towerType: 'archer', cx: cells[0][0], cy: cells[0][1] } });
+  p2.send({ type: 'cmd', cmd: { kind: 'place', towerType: 'cannon', cx: cells[1][0], cy: cells[1][1] } });
+  await sleep(400);
+  host.send({ type: 'cmd', cmd: { kind: 'call_wave' } });
+  await sleep(1800);
+
+  // FOTO de antes del reciclado (último tick que vio el anfitrión)
+  const before = host.ticks[host.ticks.length - 1];
+  assert(!!before, 'hay estado en curso antes del reciclado');
+  const beforeTick = before.t;
+  const beforeWave = before.snap.wave;
+  const beforeTowers = before.snap.towers.length;
+  assert(beforeTowers === 2, `antes del reciclado hay 2 torres (${beforeTowers})`);
+
+  // --- FORZAR EL RECICLADO: el DO descarta su RAM y reconstruye desde ctx.storage ---
+  const evRes = await fetch(`${HTTP_BASE}/api/__evict?code=${rj.code}`);
+  assert(evRes.ok, `POST /__evict responde OK (${evRes.status})`);
+  const ev = (await evRes.json()) as { ok: boolean; inGame: boolean; tick: number | null; wave: number | null; players: number };
+  assert(ev.inGame === true, 'tras el reciclado la partida sigue reconstruida (no se perdió)');
+  assert(ev.players === 2, `el roster reconstruido conserva los 2 jugadores (${ev.players})`);
+  assert(
+    typeof ev.tick === 'number' && ev.tick >= beforeTick,
+    `la reconstrucción llega al tick guardado o más (${ev.tick} >= ${beforeTick})`,
+  );
+  assert(ev.wave === beforeWave, `la oleada reconstruida coincide (${ev.wave} == ${beforeWave})`);
+
+  // los sockets viejos se cortaron en el reciclado (1012 = service restart) → los
+  // clientes reales reconectan solos; aquí abrimos clientes NUEVOS para emularlo.
+  await sleep(150);
+
+  // (b) el anfitrión reconecta por su TOKEN → re-adjunta a su MISMO slot (p... = hostId)
+  const host2 = new TestClient('DurHost2', wsUrl({ code: rj.code }));
+  await host2.open();
+  host2.send({ type: 'join_room', name: 'Dora', token: HOST_TOKEN, code: rj.code });
+  const host2rj = await host2.waitFor('room_joined');
+  assert(host2rj.playerId === hostId, `el anfitrión reconecta a su MISMO slot por token (${host2rj.playerId} == ${hostId})`);
+  assert(host2rj.isHost === true, 'el anfitrión reconectado sigue siendo anfitrión');
+  const reInitH = await host2.waitFor('game_started', 6000);
+  assert(reInitH.init.players.length === 2, 'la partida recuperada arranca con 2 defensores');
+
+  // (c) el otro jugador reconecta por PREVTOKEN (token de sesión nuevo, respaldo viejo)
+  //     → re-adjunta a su MISMO slot (caso móvil que perdió el token de sesión)
+  const p2b = new TestClient('DurP2b', wsUrl({ code: rj.code }));
+  await p2b.open();
+  p2b.send({ type: 'join_room', name: 'Dani', token: 'token-dur-p2-NUEVO', prevToken: P2_TOKEN, code: rj.code });
+  const p2brj = await p2b.waitFor('room_joined');
+  assert(p2brj.playerId === p2Id, `el jugador reconecta a su MISMO slot por prevToken (${p2brj.playerId} == ${p2Id})`);
+  assert(p2brj.spectator !== true, 'el reconectado vuelve como JUGADOR (no de espectador)');
+  await p2b.waitFor('game_started', 6000);
+
+  // (d) el bucle REANUDA solo al volver la gente: llegan ticks NUEVOS que avanzan
+  await sleep(1200);
+  const after = host2.ticks[host2.ticks.length - 1];
+  assert(!!after && after.t >= (ev.tick ?? beforeTick), `la partida SIGUE avanzando tras recuperarse (${after?.t} >= ${ev.tick})`);
+  assert(after.snap.towers.length === beforeTowers, `las torres sobreviven al reciclado (${after.snap.towers.length} == ${beforeTowers})`);
+  assert(after.snap.wave >= beforeWave, `la oleada continúa desde donde estaba (${after.snap.wave} >= ${beforeWave})`);
+
+  host2.ws.close();
+  p2b.ws.close();
   await sleep(200);
 }
 

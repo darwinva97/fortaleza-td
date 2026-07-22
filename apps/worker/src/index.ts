@@ -192,6 +192,20 @@ export default {
       return json({ error: 'No hay códigos de sala libres, intenta de nuevo.' }, 503);
     }
 
+    // SOLO PRUEBAS · gancho de simulación de reciclado del Durable Object para el
+    // test de durabilidad (wstest). Va bajo /api/ para que `run_worker_first` lo
+    // enrute al Worker (si no, los assets lo servirían como SPA). Gated por
+    // env.TD_TEST_HOOKS (solo en apps/worker/.dev.vars, gitignoreado): en producción
+    // la var no existe y la condición es falsa → cae a los assets. Reenvía al DO de
+    // la sala, que descarta su RAM y reconstruye desde storage.
+    if (url.pathname === '/api/__evict' && env.TD_TEST_HOOKS === '1') {
+      const code = (url.searchParams.get('code') ?? '').toUpperCase();
+      if (!/^[A-Z]{4}$/.test(code)) return json({ error: 'bad code' }, 400);
+      const stub = env.ROOM.get(env.ROOM.idFromName(code));
+      const res = await stub.fetch(`https://do/__evict?code=${code}`, { method: 'POST' });
+      return new Response(res.body, { status: res.status, headers: { 'content-type': 'application/json' } });
+    }
+
     if (url.pathname === '/ws') {
       if (request.headers.get('Upgrade') !== 'websocket') {
         return new Response('expected websocket', { status: 426 });

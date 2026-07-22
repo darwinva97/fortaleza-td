@@ -47,6 +47,11 @@ export interface Env {
   // opcionales: sin ellos la integración de Discord queda apagada.
   DISCORD_CLIENT_ID?: string;
   DISCORD_CLIENT_SECRET?: string;
+  // Solo pruebas (nunca en producción): habilita el gancho de simulación de
+  // reciclado del DO para el test de DURABILIDAD de wstest. Se activa por
+  // apps/worker/.dev.vars (gitignoreado); ausente en el wrangler.jsonc, así que en
+  // producción vale undefined y la ruta de simulación no existe.
+  TD_TEST_HOOKS?: string;
 }
 
 interface RoomPlayer {
@@ -150,10 +155,91 @@ function safeColor(s: unknown): string {
   return typeof s === 'string' && /^#[0-9a-fA-F]{3,8}$/.test(s) ? s : PLAYER_COLORS[0];
 }
 
+// ---------- DURABILIDAD de la sala (persistencia a ctx.storage) ----------
+//
+// CAUSA RAÍZ del bug «las salas se caen de la nada»: antes el DO no persistía NADA
+// (el constructor ignoraba el DurableObjectState) y TODA la partida vivía solo en
+// RAM. Cuando Cloudflare recicla el DO (mantenimiento, rebalanceo, presión de
+// memoria — rutinario e independiente de la versión), la RAM se borra, los sockets
+// se cortan y la sala se evapora.
+//
+// FIX: persistir a `ctx.storage` lo MÍNIMO para reconstruir una partida EN CURSO y
+// que los MISMOS jugadores reconecten a su MISMO slot, y RESTAURARLO en el
+// constructor (blockConcurrencyWhile) ANTES de atender ningún request. La
+// reconstrucción es EXACTAMENTE la misma máquina determinista que save/load
+// (createGame + reproducir el replayLog a sus ticks + fast-forward), pero
+// AUTOMÁTICA y transparente: los clientes ya se autoreconectan (net.ts) y vuelven
+// a su sitio sin enterarse.
+const PERSIST_VERSION = 1;
+// THROTTLE del tick persistido: el tick avanza cada 66 ms pero es DETERMINISTA
+// desde seed+comandos, así que NO se persiste cada tick — solo el número, cada
+// ~2.5 s. Un rollback de 1-2 s al restaurar es imperceptible y seguro (los
+// comandos SÍ se persisten en el acto, así que no se pierde ninguna acción).
+const TICK_PERSIST_MS = 2500;
+
+// Un jugador del roster, sin el socket (que no sobrevive a un reciclado): al
+// restaurar se recrea con ws=null y el jugador re-adjunta al reconectar por token.
+interface PersistedPlayer {
+  id: string;
+  token: string;
+  name: string;
+  color: string;
+  isHost: boolean;
+  ready: boolean;
+  abandoned?: boolean;
+  cameFromSpectator?: boolean;
+  door?: number;
+  claimedSlot?: string;
+}
+
+// La partida EN CURSO, reducida a lo que la reconstruye de forma determinista: la
+// misma tripleta {seed + roster inicial + log de comandos} que un replay/guardado,
+// cortada en `tick`, más paused/speed para reanudar igual.
+interface PersistedGame {
+  seed: number;
+  init: ReplayInit;
+  log: ReplayEntry[];
+  tick: number; // tick del último persist ESTRUCTURAL (el log está completo hasta aquí)
+  wave: number;
+  paused: boolean;
+  speed: number;
+}
+
+// El blob que vive en ctx.storage bajo la clave 'room'. El tick "en vivo" va en una
+// clave aparte ('tick') con throttle para no reescribir todo el blob cada 2.5 s.
+interface PersistedRoom {
+  version: number;
+  code: string;
+  initialized: boolean;
+  reserved: boolean;
+  settings: RoomSettings;
+  banned: string[];
+  kicked: string[];
+  nextPlayerNum: number;
+  nextSpectatorNum: number;
+  savedGame: SaveData | null;
+  finishedTick: number;
+  finishedWave: number;
+  game: PersistedGame | null; // null en lobby / lobby-de-guardado / game-over
+  players: PersistedPlayer[]; // solo con partida en curso (el roster de lobby no se persiste)
+}
+
+// La forma de replayInit (settings + roster inicial para el fast-forward).
+type ReplayInit = {
+  mapId: string;
+  mode: RoomSettings['mode'];
+  difficulty: RoomSettings['difficulty'];
+  turbo: boolean;
+  closedDoors: number[];
+  players: { id: string; name: string; color: string }[];
+};
+
 // Una sala = un Durable Object. Reutiliza toda la simulación de @td/shared;
 // solo el transporte (WebSocket) y la orquestación son específicos de Cloudflare.
 // Mientras haya un WebSocket abierto, el DO permanece en memoria (sin hibernar),
-// así el estado de la partida vive en RAM igual que en el servidor Node.
+// así el estado de la partida vive en RAM igual que en el servidor Node. El estado
+// se PERSISTE a ctx.storage (ver bloque DURABILIDAD arriba) para sobrevivir a un
+// reciclado del DO y que los clientes reconecten a su sitio de forma transparente.
 export class RoomDO {
   private env: Env;
   private code = '';
@@ -188,7 +274,7 @@ export class RoomDO {
   private tickErrors = 0;
   // ---- grabación de la repetición (replay) de la partida en curso ----
   private replaySeed = 0;
-  private replayInit: { mapId: string; mode: RoomSettings['mode']; difficulty: RoomSettings['difficulty']; turbo: boolean; closedDoors: number[]; players: { id: string; name: string; color: string }[] } | null = null;
+  private replayInit: ReplayInit | null = null;
   private replayLog: ReplayEntry[] = [];
   // issue #12 · partida CARGADA de un guardado, esperando en el lobby de carga.
   // Mientras no-null y sin `game`, la sala está en modo «reanudar guardado».
@@ -204,8 +290,260 @@ export class RoomDO {
   private nextPlayerNum = 1;
   private nextSpectatorNum = 1;
 
-  constructor(_state: DurableObjectState, env: Env) {
+  // ---- durabilidad (ver bloque DURABILIDAD arriba) ----
+  // El DurableObjectState: su `storage` es la memoria que SÍ sobrevive a un
+  // reciclado del DO. Antes se ignoraba (constructor `_state`) — esa era la causa
+  // raíz del bug. Ahora se guarda y se usa para persistir/restaurar.
+  private state: DurableObjectState;
+  // sala en cierre definitivo (inactividad): deja de persistir y borra el estado,
+  // para que un DO reciclado NO resucite una sala abandonada.
+  private closing = false;
+  // último persist del tick (throttle de TICK_PERSIST_MS)
+  private lastTickPersist = 0;
+
+  constructor(state: DurableObjectState, env: Env) {
     this.env = env;
+    this.state = state;
+    // RESTAURAR antes de atender ningún request: blockConcurrencyWhile bloquea las
+    // entradas (upgrades WS, mensajes) hasta que la reconstrucción termina, así una
+    // reconexión que llega durante la ventana de restauración se procesa DESPUÉS y
+    // re-adjunta al roster ya reconstruido (sin carreras). Todo defensivo: si la
+    // restauración lanza, la sala arranca vacía en vez de tumbar el DO.
+    void this.state.blockConcurrencyWhile(async () => {
+      try {
+        await this.restore();
+      } catch (err) {
+        console.error('[room] fallo al restaurar el estado persistido', err);
+      }
+    });
+  }
+
+  // ---------- persistencia / restauración ----------
+
+  // Construye el blob que se guarda en ctx.storage. La partida solo se persiste si
+  // está EN CURSO y no `over` (una partida terminada NO se restaura: iría al lobby).
+  private buildPersisted(): PersistedRoom {
+    const active = this.game !== null && !this.game.over && this.replayInit !== null;
+    return {
+      version: PERSIST_VERSION,
+      code: this.code,
+      initialized: this.initialized,
+      reserved: this.reserved,
+      settings: this.settings,
+      banned: [...this.banned],
+      kicked: [...this.kicked],
+      nextPlayerNum: this.nextPlayerNum,
+      nextSpectatorNum: this.nextSpectatorNum,
+      savedGame: this.savedGame,
+      finishedTick: this.finishedTick,
+      finishedWave: this.finishedWave,
+      game: active
+        ? {
+            seed: this.replaySeed,
+            init: this.replayInit!,
+            log: this.replayLog,
+            tick: this.game!.tick,
+            wave: this.game!.wave,
+            paused: this.paused,
+            speed: this.speed,
+          }
+        : null,
+      // el roster (con tokens) solo hace falta para RE-ADJUNTAR a una partida en
+      // curso; en el lobby los jugadores reconectan y re-entran de cero.
+      players: active
+        ? this.players.map((p) => ({
+            id: p.id,
+            token: p.token,
+            name: p.name,
+            color: p.color,
+            isHost: p.isHost,
+            ready: p.ready,
+            ...(p.abandoned ? { abandoned: true } : {}),
+            ...(p.cameFromSpectator ? { cameFromSpectator: true } : {}),
+            ...(p.door !== undefined ? { door: p.door } : {}),
+            ...(p.claimedSlot !== undefined ? { claimedSlot: p.claimedSlot } : {}),
+          }))
+        : [],
+    };
+  }
+
+  // Persiste el blob completo. Se llama en CADA cambio estructural: creación de
+  // sala, ajustes/baneos/expulsiones, inicio de partida, cada comando que entra al
+  // replayLog, y cada conexión/desconexión (que muta el roster o mete un `conn`).
+  // Fire-and-forget: la "output gate" de los Durable Objects retiene la salida de
+  // red hasta que las escrituras pendientes se confirman, así el cliente nunca ve
+  // un tick/ack cuya escritura no esté ya durable — no hace falta await en la ruta
+  // caliente.
+  private persist(): void {
+    if (this.closing) return;
+    if (!this.initialized) return; // nada útil que persistir aún
+    void this.state.storage.put('room', this.buildPersisted()).catch((err) => {
+      console.error('[room] fallo al persistir', err);
+    });
+  }
+
+  // Persiste SOLO el número de tick, con throttle. El tick es determinista desde
+  // seed+comandos: no se persiste cada uno, solo cada ~2.5 s, para que la
+  // recuperación fast-forwardee a ~el punto correcto sin reescribir todo el blob.
+  private persistTick(): void {
+    if (this.closing || !this.game || this.game.over) return;
+    const now = Date.now();
+    if (now - this.lastTickPersist < TICK_PERSIST_MS) return;
+    this.lastTickPersist = now;
+    void this.state.storage.put('tick', { t: this.game.tick, wave: this.game.wave }).catch(() => {});
+  }
+
+  // Borra la PARTIDA persistida (no la sala): un DO reciclado restaurará un lobby
+  // limpio, nunca la partida muerta/abortada. La sala sigue existiendo (persist con
+  // game=null). Lo llaman endGame y abortGame.
+  private clearPersistedGame(): void {
+    void this.state.storage.delete('tick').catch(() => {});
+    this.persist(); // game ya es null/over → buildPersisted escribe base sin partida
+  }
+
+  // Borra TODO el estado persistido (sala en cierre definitivo por inactividad):
+  // marca `closing` para que ningún persist tardío la resucite.
+  private clearAllPersisted(): void {
+    this.closing = true;
+    void this.state.storage.deleteAll().catch(() => {});
+  }
+
+  // SOLO PRUEBAS · deja los campos en memoria como los de una instancia RECIÉN
+  // construida, para que restore() los repueble desde storage igual que el
+  // constructor tras un reciclado. No toca `env`/`state`/`closing`.
+  private resetInMemoryState(): void {
+    if (this.loop) clearInterval(this.loop);
+    this.loop = null;
+    this.clearCountdowns();
+    this.code = '';
+    this.initialized = false;
+    this.reserved = false;
+    this.players = [];
+    this.spectators = [];
+    this.settings = sanitizeSettings(undefined);
+    this.game = null;
+    this.simCtx = null;
+    this.pendingCmds = [];
+    this.banned = new Set();
+    this.kicked = new Set();
+    this.paused = false;
+    this.speed = 1;
+    this.tickErrors = 0;
+    this.replaySeed = 0;
+    this.replayInit = null;
+    this.replayLog = [];
+    this.savedGame = null;
+    this.finishedTick = 0;
+    this.finishedWave = 0;
+    this.lastPingAt = new Map();
+    this.lastDirReport = 0;
+    this.lastActivity = Date.now();
+    this.idleWarned = false;
+    this.nextPlayerNum = 1;
+    this.nextSpectatorNum = 1;
+    this.lastTickPersist = 0;
+  }
+
+  // Restaura el estado desde ctx.storage al construir el DO (reciclado). Reconstruye
+  // la sala y, si había una partida EN CURSO, la reproduce de forma determinista con
+  // el MISMO motor puro que save/load (createGame + replay del log + fast-forward
+  // hasta el tick guardado). NO arranca el bucle: lo hará el primer reconnect (via
+  // reviveLoop en addPlayer), respetando la invariante «el loop solo corre con gente
+  // conectada» y evitando que la partida avance sola sin nadie mirando.
+  private async restore(): Promise<void> {
+    const blob = await this.state.storage.get<PersistedRoom>('room');
+    if (!blob || blob.version !== PERSIST_VERSION) return;
+
+    // 1) base de la sala (para que un 'create' no pise una sala restaurada y para
+    //    conservar ajustes/baneos/expulsiones y el lobby de un guardado).
+    this.code = blob.code;
+    this.initialized = blob.initialized;
+    this.reserved = blob.reserved;
+    this.settings = blob.settings;
+    this.banned = new Set(blob.banned);
+    this.kicked = new Set(blob.kicked);
+    this.nextPlayerNum = blob.nextPlayerNum;
+    this.nextSpectatorNum = blob.nextSpectatorNum;
+    this.savedGame = blob.savedGame;
+    this.finishedTick = blob.finishedTick;
+    this.finishedWave = blob.finishedWave;
+
+    if (!blob.game) return; // lobby / lobby-de-guardado / game-over: nada que reconstruir
+
+    // 2) tick "en vivo" (clave aparte, con throttle): puede ir por delante del tick
+    //    del blob estructural (entre comandos solo avanza el tick). El log está
+    //    completo hasta blob.game.tick y NO hay comandos entre medias (si los
+    //    hubiera, un persist estructural habría reescrito el blob), así reconstruir
+    //    hasta el tick mayor es correcto.
+    const live = await this.state.storage.get<{ t: number; wave: number }>('tick');
+    const g = blob.game;
+    const target = Math.max(g.tick, live?.t ?? 0);
+
+    // 3) fast-forward determinista con el motor puro de replay (idéntico a save/load)
+    const rdata: ReplayData = {
+      v: BALANCE_VERSION,
+      seed: g.seed,
+      mapId: g.init.mapId,
+      mode: g.init.mode,
+      difficulty: g.init.difficulty,
+      players: g.init.players,
+      log: g.log,
+      finalTick: target,
+      victory: false,
+      wave: g.wave,
+      turbo: g.init.turbo,
+      ...(g.init.closedDoors.length > 0 ? { closedDoors: g.init.closedDoors } : {}),
+    };
+    const sim = makeReplaySim(rdata);
+    // reconstruye hasta el tick guardado. A ~180k ticks/s (medido en simtest/este
+    // proyecto) incluso decenas de miles de ticks tardan < 1 s, muy por debajo del
+    // umbral de un snapshot; se corta en `over` como defensa (una partida terminada
+    // no se revive: cae al lobby más abajo).
+    while (sim.state.tick < target && !sim.state.over) {
+      stepReplaySim(sim, rdata, sim.state.tick);
+    }
+
+    // 4) una partida que ya terminó no se revive: deja la sala lista para el lobby y
+    //    limpia el estado persistido de esa partida muerta.
+    if (sim.state.over) {
+      this.finishedTick = sim.state.tick;
+      this.finishedWave = sim.state.wave;
+      this.clearPersistedGame();
+      return;
+    }
+
+    // 5) instalar la partida reconstruida y continuar la grabación sobre el mismo log
+    this.game = sim.state;
+    this.simCtx = sim.ctx;
+    this.replaySeed = g.seed;
+    this.replayInit = g.init;
+    this.replayLog = g.log.slice();
+    this.paused = g.paused;
+    this.speed = g.speed;
+
+    // 6) roster: se recrea con ws=null (desconectado). Al reconectar por token (o
+    //    prevToken/nombre), addPlayer encuentra a ESTE jugador y re-adjunta el nuevo
+    //    socket a su MISMO slot — exactamente la reconexión normal, ahora también
+    //    tras un reciclado. NO se tocan las conexiones de la sim: el estado
+    //    reconstruido ya refleja el connectedCount del tick guardado (determinismo
+    //    SAGRADO: reconstruir == estado en ese tick, bit a bit). El escalado se
+    //    reajusta solo cuando los reconnects/drops reales metan sus `conn`.
+    this.players = blob.players.map((pp) => ({
+      id: pp.id,
+      token: pp.token,
+      name: pp.name,
+      color: pp.color,
+      ws: null,
+      isHost: pp.isHost,
+      ready: pp.ready,
+      ...(pp.abandoned ? { abandoned: true } : {}),
+      ...(pp.cameFromSpectator ? { cameFromSpectator: true } : {}),
+      ...(pp.door !== undefined ? { door: pp.door } : {}),
+      ...(pp.claimedSlot !== undefined ? { claimedSlot: pp.claimedSlot } : {}),
+    }));
+    // los espectadores no se persisten: al reconectar entran de nuevo como
+    // espectadores por la vía normal (partida en curso + token nuevo).
+    this.spectators = [];
   }
 
   // ---------- entrada HTTP (reserva de código + upgrade a WebSocket) ----------
@@ -278,7 +616,51 @@ export class RoomDO {
       // reanudación arranque en modo turbo (sanitizeSettings lo ignora en horda igual).
       // F9d · ídem con las puertas cerradas (una revancha en la misma sala las hereda).
       this.settings = sanitizeSettings({ mapId: clean.mapId, mode: clean.mode, difficulty: clean.difficulty, turbo: clean.turbo, closedDoors: clean.closedDoors });
+      // DURABILIDAD: persistir el lobby-de-guardado para que un reciclado del DO no
+      // pierda el guardado pendiente (los reclamos por token se re-hacen solos al
+      // reconectar, así que no hace falta persistirlos).
+      this.persist();
       return new Response('ok');
+    }
+
+    // SOLO PRUEBAS · simula un RECICLADO del Durable Object (para el test de
+    // durabilidad de wstest). wrangler dev no permite evictar a demanda, así que
+    // este gancho fuerza el mismo camino: descarta la RAM y reconstruye desde
+    // ctx.storage EXACTAMENTE como haría el constructor de una instancia nueva.
+    // Gated por env.TD_TEST_HOOKS (solo en apps/worker/.dev.vars, gitignoreado):
+    // en producción la variable no existe y esta ruta responde 404. El Worker
+    // además solo reenvía esta ruta cuando el flag está activo (doble candado).
+    if (url.pathname === '/__evict') {
+      if (this.env.TD_TEST_HOOKS !== '1') return new Response('not found', { status: 404 });
+      // 1) volcar el estado más reciente a storage (saltándose el throttle) para que
+      //    la reconstrucción apunte al tick REAL, no al último throttled.
+      if (this.game && !this.game.over) {
+        await this.state.storage.put('room', this.buildPersisted());
+        await this.state.storage.put('tick', { t: this.game.tick, wave: this.game.wave });
+      }
+      // 2) cortar todos los sockets (como el teardown del DO); 1012 = "service
+      //    restart", que el cliente SÍ reconecta (a diferencia de 4001/4002).
+      for (const p of this.players) {
+        try {
+          p.ws?.close(1012, 'evict');
+        } catch {
+          /* nada */
+        }
+      }
+      for (const s of this.spectators) {
+        try {
+          s.ws.close(1012, 'evict');
+        } catch {
+          /* nada */
+        }
+      }
+      // 3) descartar la RAM (instancia nueva) y RESTAURAR desde storage.
+      this.resetInMemoryState();
+      await this.restore();
+      return new Response(
+        JSON.stringify({ ok: true, inGame: this.game !== null, tick: this.game?.tick ?? null, wave: this.game?.wave ?? null, players: this.players.length }),
+        { headers: { 'content-type': 'application/json' } },
+      );
     }
 
     // anuncio administrativo (aviso de despliegue): el Worker ya validó el
@@ -628,6 +1010,10 @@ export class RoomDO {
     });
     // cualquier cambio de sala (miembros/ajustes/estado) refresca el directorio
     this.reportPublic(true);
+    // …y persiste el estado: broadcastLobby es el punto común de casi todo cambio
+    // estructural (crear/unirse/reconectar/desconectar/ajustes/baneos), así que
+    // aquí queda cubierta la durabilidad de esos cambios de una sola vez.
+    this.persist();
   }
 
   // ---------- lobby de una partida CARGADA (issue #12) ----------
@@ -796,6 +1182,9 @@ export class RoomDO {
     this.reviveLoop(true);
     // la lista de salas públicas pasa a mostrarla "en partida" (👁 observable)
     this.reportPublic(true);
+    // DURABILIDAD: persistir la partida recién arrancada (seed + roster + log vacío)
+    // para que un reciclado inmediato ya la pueda reconstruir.
+    this.persist();
   }
 
   // issue #12 · REANUDAR una partida guardada: reconstruye el estado ejecutando el
@@ -904,6 +1293,10 @@ export class RoomDO {
     } else {
       this.reviveLoop(true);
       this.systemMsg(`▶ Partida reanudada desde la oleada ${this.game.wave}`);
+      // DURABILIDAD: la partida reanudada ya es una partida EN CURSO — persistirla
+      // (con su roster de slots adoptados y el log heredado del guardado) para que
+      // sobreviva a un reciclado igual que una partida nueva.
+      this.persist();
     }
     this.reportPublic(true);
   }
@@ -1004,6 +1397,13 @@ export class RoomDO {
       // mantiene fresca la oleada que muestra la lista de salas públicas
       this.reportPublic();
 
+      // DURABILIDAD: los comandos son POCO frecuentes (solo acciones de jugador) y
+      // acaban de entrar al replayLog → persistir el blob en el acto GARANTIZA no
+      // perder ninguna acción ante un reciclado. El tick avanza cada 66 ms pero es
+      // determinista desde seed+comandos: solo se persiste su número, con throttle.
+      if (cmds.length > 0) this.persist();
+      this.persistTick();
+
       if (this.game.over && !wasOver) this.endGame();
       this.tickErrors = 0; // el tick salió limpio: se reinicia la racha de fallos
     } catch (err) {
@@ -1062,6 +1462,11 @@ export class RoomDO {
     }
     this.game = null;
     this.simCtx = null;
+    // DURABILIDAD (coordinación con el blindaje del tick, commit 5df41d8): si el sim
+    // era irrecuperable y se abortó, BORRAR la partida persistida — si no, un DO
+    // reciclado la restauraría y volvería a crashear en bucle. La sala sobrevive
+    // (game=null); solo muere la partida corrupta.
+    this.clearPersistedGame();
     try {
       this.broadcast({ type: 'chat', from: '⚠️', color: '#ef5350', text: 'La partida sufrió un error y tuvo que detenerse. Vuelven al lobby.' });
       this.broadcast({ type: 'game_over', stats });
@@ -1102,6 +1507,12 @@ export class RoomDO {
     // (this.game pasará a null pero replayInit/replayLog siguen vivos hasta la revancha)
     this.finishedTick = g.tick;
     this.finishedWave = g.wave;
+    // DURABILIDAD: borrar la PARTIDA persistida ya (buildPersisted no persiste una
+    // partida `over` de todas formas). Así un DO reciclado durante la pantalla de FIN
+    // restaura un lobby limpio, nunca la partida muerta. El coste: guardar desde la
+    // pantalla de FIN no sobrevive a un reciclado — pero la partida ya terminó, no
+    // hay estado en vivo que proteger.
+    this.clearPersistedGame();
     const stats: EndStats = {
       victory: g.over?.victory ?? false,
       wave: g.wave,
@@ -1286,6 +1697,11 @@ export class RoomDO {
       this.systemMsg('⏰ Sala cerrada por 30 minutos de inactividad.');
       this.lastActivity = Date.now(); // no re-disparar si algún cierre tarda
       this.idleWarned = false;
+      // DURABILIDAD: la sala se abandona de verdad → borrar TODO el estado persistido
+      // y marcar `closing`, para que un DO reciclado NO la resucite (ni la partida ni
+      // el lobby). `closing` frena cualquier persist tardío del dropSocket que dispare
+      // el cierre de estos sockets.
+      this.clearAllPersisted();
       for (const p of this.players) {
         try {
           p.ws?.close(IDLE_CLOSE_CODE, 'idle');
