@@ -484,11 +484,12 @@ export function statsOf(t: {
 }
 
 // ¿Esta torre DISPARA? No disparan: la mina (incomePerWave), la Escarcha Eterna
-// (slowAura), el Estandarte (auraDamage/auraHaste), el Alquimista (auraBounty),
-// las torres de camino (Trampa/Barril) ni el Sentry (detects). EXCEPCIÓN: el
-// Señor de la Guerra (`alsoFires`) tiene aura Y ADEMÁS dispara. Vive aquí (y no
-// en sim/step.ts) para que sim/commands.ts pueda validar focus/halt (Lote 4) sin
-// crear un ciclo de imports step ⇄ commands. La sim y el cliente la comparten.
+// (slowAura), el Estandarte (auraDamage/auraHaste/auraCrit), el Alquimista
+// (auraBounty), las torres de camino (Trampa/Barril) ni el Sentry (detects).
+// EXCEPCIÓN: el Señor de la Guerra (`alsoFires`) tiene aura Y ADEMÁS dispara. Vive
+// aquí (y no en sim/step.ts) para que sim/commands.ts pueda validar focus/halt
+// (Lote 4) sin crear un ciclo de imports step ⇄ commands. La sim y el cliente la
+// comparten.
 export function towerFires(t: {
   type: TowerTypeId;
   level: number;
@@ -502,6 +503,14 @@ export function towerFires(t: {
     lvl.slowAura ||
     lvl.auraDamage !== undefined ||
     lvl.auraHaste !== undefined ||
+    // F9a (v19) · el Estandarte del Vencedor es un aura PURA (solo `auraCrit`, sin
+    // auraDamage/Haste): sin esta línea `towerFires` lo daba por torre que dispara
+    // (isBanner sí mira auraCrit, pero esta función no lo hacía). Hoy es inocuo
+    // —banner tiene targetsAir/Ground=false, así que pickTarget nunca le da blanco—
+    // pero es incoherente: entraba a fireTower cada tick y era focus/halt-able. Lo
+    // alineamos con isBanner. NO cambia partidas sanas (no disparaba proyectil ni
+    // antes ni ahora; su aura de crítico sigue viva vía computeAuras).
+    lvl.auraCrit !== undefined ||
     lvl.auraBounty !== undefined ||
     TOWERS[t.type].onPathOnly ||
     TOWERS[t.type].detects
