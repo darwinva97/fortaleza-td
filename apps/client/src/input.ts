@@ -1,8 +1,8 @@
-import { placementError, TOWERS, type PlacementError, type TowerTypeId } from '@td/shared';
+import { placementError, SUB, TOWER_ORDER, TOWERS, type PlacementError, type TowerTypeId } from '@td/shared';
 import { net } from './net.js';
 import { actionForKey, towerTypeForAction } from './keymap.js';
 import { myGold, store } from './store.js';
-import { centerOn, getPlacementCtx, getView, minimapHit, panBy, resetCamera, zoomAt } from './renderer.js';
+import { centerOn, getPlacementCtx, getView, minimapHit, myPlot, panBy, resetCamera, zoomAt } from './renderer.js';
 import {
   armFocus,
   cancelPremoveAt,
@@ -28,6 +28,8 @@ const PLACE_ERRORS: Record<Exclude<PlacementError, null>, string> = {
   bloqueado: 'Esa celda está bloqueada',
   ocupado: 'Ya hay una torre en esa celda',
   fuera_camino: 'Esta torre solo se coloca SOBRE el camino',
+  sella: '🚧 Ahí cierras el paso del todo: siempre debe quedar un hueco',
+  fuera_parcela: '🏳 Esa parcela no es tuya',
 };
 
 function cellFromPoint(canvas: HTMLCanvasElement, clientX: number, clientY: number): { cx: number; cy: number } | null {
@@ -35,10 +37,20 @@ function cellFromPoint(canvas: HTMLCanvasElement, clientX: number, clientY: numb
   if (!gs) return null;
   const rect = canvas.getBoundingClientRect();
   const view = getView();
-  const cx = Math.floor((clientX - rect.left - view.ox) / view.scale);
-  const cy = Math.floor((clientY - rect.top - view.oy) / view.scale);
-  if (cx < 0 || cy < 0 || cx >= gs.map.gridW || cy >= gs.map.gridH) return null;
-  return { cx, cy };
+  const wx = (clientX - rect.left - view.ox) / view.scale;
+  const wy = (clientY - rect.top - view.oy) / view.scale;
+  if (wx < 0 || wy < 0 || wx >= gs.map.gridW || wy >= gs.map.gridH) return null;
+  // LABERINTO · rejilla de MEDIA casilla (build grid): la torre ocupa un cuadro
+  // entero pero su esquina cae cada media casilla, así que se redondea la esquina
+  // al medio más cercano tomando el cursor como CENTRO de la torre. Es lo que
+  // permite solapar filas y cerrar las escaleras diagonales.
+  if (gs.map.maze === true) {
+    const snap = (v: number): number => Math.round((v - 0.5) * SUB) / SUB;
+    const cx = Math.min(gs.map.gridW - 1, Math.max(0, snap(wx)));
+    const cy = Math.min(gs.map.gridH - 1, Math.max(0, snap(wy)));
+    return { cx, cy };
+  }
+  return { cx: Math.floor(wx), cy: Math.floor(wy) };
 }
 
 // coordenadas de mundo (celdas, fraccionarias) de un punto de pantalla
@@ -142,8 +154,20 @@ function selectTowerGroupAt(canvas: HTMLCanvasElement, clientX: number, clientY:
 function sendPlace(cx: number, cy: number, keepPlacing: boolean): void {
   const gs = store.game;
   if (!gs || gs.selection?.kind !== 'placing' || !gs.latest) return;
-  const towers = gs.latest.towers.map((t) => ({ cx: t[2], cy: t[3] }));
-  const err = placementError(gs.map, getPlacementCtx(gs.map), towers, cx, cy, gs.selection.towerType);
+  // el tipo viaja porque en laberinto las trampas de suelo NO cuentan como muro:
+  // sin él, la previsualización rechazaría colocaciones que el servidor acepta
+  const towers = gs.latest.towers.map((t) => ({ cx: t[2], cy: t[3], type: TOWER_ORDER[t[1]] }));
+  // ARENA · la parcela propia viaja para que el aviso local coincida con lo que
+  // hará el servidor (que también la comprueba)
+  const err = placementError(
+    gs.map,
+    getPlacementCtx(gs.map),
+    towers,
+    cx,
+    cy,
+    gs.selection.towerType,
+    myPlot(gs.map) ?? undefined,
+  );
   if (err) {
     toast(PLACE_ERRORS[err]);
     return;
@@ -493,9 +517,9 @@ export function initInput(canvas: HTMLCanvasElement): void {
     const active = document.activeElement;
     if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) return;
 
-    // F9c · panear con las FLECHAS (escritorio): imprescindible en mapas con
-    // viewCap donde no se ve el tablero entero. Solo flechas — WASD ya son
-    // atajos de torre (W = barril). El auto-repeat del teclado da la continuidad.
+    // F9c · panear con las FLECHAS (escritorio): cómodo en mapas gigantes cuando
+    // se juega con zoom acercado. Solo flechas — WASD ya son atajos de torre
+    // (W = barril). El auto-repeat del teclado da la continuidad.
     const ARROW_PAN = 72;
     if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') {
       e.preventDefault();

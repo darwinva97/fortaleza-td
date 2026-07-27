@@ -62,8 +62,25 @@ export interface LobbyPlayer {
 // Los ajustes vienen del cliente: nunca confiar en ellos. Un mapId desconocido
 // haría throw en getMap() al iniciar la partida y tumbaría el proceso/DO entero.
 export function sanitizeSettings(s: Partial<RoomSettings> | undefined): RoomSettings {
-  const mapId = s?.mapId && MAPS.some((m) => m.id === s.mapId) ? s.mapId : MAPS[0].id;
-  const mode: GameMode = s?.mode === 'endless' ? 'endless' : s?.mode === 'horde' ? 'horde' : 'classic';
+  let mapId = s?.mapId && MAPS.some((m) => m.id === s.mapId) ? s.mapId : MAPS[0].id;
+  const mode: GameMode =
+    s?.mode === 'endless'
+      ? 'endless'
+      : s?.mode === 'horde'
+        ? 'horde'
+        : s?.mode === 'arena'
+          ? 'arena'
+          : 'classic';
+  // ARENA · mapa y modo van EMPAREJADOS. Un mapa de parcelas en cooperativo son
+  // ocho caminos aislados que nadie puede defender a la vez, y el modo arena sin
+  // parcelas no tendría dónde repartir a la gente. Se corrige aquí, que es la
+  // puerta por la que entran los ajustes del cliente.
+  const isArenaMap = (id: string): boolean => MAPS.find((m) => m.id === id)?.plots !== undefined;
+  if (mode === 'arena' && !isArenaMap(mapId)) {
+    mapId = MAPS.find((m) => m.plots !== undefined)?.id ?? mapId;
+  } else if (mode !== 'arena' && isArenaMap(mapId)) {
+    mapId = MAPS.find((m) => m.plots === undefined)?.id ?? MAPS[0].id;
+  }
   const difficulty = s?.difficulty === 'easy' || s?.difficulty === 'hard' ? s.difficulty : 'normal';
   // Turbo ⚡ SIEMPRE OFF en horda: su economía es un bucle de saturación (sin fin de
   // oleada clásico ni fuga), así que comprimir botín/bono/interludios no tiene un
@@ -152,11 +169,22 @@ export interface SnapPlayer {
   id: string;
   gold: number;
   wood: number; // F5.2 · madera talada por su orco leñador
-  orcLevel: number; // F5.5 · nivel del orco (1..5): más nivel = más tala/s
+  orcLevel: number; // F5.5 · nivel del orco (1..ORC_RATES.length): más nivel = más tala/s
   connected: boolean;
   kills: number;
   damage: number;
   goldEarned: number;
+  // --- ARENA · lo que en los otros modos es del equipo y aquí es de cada uno ---
+  // (campos al FINAL: añadirlos no rompe a los clientes que no los leen)
+  plot: number; // parcela que defiende
+  lives: number; // sus vidas
+  maxLives: number;
+  eliminated: boolean; // se quedó sin vidas: sigue mirando, ya no compite
+  waveReached: number; // oleada a la que llegó (criterio de ranking)
+  // precios PROPIOS (en los otros modos son los de sala y valen los de Snap)
+  boomCost: number;
+  repairCost: number;
+  woodPrice: number;
 }
 
 export interface Snap {
@@ -222,6 +250,16 @@ export function buildSnap(state: GameState): Snap {
       kills: p.stats.kills,
       damage: Math.round(p.stats.damage),
       goldEarned: Math.round(p.stats.goldEarned),
+      plot: p.plot,
+      lives: p.lives,
+      maxLives: p.maxLives,
+      eliminated: p.eliminated,
+      waveReached: p.waveReached,
+      // en arena los precios escalan por jugador; fuera de arena repiten los de
+      // sala para que el cliente pueda leer siempre del mismo sitio
+      boomCost: boomCost(state.mode === 'arena' ? p : state),
+      repairCost: repairCost(state.mode === 'arena' ? p : state),
+      woodPrice: r2(state.mode === 'arena' ? p.woodPrice : state.woodPrice),
     })),
     enemies: state.enemies.map((e) => {
       let flags = 0;
@@ -307,6 +345,12 @@ export interface EndStatsPlayer {
   goldEarned: number;
   goldSpent: number;
   towersBuilt: number;
+  // ARENA · el resultado de cada uno. Es lo que ordena el ranking: primero quien
+  // llegó más lejos y, a igualdad de oleada, quien aguantó más dentro de ella.
+  // Opcionales al final: los otros modos no los mandan y nada se rompe.
+  waveReached?: number;
+  eliminatedTick?: number;
+  eliminated?: boolean;
 }
 
 export interface EndStats {
@@ -471,7 +515,9 @@ export function validateSaveData(x: unknown): ValidateSaveResult {
   if (typeof d.mapId !== 'string' || !MAPS.some((m) => m.id === d.mapId)) {
     return bad('El mapa de este guardado no existe en esta versión del juego.');
   }
-  if (d.mode !== 'classic' && d.mode !== 'endless' && d.mode !== 'horde') return bad('Guardado corrupto (modo).');
+  if (d.mode !== 'classic' && d.mode !== 'endless' && d.mode !== 'horde' && d.mode !== 'arena') {
+    return bad('Guardado corrupto (modo).');
+  }
   if (d.difficulty !== 'easy' && d.difficulty !== 'normal' && d.difficulty !== 'hard') {
     return bad('Guardado corrupto (dificultad).');
   }

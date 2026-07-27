@@ -51,9 +51,9 @@ todo. Crea sala con `/ws?create=1` (el backend asigna código) y se une con `/ws
   multi-puerta: **reclama tu puerta por color** (tu cámara nace ahí, tu portal gira con tu color),
   el anfitrión puede **cerrar puertas** sin dueño (los monstruos salen solo por las abiertas) y la
   **densidad escala por ruta abierta** con presupuesto neutro (más bichos, misma dificultad).
-- **Cámara**: encuadre cover sin bandas muertas, zoom/pan (rueda, pellizco, arrastre, **flechas**),
-  minimapa con **radar de fugas** (la puerta que fuga parpadea en rojo) y mapas gigantes con
-  `viewCap` — no ves el tablero entero: se juega navegando, como el Green TD original.
+- **Cámara**: encuadre cover sin bandas muertas, zoom/pan (rueda, pellizco, arrastre, **flechas**) y
+  minimapa con **radar de fugas** (la puerta que fuga parpadea en rojo). El zoom siempre permite ver
+  el mapa entero o jugar acercado, también en los mapas gigantes.
 - Co-op de hasta 8: vidas compartidas, oro individual con bono por llamar antes, mercado de madera,
   tienda, ping cooperativo, espectadores que sugieren torres, expulsar/vetar, **continuar en otro
   dispositivo**, guardar/cargar partida y **repeticiones** con seek.
@@ -107,7 +107,6 @@ ganando la seed de referencia.
 ## Añadir un mapa
 
 Entrada nueva en `packages/shared/src/balance/maps.ts`: grilla, rutas por waypoints (segmentos
-horizontales/verticales; multi-ruta soportado — los tramos compartidos deben ser celda-idénticos),
-decoración `blocked`, y opcionalmente `viewCap` (máximo de celdas visibles: el mapa se juega
-navegando). Con ≥4 rutas se activan solas las puertas (reclamo por color y cierre del anfitrión).
+horizontales/verticales; multi-ruta soportado — los tramos compartidos deben ser celda-idénticos)
+y decoración `blocked`. Con ≥4 rutas se activan solas las puertas (reclamo por color y cierre del anfitrión).
 Aparece automáticamente en los selectores; `pnpm simtest` valida la estructura.

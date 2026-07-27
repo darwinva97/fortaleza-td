@@ -9,6 +9,7 @@ export * from './balance/affixes.js';
 export * from './balance/waves.js';
 export * from './balance/calendar.js';
 export * from './balance/maps.js';
+export * from './sim/field.js';
 export * from './sim/grid.js';
 export * from './sim/state.js';
 export * from './sim/step.js';

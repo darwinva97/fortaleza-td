@@ -1179,6 +1179,13 @@ export class RoomDO {
     for (const p of this.players) {
       this.send(p, { type: 'game_started', init: this.gameInit(p.id) });
     }
+    // BUGFIX · los ESPECTADORES que ya estaban en el lobby también entran a ver la
+    // partida. Antes solo se avisaba a los jugadores, así que al espectador se le
+    // quedaba la cuenta atrás en pantalla para siempre: la partida arrancaba sin
+    // él y no tenía forma de llegar a ella salvo recargar.
+    for (const s of this.spectators) {
+      this.sendGameStateToSpectator(s);
+    }
     this.reviveLoop(true);
     // la lista de salas públicas pasa a mostrarla "en partida" (👁 observable)
     this.reportPublic(true);
@@ -1455,6 +1462,10 @@ export class RoomDO {
           goldEarned: Math.round(p.stats.goldEarned),
           goldSpent: Math.round(p.stats.goldSpent),
           towersBuilt: p.stats.towersBuilt,
+          // ARENA · el resultado individual, que es lo que ordena el ranking
+          waveReached: p.waveReached,
+          eliminatedTick: p.eliminatedTick,
+          eliminated: p.eliminated,
         })),
       };
     } catch {
@@ -1529,6 +1540,9 @@ export class RoomDO {
         goldEarned: Math.round(p.stats.goldEarned),
         goldSpent: Math.round(p.stats.goldSpent),
         towersBuilt: p.stats.towersBuilt,
+        waveReached: p.waveReached,
+        eliminatedTick: p.eliminatedTick,
+        eliminated: p.eliminated,
       })),
     };
     // récords: endless (Infinito) y horde (Horda) puntúan por oleada alcanzada.
@@ -1895,20 +1909,33 @@ export class RoomDO {
       }
 
       case 'move_to_spectator': {
-        if (!player.isHost) {
+        // BUGFIX · pasarse UNO MISMO a la grada no necesita permiso del anfitrión:
+        // es una decisión sobre la propia participación. Mover a OTRO sí sigue
+        // siendo cosa del anfitrión.
+        const self = msg.playerId === player.id;
+        if (!self && !player.isHost) {
           this.send(player, { type: 'error', msg: 'Solo el anfitrión puede mover a espectadores' });
           break;
         }
         if (this.game && !this.game.over) break; // solo en el lobby
-        const target = this.players.find((p) => p.id === msg.playerId);
-        if (!target || target.id === player.id) break;
+        const target = self ? player : this.players.find((p) => p.id === msg.playerId);
+        if (!target) break;
+        // que no se vacíe la sala: sin jugadores no hay partida que empezar ni
+        // anfitrión a quien pasarle el mando
+        if (self && this.players.filter((p) => p.ws).length <= 1) {
+          this.send(player, { type: 'error', msg: 'Eres el único jugador: la sala se quedaría vacía' });
+          break;
+        }
         // sin socket no hay a quién reclasificar: demoteToSpectator lo dejaría
         // FUERA de la sala en silencio (ni jugador ni espectador). Rechazar.
         if (!target.ws) {
           this.send(player, { type: 'error', msg: `${target.name} está desconectado` });
           break;
         }
-        this.demoteToSpectator(target, `${target.name} pasó a la zona de espectadores`);
+        this.demoteToSpectator(
+          target,
+          self ? `${target.name} se pasó a la zona de espectadores` : `${target.name} pasó a la zona de espectadores`,
+        );
         this.broadcastLobby();
         break;
       }
@@ -2151,6 +2178,23 @@ export class RoomDO {
         this.reportPublic();
         this.checkIdle();
         break;
+      // BUGFIX · un espectador puede volver a JUGAR por su cuenta mientras la sala
+      // siga en el lobby. Antes dependía por completo de que el anfitrión lo
+      // trajera, así que quien se ponía a mirar quedaba atrapado en la grada.
+      case 'move_to_player': {
+        if (msg.spectatorId !== spec.id) break; // a sí mismo y a nadie más
+        if (this.game && !this.game.over) {
+          this.sendTo(spec.ws, { type: 'error', msg: 'La partida ya empezó: entra en la siguiente' });
+          break;
+        }
+        if (this.players.length >= MAX_PLAYERS) {
+          this.sendTo(spec.ws, { type: 'error', msg: 'La sala está llena' });
+          break;
+        }
+        this.restoreToPlayer(spec);
+        this.broadcastLobby();
+        break;
+      }
       // un espectador que se va: cierre limpio del socket (dropSocket lo quita)
       case 'leave':
         spec.ws.close();

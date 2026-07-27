@@ -324,12 +324,17 @@ export const MAPS: MapDef[] = [
     id: 'granconcilio',
     name: 'El Gran Concilio',
     desc: 'Nueve huestes por nueve puertas descienden hasta el trono del sur. Cada quien guarda su puerta; con ocho manos una queda siempre sin dueño. Las vidas se pierden juntas.',
-    gridW: 52,
+    // gridW 53 (antes 52): el trazado transcrito es un espejo bilateral EXACTO
+    // respecto a la columna 26 (cada pareja de tramos suma 52), pero con 52
+    // columnas el centro geométrico era 25.5 → todo el mapa quedaba corrido una
+    // celda (margen izquierdo 4, derecho 3) y a ojo «los caminos no están
+    // iguales» (reporte directo, con razón). Con 53 la columna 26 ES el eje:
+    // simetría perfecta sin tocar ni un waypoint (cero impacto en sim/guardados).
+    gridW: 53,
     gridH: 60,
     theme: 'grass',
-    // Cámara CAPADA a ~1/4 del mapa: es un mapa XL «de fondo», no debe abarcarse de
-    // un vistazo ni con el zoom-out máximo (lo aplica la cámara del cliente).
-    viewCap: { w: 30, h: 26 },
+    // (El viewCap que capaba la cámara a ~1/4 del mapa fue RETIRADO: el jugador
+    //  decide si abarca el tablero entero o juega acercado — ver types.ts.)
     // TRANSCRIPCIÓN FIEL del minimapa original de Green TD (Green Td PROS Remastered
     // v4.4). Geometría reconstruida del .w3x: las 75 regiones con nombre de
     // war3map.w3r (coordenadas de mundo) + el encadenado de waypoints de war3map.j
@@ -346,10 +351,17 @@ export const MAPS: MapDef[] = [
     // Los 4 flancos izquierdos (Pink/Orange/Purple/Blue) confluyen en el TRONCO
     // IZQUIERDO (col 24→22) y los 5 derechos (Gray/Green/Red/Yellow/Teal) en el
     // TRONCO DERECHO (col 28→30); ambos se funden en el vestíbulo (row 51) y bajan por
-    // la RECTA FINAL (col 26) al trono (26,56). Longitudes por puerta FIELES al
-    // original (fidelidad > equilibrio; en el original tampoco eran iguales): media
-    // 98, de 53 (Blue/Teal) a 138 (Green) — mismas proporciones que el minimapa
-    // original (spread 89% vs 90% original). Continuidad H/V, tramos compartidos
+    // la RECTA FINAL (col 26) al trono (26,56).
+    // SIMETRÍA > fidelidad (cambio jul-2026, reporte directo «estos caminos no están
+    // iguales»): en el original Pink/Orange caían RECTOS de la fila 38 a la 42 por la
+    // col 24 mientras Gray/Green daban el rodeo por el bolsillo SE — el único tramo
+    // sin gemelo. Ahora Pink/Orange espejan EXACTAMENTE a Gray/Green por el bolsillo
+    // SO (+6 de largo cada una; media 99, de 53 (Blue/Teal) a 138 (Green)). La única
+    // asimetría restante es inherente: Red (puerta central, impar) se une al tronco
+    // derecho — no tiene gemela. Se eligió alargar Pink/Orange (y no acortar
+    // Gray/Green) porque así ninguna celda de hierba pasa a ser camino: ningún
+    // guardado puede tener una torre pisando el trazado nuevo.
+    // Continuidad H/V, tramos compartidos
     // celda-idénticos y cero colisiones blocked↔camino verificados por código. Con
     // MAX_PLAYERS=8 una puerta queda SIEMPRE neutral (deseado); la sim reparte los
     // spawns (i % 9) y el reclamo de puerta del lobby itera paths.length.
@@ -365,7 +377,10 @@ export const MAPS: MapDef[] = [
         [22, 29],
         [22, 38],
         [4, 38],
-        [24, 38],
+        [4, 45],
+        [10, 45],
+        [10, 42],
+        [20, 42],
         [24, 42],
         [24, 47],
         [22, 47],
@@ -385,7 +400,10 @@ export const MAPS: MapDef[] = [
         [22, 29],
         [22, 38],
         [4, 38],
-        [24, 38],
+        [4, 45],
+        [10, 45],
+        [10, 42],
+        [20, 42],
         [24, 42],
         [24, 47],
         [22, 47],
@@ -518,17 +536,21 @@ export const MAPS: MapDef[] = [
     // Arboledas de decoración en zonas muertas (simétricas, Chebyshev ≥2 de todo
     // camino → ninguna pisa ni estrangula un carril; verificado por pathCells):
     // coronan el concilio, flanquean los márgenes y rodean el trono.
+    // Decoración reespejada al eje 26 (x + espejo = 52). La columna de árboles del
+    // margen derecho (x=51) NO existía (solo había un árbol suelto en (50,49)):
+    // ahora acompaña a la izquierda (x=1) en toda la altura. La arboleda sobre la
+    // puerta central pasa a ser una corona centrada (25..27, fila 3).
     blocked: [
       [6, 2],
-      [45, 2],
+      [46, 2],
       [13, 2],
-      [38, 2],
+      [39, 2],
       [20, 3],
-      [31, 3],
+      [32, 3],
       [10, 5],
-      [41, 5],
+      [42, 5],
       [16, 5],
-      [35, 5],
+      [36, 5],
       [1, 7],
       [1, 13],
       [1, 19],
@@ -537,21 +559,29 @@ export const MAPS: MapDef[] = [
       [1, 37],
       [1, 43],
       [1, 49],
-      [50, 49],
+      [51, 7],
+      [51, 13],
+      [51, 19],
+      [51, 25],
+      [51, 31],
+      [51, 37],
+      [51, 43],
+      [51, 49],
       [9, 17],
-      [42, 17],
+      [43, 17],
       [9, 24],
-      [42, 24],
+      [43, 24],
       [9, 34],
-      [42, 34],
+      [43, 34],
       [20, 11],
-      [31, 11],
+      [32, 11],
       [13, 49],
-      [38, 49],
+      [39, 49],
       [9, 58],
-      [42, 58],
-      [26, 3],
+      [43, 58],
       [25, 3],
+      [26, 3],
+      [27, 3],
     ],
   },
   {
@@ -649,7 +679,82 @@ export const MAPS: MapDef[] = [
       [0, 11],
     ],
   },
+  // LABERINTO · primer mapa sin recorrido trazado (map.maze). Los monstruos
+  // entran por la izquierda y quieren llegar a la derecha; el camino no existe
+  // hasta que el jugador lo dibuja con sus torres, que aquí son MUROS. La única
+  // regla dura es que siempre debe quedar un hueco (ver sealsMaze).
+  //
+  // La ruta declara solo entrada y meta —sin esquinas intermedias—, que es la
+  // convención de los mapas maze. Pocos obstáculos decorativos a propósito: el
+  // terreno libre ES el material de construcción, y recortarlo recorta el juego.
+  {
+    id: 'llano',
+    name: 'El Llano',
+    desc: 'Campo abierto: aquí las torres son muros. Haz que den vueltas.',
+    gridW: 12,
+    gridH: 24,
+    theme: 'grass',
+    maze: true,
+    // los monstruos bajan de arriba abajo por TODO el frente: la ruta solo
+    // declara el eje (arriba → abajo), el recorrido lo dibujan las torres
+    paths: [
+      [
+        [6, 0],
+        [6, 23],
+      ],
+    ],
+    blocked: [],
+  },
 ];
+
+// ---------------------------------------------------------------------------
+// ARENA · el mapa de la competición: N parcelas IDÉNTICAS en rejilla, una por
+// jugador. No se dibuja un mapa grande a mano a propósito — con carriles
+// distintos, unos serían mejores que otros y el modo nacería injusto. Aquí todos
+// juegan exactamente el mismo terreno y la única diferencia es cómo construyen.
+// ---------------------------------------------------------------------------
+// Carril VERTICAL largo y estrecho, como en el Line Tower Wars original: los
+// monstruos entran por arriba y bajan hasta el fondo, y el jugador va sembrando
+// torres para obligarlos a serpentear. Lo estrecho es parte del diseño — en un
+// campo ancho el laberinto se diluye; en un pasillo, cada torre cuenta.
+const ARENA_PLOT_W = 10;
+const ARENA_PLOT_H = 32;
+const ARENA_COLS = 8; // ocho carriles uno junto a otro = MAX_PLAYERS
+const ARENA_ROWS = 1;
+
+function buildArenaMap(): MapDef {
+  const paths: [number, number][][] = [];
+  const plots: { x: number; y: number; w: number; h: number }[] = [];
+  for (let r = 0; r < ARENA_ROWS; r++) {
+    for (let c = 0; c < ARENA_COLS; c++) {
+      const ox = c * ARENA_PLOT_W;
+      const oy = r * ARENA_PLOT_H;
+      // entrada arriba, meta abajo, ambas centradas en el ancho del carril
+      const midX = ox + Math.floor(ARENA_PLOT_W / 2);
+      paths.push([
+        [midX, oy],
+        [midX, oy + ARENA_PLOT_H - 1],
+      ]);
+      plots.push({ x: ox, y: oy, w: ARENA_PLOT_W, h: ARENA_PLOT_H });
+    }
+  }
+  return {
+    id: 'arena',
+    name: 'La Arena',
+    desc: 'Un carril para cada uno, las mismas oleadas para todos. Gana quien más aguante.',
+    gridW: ARENA_COLS * ARENA_PLOT_W,
+    gridH: ARENA_ROWS * ARENA_PLOT_H,
+    theme: 'grass',
+    maze: true,
+    paths,
+    // el carril va LIMPIO: el terreno libre es el material con el que se
+    // construye el laberinto, y cada obstáculo decorativo se lo come
+    blocked: [],
+    plots,
+  };
+}
+
+MAPS.push(buildArenaMap());
 
 export function getMap(id: string): MapDef {
   const m = MAPS.find((m) => m.id === id);

@@ -565,6 +565,16 @@ export const TOWERS: Record<TowerTypeId, TowerDef> = {
           range: 3.4,
           auraDamage: 0.85,
         },
+        // *Guerra III* (pedido directo: tercer nivel de los estandartes a
+        // 10k🪙 + 1k🪵): sumidero de fin de partida — aura devastadora y radio
+        // enorme. Sigue sin apilar (regla MAX): pagas por el MEJOR estandarte.
+        rank3: {
+          cost: 10000,
+          woodCost: 1000,
+          desc: 'Guerra III: el estandarte definitivo — +120% de daño en un radio enorme.',
+          range: 4.2,
+          auraDamage: 1.2,
+        },
       },
       {
         key: 'hastebanner',
@@ -583,6 +593,14 @@ export const TOWERS: Record<TowerTypeId, TowerDef> = {
           range: 3.4,
           auraHaste: 0.6,
         },
+        // *Celeridad III* (10k🪙 + 1k🪵): el tambor de guerra definitivo.
+        rank3: {
+          cost: 10000,
+          woodCost: 1000,
+          desc: 'Celeridad III: el tambor definitivo — +90% de cadencia en un radio enorme.',
+          range: 4.2,
+          auraHaste: 0.9,
+        },
       },
       // F9a (v19) · 3.ª rama — AL FINAL. *Estandarte del Vencedor* (pedido directo):
       // rama de ALTO NIVEL del Estandarte — coste gordo en oro Y madera (woodCost
@@ -591,7 +609,7 @@ export const TOWERS: Record<TowerTypeId, TowerDef> = {
       // y CERTEZA (sus ataques no pueden ser esquivados). Regla MAX como toda aura.
       // Su esperanza de daño (~+11%) es MENOR que Guerra ★ (+60%): pagas por la
       // Certeza (LA respuesta a Acechadores/Escurridizos) y por los picos de burst
-      // que disparan ejecuciones porcentuales. Sin Rango II: es la cima de su rama.
+      // que disparan ejecuciones porcentuales.
       {
         key: 'victorybanner',
         name: 'Estandarte del Vencedor',
@@ -602,6 +620,15 @@ export const TOWERS: Record<TowerTypeId, TowerDef> = {
         range: 3.2,
         cooldown: 0,
         auraCrit: 0.15,
+        // *Vencedor II* (pedido directo: los TRES estandartes ganan su cúspide a
+        // 10k🪙 + 1k🪵). Dobla el crítico y amplía el radio; la Certeza se mantiene.
+        rank2: {
+          cost: 10000,
+          woodCost: 1000,
+          desc: 'Vencedor II: la gloria absoluta — +30% de crítico y Certeza en un radio mayor.',
+          range: 4.0,
+          auraCrit: 0.3,
+        },
       },
     ],
   },
@@ -852,11 +879,30 @@ function rank2Stats(type: TowerTypeId, spec: number): TowerSpecDef {
   return merged;
 }
 
+// Cache de los bloques de stats del Rango III (rank2 + rank3 aplicados en orden).
+const rank3Cache = new Map<string, TowerSpecDef>();
+
+// Bloque de stats del Rango III: el Rango II (o la spec, si no hay rank2) con los
+// `rank3` overrides encima.
+function rank3Stats(type: TowerTypeId, spec: number): TowerSpecDef {
+  const key = `${type}:${spec}`;
+  const hit = rank3Cache.get(key);
+  if (hit) return hit;
+  const specDef = TOWERS[type].specs[spec];
+  const base = specDef.rank2 ? rank2Stats(type, spec) : specDef;
+  const { cost: _c, desc: _d, woodCost: _w, ...over } = specDef.rank3!;
+  const merged: TowerSpecDef = { ...base, ...over };
+  rank3Cache.set(key, merged);
+  return merged;
+}
+
 // Stats activos de una torre: la especialización manda sobre el nivel. El nivel 4
-// de una torre especializada con `rank2` usa los stats del Rango II.
+// de una torre especializada con `rank2` usa los stats del Rango II; el nivel 5
+// con `rank3`, los del Rango III (hoy: los estandartes).
 export function activeStats(type: TowerTypeId, level: number, spec: number): TowerLevelDef | TowerSpecDef {
   if (spec >= 0) {
     const s = TOWERS[type].specs[spec];
+    if (level >= 5 && s.rank3) return rank3Stats(type, spec);
     if (level >= 4 && s.rank2) return rank2Stats(type, spec);
     return s;
   }
@@ -871,6 +917,25 @@ export function hasRank2(type: TowerTypeId, spec: number): boolean {
 // Coste de subir al Rango II (nivel 4) de una spec, o null si no tiene.
 export function rank2Cost(type: TowerTypeId, spec: number): number | null {
   return TOWERS[type].specs[spec]?.rank2?.cost ?? null;
+}
+
+// Madera propia del Rango II de una spec, o undefined = usa la constante común
+// WOOD_COST_RANK2 (el fallback lo aplican commands.ts y el HUD, que ya la
+// importan; los rangos de 10k de los estandartes cobran 1000 🪵 propias).
+export function rank2Wood(type: TowerTypeId, spec: number): number | undefined {
+  return TOWERS[type].specs[spec]?.rank2?.woodCost;
+}
+
+// ¿Esta torre especializada puede subir al Rango III (nivel 5)?
+export function hasRank3(type: TowerTypeId, spec: number): boolean {
+  return spec >= 0 && TOWERS[type].specs[spec]?.rank3 !== undefined;
+}
+
+// Coste (oro / madera) de subir al Rango III (nivel 5), o null si no tiene.
+export function rank3Cost(type: TowerTypeId, spec: number): { gold: number; wood: number } | null {
+  const r3 = TOWERS[type].specs[spec]?.rank3;
+  if (!r3) return null;
+  return { gold: r3.cost, wood: r3.woodCost ?? 0 };
 }
 
 // ¿La torre alcanza objetivos aéreos? (algunas especializaciones lo cambian.)
@@ -890,6 +955,10 @@ export function towerTotalCost(type: TowerTypeId, level: number, spec = -1): num
   // nivel 4 de una spec = Rango II: suma su coste
   if (level >= 4 && spec >= 0 && TOWERS[type].specs[spec].rank2) {
     total += TOWERS[type].specs[spec].rank2!.cost;
+  }
+  // nivel 5 de una spec con Rango III: suma su coste
+  if (level >= 5 && spec >= 0 && TOWERS[type].specs[spec].rank3) {
+    total += TOWERS[type].specs[spec].rank3!.cost;
   }
   return total;
 }

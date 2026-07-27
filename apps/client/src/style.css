@@ -154,13 +154,55 @@ html, body {
 }
 .seg button:disabled { opacity: 0.55; cursor: default; }
 
-/* tarjetas de mapa con miniatura (DENSAS: son 9 y deben caber en 3×3 sin
-   generar scroll en el lobby de escritorio) */
-.map-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 7px;
+/* Distintivo BETA (modo Arena): pastilla diminuta anclada a la esquina del
+   botón. Anclarla en vez de meterla en el texto evita que empuje el nombre del
+   modo y descuadre la fila de botones. El `position: relative` va SOLO en los
+   botones que llevan distintivo, para no cambiar el apilado del resto. */
+/* el selector por atributo cubre el caso aunque :has() no esté disponible: si el
+   botón no crea contexto de posicionamiento, la pastilla se iría a la esquina de
+   otro ancestro y aparecería descolgada */
+#lobby-mode button[data-value='arena'],
+.seg button:has(.beta-tag) {
+  position: relative;
+  overflow: visible;
 }
+.beta-tag {
+  position: absolute;
+  top: -6px;
+  right: -4px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 0.55rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: 1.5;
+  color: #10131c;
+  background: linear-gradient(135deg, #7fd7ff, #59a5ff);
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+  pointer-events: none; /* no roba el clic al botón que decora */
+}
+
+/* tarjetas de mapa con miniatura — CARRUSEL horizontal: con 11+ mapas la
+   cuadrícula 3×N devoraba la columna central y empujaba el mapa de puertas
+   fuera de la vista (reporte directo: «tuve que quitar zoom para ver el
+   minimapa»). Una sola fila con scroll-snap: se ven ~2.5 tarjetas y el borde
+   asomado de la siguiente invita a deslizar; rueda del ratón = desplazar
+   (screens.ts). El scroll se conserva entre renders del lobby. */
+.map-grid {
+  display: flex;
+  gap: 7px;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  padding-bottom: 5px; /* aire para la barra de scroll fina */
+  scrollbar-width: thin;
+  scrollbar-color: var(--h-border-hover, #555) transparent;
+}
+.map-grid::-webkit-scrollbar { height: 6px; }
+.map-grid::-webkit-scrollbar-track { background: transparent; }
+.map-grid::-webkit-scrollbar-thumb { background: var(--h-border-hover, #555); border-radius: 3px; }
+.map-grid .map-card { flex: 0 0 128px; scroll-snap-align: start; }
 /* estas tarjetas solo existen dentro de #screen-lobby: usan los tokens --h-*
    compartidos con la portada (definidos en #screen-home, #screen-lobby más
    abajo) directamente, sin necesitar el prefijo #screen-lobby en el selector */
@@ -738,6 +780,17 @@ html, body {
    clic en la libre para reclamar, en la propia para liberar; las de otros van
    deshabilitadas. El punto lleva el color del dueño (o hueco gris si está libre). */
 .lobby-doors-title { margin: 12px 0 6px; font-size: 0.82rem; color: var(--h-fg); }
+/* mapa de puertas: cada puerta numerada y teñida del color de su dueño, para VER
+   dónde aparecerás. Clic en una puerta = reclamar/liberar (hit-test en screens.ts). */
+.doors-map {
+  display: block;
+  width: 100%;
+  max-width: 360px;
+  margin: 0 0 8px;
+  border-radius: 10px;
+  border: 1px solid var(--h-border);
+  touch-action: manipulation;
+}
 .door-list { list-style: none; display: flex; flex-wrap: wrap; gap: 6px; }
 .door-list li { margin: 0; }
 .door-chip {
@@ -1048,6 +1101,17 @@ html, body {
 .stat.wood.attn { animation: wood-attn 1.8s infinite; }
 @keyframes wood-attn {
   50% { box-shadow: 0 0 12px rgba(255, 213, 79, 0.5); }
+}
+/* contador de FPS (opt-in desde Ajustes): letra pequeña y apagada — es un
+   termómetro, no un protagonista. Ancho mínimo para que «60 fps» ↔ «9 fps» no
+   haga bailar la barra al cambiar de dígitos. */
+.stat.fps {
+  font-size: 0.64rem;
+  color: var(--h-muted-2, var(--fg-dim));
+  font-family: var(--h-mono, monospace);
+  min-width: 46px;
+  justify-content: center;
+  padding: 0 4px;
 }
 /* MODO TURBO ⚡ (issue #14): distintivo del HUD — pill ámbar con brillo suave para
    que se lea de un vistazo sin robarle protagonismo a vidas/oleada/oro */

@@ -13,6 +13,8 @@ import {
   towerTargetsAir,
   makePlacementContext,
   pathWaypoints,
+  placementError,
+  SUB,
   type EnemyTypeId,
   type FusionId,
   type MapDef,
@@ -187,21 +189,19 @@ let panY = 0;
 const MAX_ZOOM = 3.2;
 // El techo de zoom debe garantizar un ACERCAMIENTO real (celdas de ~96px) sin
 // importar el tamaño del mapa: MAX_ZOOM es relativo al fit, y en mapas gigantes
-// (El Gran Concilio: fit ≈ 13px/celda) 3.2× seguía siendo lejano — en monitores
-// anchos el techo chocaba con el suelo del viewCap y el zoom quedaba CONGELADO
+// (El Gran Concilio: fit ≈ 13px/celda) 3.2× seguía siendo lejano
 // (reporte real: «quiero ver más de cerca»). En mapas chicos 96/baseScale < 3.2
 // y no cambia nada.
 const CLOSEUP_CELL_PX = 96;
-// F9c · zoom MÍNIMO/MÁXIMO efectivos del mapa actual (min 1 = puede verse
-// entero). En mapas con MapDef.viewCap (El Gran Concilio) el mínimo sube por
-// encima de 1: NO se permite ver el tablero completo — se juega navegando, como
-// en el Green TD original. Recalculados por frame en computeView (dependen del
-// viewport).
+// zoom MÍNIMO/MÁXIMO efectivos del mapa actual. El mínimo es SIEMPRE 1 (= fit,
+// mapa entero): el viewCap de F9c que lo subía en El Gran Concilio fue retirado
+// — el jugador decide si ve todo el tablero o solo su cámara. Recalculados por
+// frame en computeView (dependen del viewport).
 let minZoomCur = 1;
 let maxZoomCur = MAX_ZOOM;
 
 // F9c · pulsos de PELIGRO en el minimapa: fugas recientes por ruta (pathIdx →
-// timestamp). Con la cámara capada el jugador no ve todo el mapa; esto es su
+// timestamp). Jugando con zoom acercado no ves todo el mapa; esto es tu
 // radar: la puerta que fuga parpadea en rojo aunque esté fuera de pantalla.
 const dangerFlashes = new Map<number, number>();
 const DANGER_FLASH_MS = 2600;
@@ -212,11 +212,15 @@ export function flashDanger(pathIdx: number): void {
 // ---------- calidad adaptativa (modo ligero autoadaptativo) ----------
 // Tres escalones. ALTA dibuja TODO. MEDIA recorta la decoración NO informativa
 // (partículas de ambiente del clima y las animaciones decorativas del decorado —
-// portal/estandarte del castillo — que pasan a estáticas). LIGERA, además, fuerza
+// portal/estandarte del castillo — que pasan a estáticas) y capa el DPR a 1.5
+// (los píxeles son EL coste dominante de la GPU). LIGERA, además, fuerza
 // DPR=1, quita la viñeta y apaga los backdrop-filter del HUD (el blur es de lo más
 // caro en GPUs viejas; el cristal cae a su fondo sólido semiopaco de fallback, ya
 // verificado como legible sin blur — ver style.css). Las partículas INFORMATIVAS
 // (impactos, críticos, oro) se conservan SIEMPRE.
+// El gobernador AUTO defiende 60fps MÍNIMO: baja de escalón en cuanto el
+// intervalo sostenido delata que se perdió el vsync (ver MS_DROP) y solo sube
+// cuando hay holgura REAL de CPU con el intervalo sano (ver BUSY_RAISE).
 export type QualityMode = 'auto' | 'alta' | 'ligera';
 export type QualityTier = 'alta' | 'media' | 'ligera';
 const QUALITY_KEY = 'td_quality'; // prefijo del proyecto (como td_sprites, td_muted…)
@@ -229,13 +233,22 @@ function loadQualityMode(): QualityMode {
 let qualityMode: QualityMode = loadQualityMode();
 // escalón activo cuando el modo es AUTO (0=alta, 1=media, 2=ligera)
 let autoStep = 0;
-// media móvil (EMA) del tiempo de frame en ms, para decidir subir/bajar de escalón
+// EMA del INTERVALO entre frames (ms): detecta que ya no se sostienen los 60fps.
 let frameEMA = 16;
+// EMA del TRABAJO síncrono del frame (ms de CPU dentro de loop()). Es la señal de
+// HOLGURA para volver a subir: en un monitor de 60Hz el intervalo está clavado a
+// ~16.7ms por el vsync aunque el frame cueste 2ms, así que "intervalo < 14ms"
+// no se cumplía JAMÁS a 60Hz y el modo AUTO nunca recuperaba la calidad.
+let busyEMA = 8;
 let overSince = 0; // instante en que el frame EMPEZÓ a sostenerse sobre MS_DROP (0 = no)
-let underSince = 0; // idem por debajo de MS_RAISE
-const MS_DROP = 28; // si el frame se sostiene > esto ~HOLD_DROP, baja un escalón
-const MS_RAISE = 14; // si sobra holgura < esto ~HOLD_RAISE, sube (histéresis amplia)
-const HOLD_DROP = 3000;
+let underSince = 0; // idem con holgura para subir
+// El OBJETIVO es 60fps MÍNIMO: en cuanto el intervalo sostenido supera 18ms
+// (~55fps, ya se perdió el vsync) se baja un escalón — sin esperar a que la
+// caída sea evidente.
+const MS_DROP = 18;
+const MS_VSYNC_OK = 17.5; // intervalo "sano" (60Hz ≈ 16.7): requisito para subir
+const BUSY_RAISE = 8; // trabajo < 8ms sostenidos = holgura real para pagar más calidad
+const HOLD_DROP = 2000;
 const HOLD_RAISE = 10000;
 let lastTierEmitted: QualityTier | null = null;
 
@@ -260,9 +273,13 @@ export function setQualityMode(m: QualityMode): void {
 }
 
 // DPR efectivo: en LIGERA forzamos 1 (rasterizar a la resolución nativa del CSS es
-// mucho más barato en GPUs viejas); en el resto hasta 2 (retina, sin pasarse).
+// mucho más barato en GPUs viejas); en MEDIA capamos a 1.5 — el nº de píxeles es
+// EL coste dominante de la GPU y así el escalón intermedio tiene una palanca real
+// (a 4K, 1.5 vs 2 es un 44% menos de píxeles); en ALTA hasta 2 (retina, sin pasarse).
 function currentDpr(): number {
-  return tierIndex() >= 2 ? 1 : Math.min(window.devicePixelRatio || 1, 2);
+  const ti = tierIndex();
+  if (ti >= 2) return 1;
+  return Math.min(window.devicePixelRatio || 1, ti === 1 ? 1.5 : 2);
 }
 
 // Aplica los efectos de escalón que viven FUERA del bucle: la clase del <body> (que
@@ -292,7 +309,9 @@ function updateAutoTier(rawMs: number, now: number): void {
       overSince = 0;
       applyTier('auto-drop');
     }
-  } else if (frameEMA < MS_RAISE && autoStep > 0) {
+  } else if (busyEMA < BUSY_RAISE && frameEMA < MS_VSYNC_OK && autoStep > 0) {
+    // subir exige DOS señales: poco trabajo de CPU (holgura real) Y un intervalo
+    // sano (si la GPU no da para 60, el intervalo lo delata aunque la CPU sobre)
     underSince = underSince || now;
     overSince = 0;
     if (now - underSince >= HOLD_RAISE) {
@@ -304,6 +323,34 @@ function updateAutoTier(rawMs: number, now: number): void {
     overSince = 0;
     underSince = 0;
   }
+}
+
+// FPS y coste de frame actuales, para la etiqueta de Ajustes y para inspección
+// rápida en consola (window.__tdFps()).
+export function perfStats(): { fps: number; busyMs: number; tier: QualityTier } {
+  return {
+    fps: Math.round(1000 / Math.max(1, frameEMA)),
+    busyMs: Math.round(busyEMA * 10) / 10,
+    tier: activeTier(),
+  };
+}
+
+// ---------- contador de FPS del HUD (opt-in) ----------
+// Chip #hud-fps de la barra superior, en letra pequeña. Se activa/oculta desde
+// Ajustes ⚙ y persiste; el bucle solo le escribe textContent 2 veces/s.
+const FPS_KEY = 'td_fps';
+let fpsShown = localStorage.getItem(FPS_KEY) === '1';
+let fpsEl: HTMLElement | null = null;
+let fpsLastUpdate = 0;
+
+export function isFpsShown(): boolean {
+  return fpsShown;
+}
+export function setFpsShown(on: boolean): void {
+  fpsShown = on;
+  localStorage.setItem(FPS_KEY, on ? '1' : '0');
+  if (!fpsEl) fpsEl = document.getElementById('hud-fps');
+  if (fpsEl) fpsEl.hidden = !on;
 }
 
 let mapLayer: HTMLCanvasElement | null = null;
@@ -326,6 +373,11 @@ const SURROUND_CELLS = 10; // celdas de marco decorativo alrededor del mapa
 // recuadro en coordenadas de PANTALLA calculado en cada frame (o null si oculto)
 let miniRect: { x: number; y: number; w: number; h: number; s: number } | null = null;
 let miniOn = localStorage.getItem('td_minimap') !== '0'; // visible por defecto
+// capa cacheada del minimapa (terreno + puntos): se reconstruye por SNAPSHOT
+// (~15/s), no por frame — con cientos de torres eran ~800 arcos a 60 fps
+let miniLayer: HTMLCanvasElement | null = null;
+let miniLayerKey = '';
+let miniLayerSnap: Snap | null = null;
 
 export function isMinimapOn(): boolean {
   return miniOn;
@@ -361,6 +413,20 @@ const pings: Ping[] = [];
 const toX = (x: number) => view.ox + x * view.scale;
 const toY = (y: number) => view.oy + y * view.scale;
 
+// ---------- culling por viewport ----------
+// Rect visible en CELDAS, recalculado por frame en computeView. En mapas grandes,
+// jugando con zoom acercado, la mayor parte de torres, enemigos, orcos y
+// banderas queda FUERA de pantalla: no emitir sus comandos de dibujo es la
+// palanca de rendimiento más grande del renderer. El margen `m` cubre lo que
+// sobresale de la celda (sprites altos, halos, barras de vida).
+let visL = -1e9;
+let visT = -1e9;
+let visR = 1e9;
+let visB = 1e9;
+function cellVisible(cx: number, cy: number, m = 2): boolean {
+  return cx >= visL - m && cx <= visR + m && cy >= visT - m && cy <= visB + m;
+}
+
 export function getView(): View {
   return view;
 }
@@ -376,9 +442,8 @@ export function zoomAt(px: number, py: number, factor: number): void {
   const worldX = (px - view.ox) / view.scale;
   const worldY = (py - view.oy) / view.scale;
   autoFrame = false; // el jugador toma el control: ya no reencuadramos solos
-  // el suelo del zoom es minZoomCur: en mapas con viewCap no se puede alejar
-  // hasta ver el tablero entero; el techo maxZoomCur garantiza acercamiento
-  // real (~96px/celda) también en mapas gigantes (F9c)
+  // suelo minZoomCur (= 1, mapa entero) y techo maxZoomCur (acercamiento real
+  // de ~96px/celda también en mapas gigantes)
   zoom = Math.min(maxZoomCur, Math.max(minZoomCur, zoom * factor));
   const s2 = baseScale * zoom;
   const w = canvas.clientWidth;
@@ -439,6 +504,18 @@ function actionCenter(map: MapDef): { x: number; y: number } {
   return { x: sx / n, y: sy / n };
 }
 
+// ARENA · la parcela del jugador. Se prefiere el snapshot (es la verdad del
+// servidor) y se cae al puesto en el roster, que es el mismo orden con el que
+// createGame las reparte: así la cámara ya sabe dónde mirar antes del primer tick.
+export function myPlot(map: MapDef): { x: number; y: number; w: number; h: number } | null {
+  const gs = store.game;
+  if (!gs || !map.plots) return null;
+  const fromSnap = gs.latest?.players.find((p) => p.id === store.playerId)?.plot;
+  const idx = fromSnap ?? gs.init.players.findIndex((p) => p.id === store.playerId);
+  if (idx === undefined || idx < 0) return null;
+  return map.plots[idx] ?? null;
+}
+
 export function resetCamera(): void {
   const gs = store.game;
   zoom = 1; // baseline; computeView lo sube al zoom "cover" al aplicar pendingFrame
@@ -460,6 +537,10 @@ export function resetCamera(): void {
       const inward = path[Math.min(2, path.length - 1)];
       center = { x: (sc + inward[0]) / 2 + 0.5, y: (sr + inward[1]) / 2 + 0.5 };
     }
+    // ARENA · arrancas mirando TU parcela. El centro del mapa entero no es de
+    // nadie, y con ocho parcelas dejaría la tuya en una esquina diminuta.
+    const plot = myPlot(gs.map);
+    if (plot) center = { x: plot.x + plot.w / 2, y: plot.y + plot.h / 2 };
   }
   pendingFrame = center;
 }
@@ -492,6 +573,11 @@ export function resetRenderer(): void {
   orcCampsKey = ''; // los campamentos dependen del mapa y del nº de jugadores
   orcWoodSeen.clear();
   enemyBodyCache.clear(); // atlas de cuerpos: se libera al cambiar de mapa/partida
+  towerArtCache.clear(); // atlas de torres: colores/niveles son de ESTA partida
+  snapMemoFor = null; // memos por snapshot (sort/auras/índice de celdas)
+  towerCellMemo.clear();
+  miniLayerSnap = null; // capa del minimapa: se regenera con el primer snap
+  miniLayerKey = '';
 }
 
 export function addShake(mag: number): void {
@@ -520,6 +606,17 @@ function campsFor(map: MapDef, players: number): OrcCamp[] {
   if (key === orcCampsKey) return orcCamps;
   orcCampsKey = key;
   orcCamps = [];
+  // ARENA · el orco de cada uno tala en SU carril, abajo del todo (la franja de
+  // meta, que no es construible, así que no le quita sitio al laberinto). Sin
+  // esto no se dibujaba ninguno: el reparto de siempre se apoya en las casillas
+  // decorativas del mapa, y un carril de laberinto va limpio de decoración.
+  if (map.plots) {
+    for (let i = 0; i < players && i < map.plots.length; i++) {
+      const plot = map.plots[i];
+      orcCamps.push({ x: plot.x + 0.5, y: plot.y + plot.h - 0.5 });
+    }
+    return orcCamps;
+  }
   const n = map.blocked.length;
   for (let i = 0; i < players && n > 0; i++) {
     // repartidos por las decoraciones del mapa (espaciados entre sí)
@@ -529,8 +626,10 @@ function campsFor(map: MapDef, players: number): OrcCamp[] {
   return orcCamps;
 }
 
-// filo del hacha por nivel del orco (F5.5): piedra → cobre → dorado → gélido → arcano
-const ORC_BLADE_COLORS = ['#cfd8dc', '#ffcc80', '#ffd54f', '#80deea', '#ce93d8'];
+// filo del hacha por nivel del orco (F5.5, ampliado a 8 niveles):
+// piedra → cobre → dorado → gélido → arcano → ígneo → vil → celestial.
+// Al nivel MÁXIMO el filo brilla (shadowBlur puntual, un solo orco culled).
+const ORC_BLADE_COLORS = ['#cfd8dc', '#ffcc80', '#ffd54f', '#80deea', '#ce93d8', '#ff8a65', '#aed581', '#fff59d'];
 
 function drawOrcs(gs: GameStore, now: number): void {
   const players = gs.init.players;
@@ -540,6 +639,9 @@ function drawOrcs(gs: GameStore, now: number): void {
   for (let i = 0; i < camps.length && i < players.length; i++) {
     const p = players[i];
     const camp = camps[i];
+    // culling: con 24 jugadores hay 24 orcos (y cada uno son ~30 paths); el
+    // "+🪵" propio se salta igual — flotaría fuera de pantalla
+    if (!cellVisible(camp.x, camp.y, 1.5)) continue;
     const x = toX(camp.x - 0.62);
     const y = toY(camp.y + 0.12);
     // nivel del orco (del snapshot): hacha mejor y hachazos más rápidos
@@ -551,7 +653,10 @@ function drawOrcs(gs: GameStore, now: number): void {
 
     g.save();
     g.translate(x, y);
-    const os = s * 0.52; // orco de ~media celda
+    // el orco CAMBIA DE FORMA con su nivel (pedido directo): crece de ~media
+    // celda (nv1) a un jefe leñador (nv8) y va ganando hombreras (nv3), casco
+    // (nv4), cuernos (nv5), hacha doble (nv6) y pintura de guerra (nv7).
+    const os = s * (0.5 + 0.022 * Math.min(orcLvl, ORC_BLADE_COLORS.length));
     // sombra
     g.fillStyle = 'rgba(0,0,0,0.25)';
     g.beginPath();
@@ -565,6 +670,18 @@ function drawOrcs(gs: GameStore, now: number): void {
     g.fillStyle = p.color;
     roundRect(g, -os * 0.22, os * 0.2, os * 0.44, os * 0.13, os * 0.05);
     g.fill();
+    // nv3+: HOMBRERAS metálicas (primer salto de forma)
+    if (orcLvl >= 3) {
+      g.fillStyle = '#78909c';
+      g.strokeStyle = '#455a64';
+      g.lineWidth = Math.max(1, os * 0.03);
+      for (const sideX of [-1, 1]) {
+        g.beginPath();
+        g.ellipse(sideX * os * 0.24, -os * 0.05, os * 0.11, os * 0.08, 0, 0, Math.PI * 2);
+        g.fill();
+        g.stroke();
+      }
+    }
     // cabeza con orejas puntiagudas y colmillos
     g.fillStyle = '#5d9950';
     g.beginPath();
@@ -583,6 +700,41 @@ function drawOrcs(gs: GameStore, now: number): void {
     g.fillStyle = '#f5f5f5';
     g.fillRect(-os * 0.09, -os * 0.19, os * 0.05, os * 0.07); // colmillo izq
     g.fillRect(os * 0.05, -os * 0.19, os * 0.05, os * 0.07); // colmillo der
+    // nv7+: colmillos de jabalí más largos + PINTURA de guerra en la cara
+    if (orcLvl >= 7) {
+      g.fillRect(-os * 0.11, -os * 0.22, os * 0.05, os * 0.11);
+      g.fillRect(os * 0.07, -os * 0.22, os * 0.05, os * 0.11);
+      g.strokeStyle = 'rgba(198,40,40,0.85)';
+      g.lineWidth = Math.max(1, os * 0.035);
+      g.beginPath();
+      g.moveTo(-os * 0.14, -os * 0.31);
+      g.lineTo(-os * 0.02, -os * 0.25);
+      g.moveTo(os * 0.02, -os * 0.31);
+      g.lineTo(os * 0.14, -os * 0.25);
+      g.stroke();
+    }
+    // nv4+: CASCO metálico; nv5+ le brotan CUERNOS
+    if (orcLvl >= 4) {
+      g.fillStyle = '#78909c';
+      g.strokeStyle = '#455a64';
+      g.lineWidth = Math.max(1, os * 0.03);
+      g.beginPath();
+      g.arc(0, -os * 0.28, os * 0.2, Math.PI, Math.PI * 2);
+      g.closePath();
+      g.fill();
+      g.stroke();
+      if (orcLvl >= 5) {
+        g.fillStyle = '#eceff1';
+        for (const sideX of [-1, 1]) {
+          g.beginPath();
+          g.moveTo(sideX * os * 0.16, -os * 0.36);
+          g.lineTo(sideX * os * 0.3, -os * 0.52);
+          g.lineTo(sideX * os * 0.09, -os * 0.42);
+          g.closePath();
+          g.fill();
+        }
+      }
+    }
     // brazo + hacha (pivote en el hombro; balancea hacia la decoración)
     g.save();
     g.translate(os * 0.16, -os * 0.04);
@@ -611,6 +763,15 @@ function drawOrcs(gs: GameStore, now: number): void {
     g.lineTo(os * 0.62, os * 0.14);
     g.closePath();
     g.fill();
+    // nv6+: hacha de DOBLE filo (segundo filo hacia atrás, como un hacha de guerra)
+    if (orcLvl >= 6) {
+      g.beginPath();
+      g.moveTo(os * 0.62, -os * 0.12);
+      g.lineTo(os * 0.45, 0);
+      g.lineTo(os * 0.62, os * 0.12);
+      g.closePath();
+      g.fill();
+    }
     g.shadowBlur = 0;
     g.restore();
     // astillas al impactar
@@ -641,17 +802,47 @@ function drawOrcs(gs: GameStore, now: number): void {
   }
 }
 
-// fogonazo + retroceso de la torre más cercana a (x, y) en celdas
+// ---------- memos por SNAPSHOT ----------
+// Trabajo que solo depende del snapshot (llega ~15 veces/s), no del frame (60/s):
+// orden de pintado de torres, auras de estandarte e índice celda→torre. Antes se
+// recalculaban en CADA frame — con cientos de torres eran un sort + O(torres²)
+// de auras 60 veces por segundo.
+let snapMemoFor: Snap | null = null;
+let sortedTowersMemo: SnapTower[] = [];
+let aurasMemo: Map<number, ClientAura> = new Map();
+const towerCellMemo = new Map<number, number>(); // cx*8192+cy → id de torre
+
+function snapMemos(snap: Snap): void {
+  if (snapMemoFor === snap) return;
+  snapMemoFor = snap;
+  // Algoritmo del pintor: torres ordenadas por fila (Y, luego X) para que las de
+  // abajo queden ENCIMA de las de arriba (ver drawTowers).
+  sortedTowersMemo = [...snap.towers].sort((a, b) => a[3] - b[3] || a[2] - b[2]);
+  aurasMemo = computeBannerAuras(snap);
+  towerCellMemo.clear();
+  for (const t of snap.towers) towerCellMemo.set(t[2] * 8192 + t[3], t[0]);
+}
+
+// fogonazo + retroceso de la torre más cercana a (x, y) en celdas. Las torres
+// ocupan celdas enteras: basta mirar la vecindad 3×3 del índice celda→torre
+// (antes era un barrido O(torres) por CADA proyectil nuevo).
 export function towerFired(x: number, y: number): void {
   const gs = store.game;
   if (!gs?.latest) return;
+  snapMemos(gs.latest);
+  const cx = Math.floor(x);
+  const cy = Math.floor(y);
   let best = -1;
   let bestD = 0.8;
-  for (const t of gs.latest.towers) {
-    const d = Math.hypot(t[2] + 0.5 - x, t[3] + 0.5 - y);
-    if (d < bestD) {
-      bestD = d;
-      best = t[0];
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dy = -1; dy <= 1; dy++) {
+      const id = towerCellMemo.get((cx + dx) * 8192 + (cy + dy));
+      if (id === undefined) continue;
+      const d = Math.hypot(cx + dx + 0.5 - x, cy + dy + 0.5 - y);
+      if (d < bestD) {
+        bestD = d;
+        best = id;
+      }
     }
   }
   if (best >= 0) {
@@ -675,8 +866,11 @@ export function initRenderer(c: HTMLCanvasElement): void {
   canvas = c;
   g = canvas.getContext('2d')!;
   applyTier('manual'); // fija la clase del <body> y emite el estado inicial de calidad
-  // gancho de medición para el QA: `window.__tdPerf()` en consola (ver benchEnemyDraw)
+  // ganchos de medición para el QA: `window.__tdPerf()` (bench del atlas de
+  // enemigos) y `window.__tdFps()` (fps/coste de frame en vivo) en consola
   (window as unknown as { __tdPerf?: typeof benchEnemyDraw }).__tdPerf = benchEnemyDraw;
+  (window as unknown as { __tdFps?: typeof perfStats }).__tdFps = perfStats;
+  setFpsShown(fpsShown); // sincroniza la visibilidad del chip #hud-fps con lo persistido
   requestAnimationFrame(loop);
 }
 
@@ -773,17 +967,13 @@ function computeView(map: MapDef): void {
   // el mapa completo y el resto del código (clamps, minimapa, buckets) no cambia.
   baseScale = Math.max(6, Math.min(availW / map.gridW, availH / map.gridH));
 
-  // F9c · viewCap: tope de celdas visibles por mapa. Espectadores y repeticiones
-  // quedan EXENTOS (están para mirar, no para jugar); y nunca por encima de
-  // MAX_ZOOM (en pantallas diminutas el cap cedería antes que romper el zoom).
-  const cap = map.viewCap;
+  // El viewCap de F9c (tope de celdas visibles en El Gran Concilio, estilo
+  // Green TD) fue RETIRADO: el jugador siempre puede alejar hasta ver el mapa
+  // entero (zoom 1 = fit) o acercar hasta su cámara — la restricción confundía
+  // más de lo que aportaba. El techo garantiza acercamiento real (~96px/celda)
+  // también en mapas gigantes.
   maxZoomCur = Math.max(MAX_ZOOM, CLOSEUP_CELL_PX / baseScale);
   minZoomCur = 1;
-  if (cap && !store.spectator && !store.replay) {
-    // el suelo cede ante el techo con un margen ×0.8: SIEMPRE debe quedar
-    // recorrido de zoom entre "lo más lejos permitido" y "de cerca"
-    minZoomCur = Math.min(maxZoomCur * 0.8, Math.max(1, w / (baseScale * cap.w), h / (baseScale * cap.h)));
-  }
   if (zoom < minZoomCur) zoom = minZoomCur;
   if (zoom > maxZoomCur) zoom = maxZoomCur;
 
@@ -795,9 +985,13 @@ function computeView(map: MapDef): void {
     // coverScale = escala que LLENA el eje limitante dejando ~medio tile de
     // margen a cada lado (de ahí el +1 en la dimensión: gridN celdas de mapa +
     // 1 celda repartida como marco). El eje que sobra desborda y se recorta.
-    const coverScale = Math.max(availW / (map.gridW + 1), availH / (map.gridH + 1));
-    // como zoom relativo al fit; clamp a [minZoomCur, maxZoomCur] (minZoom sube
-    // por encima de 1 en mapas con viewCap; en el resto es 1 = mapa entero).
+    // ARENA · el «cover» se mide sobre TU PARCELA, no sobre el tablero entero:
+    // encuadrar las ocho dejaría la tuya del tamaño de un sello.
+    const plot = myPlot(map);
+    const frameW = plot ? plot.w : map.gridW;
+    const frameH = plot ? plot.h : map.gridH;
+    const coverScale = Math.max(availW / (frameW + 1), availH / (frameH + 1));
+    // como zoom relativo al fit; clamp a [minZoomCur (1 = mapa entero), maxZoomCur]
     zoom = Math.min(maxZoomCur, Math.max(minZoomCur, coverScale / baseScale));
     const c = pendingFrame ?? actionCenter(map);
     const s0 = baseScale * zoom;
@@ -812,6 +1006,22 @@ function computeView(map: MapDef): void {
   const mapW = map.gridW * s;
   const mapH = map.gridH * s;
 
+  // ARENA · HOLGURA en los bordes. Con carriles, el de los extremos está pegado
+  // al borde del mapa, y frenar el paneo justo ahí lo deja escorado contra el
+  // canto de la pantalla: todo el espacio sobrante se va al otro lado y acabas
+  // mirando los carriles ajenos en vez del tuyo. Se permite desplazar lo justo
+  // para CENTRAR un carril cualquiera (detrás solo asoma el terreno decorativo
+  // del marco, que ya se dibuja).
+  const slotSlack = (): { x: number; y: number } => {
+    const plot = myPlot(map);
+    if (!plot) return { x: 0, y: 0 };
+    return {
+      x: Math.max(0, (availW - plot.w * s) / 2),
+      y: Math.max(0, (availH - plot.h * s) / 2),
+    };
+  };
+  const slack = slotSlack();
+
   // centrado por defecto; con zoom, el paneo se limita a los bordes del mapa
   let ox = (w - mapW) / 2 + panX;
   let oy = PAD_TOP + (availH - mapH) / 2 + panY;
@@ -819,17 +1029,23 @@ function computeView(map: MapDef): void {
     ox = (w - mapW) / 2;
     panX = 0;
   } else {
-    ox = Math.min(PAD_SIDE, Math.max(w - PAD_SIDE - mapW, ox));
+    ox = Math.min(PAD_SIDE + slack.x, Math.max(w - PAD_SIDE - mapW - slack.x, ox));
     panX = ox - (w - mapW) / 2;
   }
   if (mapH <= availH) {
     oy = PAD_TOP + (availH - mapH) / 2;
     panY = 0;
   } else {
-    oy = Math.min(PAD_TOP, Math.max(h - PAD_BOTTOM - mapH, oy));
+    oy = Math.min(PAD_TOP + slack.y, Math.max(h - PAD_BOTTOM - mapH - slack.y, oy));
     panY = oy - (PAD_TOP + (availH - mapH) / 2);
   }
   view = { scale: s, ox, oy };
+
+  // rect visible en celdas para el culling de este frame
+  visL = (0 - ox) / s;
+  visT = (0 - oy) / s;
+  visR = (w - ox) / s;
+  visB = (h - oy) / s;
 }
 
 // ---------- capa estática del mapa ----------
@@ -877,8 +1093,12 @@ function buildMapLayer(map: MapDef): void {
   m.fillStyle = grad;
   m.fillRect(0, 0, layer.width, layer.height);
 
-  // detalles del suelo (matas, piedritas, destellos…) en celdas libres
-  const pathSet = getPlacementCtx(map).paths;
+  // LABERINTO · aquí no hay camino trazado que respetar: el terreno es TODO
+  // construible y la ruta la dibujan las torres (se pinta aparte, en vivo, con
+  // drawMazeRoute). Con el set vacío, el resto de esta función se salta sola la
+  // banda, los adoquines y las flechas del recorrido fijo.
+  const pathSet = map.maze === true ? new Set<string>() : getPlacementCtx(map).paths;
+  const paths = map.maze === true ? [] : map.paths;
   for (let cy = 0; cy < map.gridH; cy++) {
     for (let cx = 0; cx < map.gridW; cx++) {
       if (pathSet.has(`${cx},${cy}`)) continue;
@@ -891,7 +1111,7 @@ function buildMapLayer(map: MapDef): void {
   }
 
   // camino: borde, relleno y adoquines
-  for (const path of map.paths) {
+  for (const path of paths) {
     const wps = path.map(([c, r]) => [(c + 0.5) * s, (r + 0.5) * s] as const);
     for (const [width, color] of [
       [s * 0.92, theme.pathEdge],
@@ -925,7 +1145,7 @@ function buildMapLayer(map: MapDef): void {
 
   // flechas de dirección
   m.fillStyle = 'rgba(0,0,0,0.16)';
-  for (let p = 0; p < map.paths.length; p++) {
+  for (let p = 0; p < paths.length; p++) {
     const wps = pathWaypoints(map, p);
     for (let i = 1; i < wps.length; i++) {
       const a = wps[i - 1];
@@ -957,15 +1177,37 @@ function buildMapLayer(map: MapDef): void {
     drawDecor(m, kind, (c + 0.5) * s, (r + 0.5) * s, s, hash2(c, r, seed + 6));
   }
 
-  // portales (entradas) y castillo (salidas)
-  for (const path of map.paths) {
-    const [sc, sr] = path[0];
-    drawPortalBase(m, (sc + 0.5) * s, (sr + 0.5) * s, s);
-  }
-  const exits = new Set(map.paths.map((p) => p[p.length - 1].join(',')));
-  for (const e of exits) {
-    const [ec, er] = e.split(',').map(Number);
-    drawCastle(m, (ec + 0.5) * s, (er + 0.5) * s, s);
+  if (map.maze === true) {
+    // LABERINTO · no hay portal ni castillo: los monstruos entran por TODO el
+    // borde de arriba del carril y se escapan por TODO el de abajo. Se pintan las
+    // dos franjas para que se lea de un vistazo por dónde llegan y qué defiendes,
+    // en lugar de un punto único que daría una idea falsa del frente.
+    for (let lane = 0; lane < map.paths.length; lane++) {
+      const plot = map.plots?.[lane] ?? { x: 0, y: 0, w: map.gridW, h: map.gridH };
+      const x = plot.x * s;
+      const w = plot.w * s;
+      const entrada = m.createLinearGradient(0, plot.y * s, 0, (plot.y + 1) * s);
+      entrada.addColorStop(0, 'rgba(190, 90, 210, 0.55)');
+      entrada.addColorStop(1, 'rgba(190, 90, 210, 0)');
+      m.fillStyle = entrada;
+      m.fillRect(x, plot.y * s, w, s);
+      const salida = m.createLinearGradient(0, (plot.y + plot.h) * s, 0, (plot.y + plot.h - 1) * s);
+      salida.addColorStop(0, 'rgba(230, 170, 60, 0.6)');
+      salida.addColorStop(1, 'rgba(230, 170, 60, 0)');
+      m.fillStyle = salida;
+      m.fillRect(x, (plot.y + plot.h - 1) * s, w, s);
+    }
+  } else {
+    // portales (entradas) y castillo (salidas)
+    for (const path of map.paths) {
+      const [sc, sr] = path[0];
+      drawPortalBase(m, (sc + 0.5) * s, (sr + 0.5) * s, s);
+    }
+    const exits = new Set(map.paths.map((p) => p[p.length - 1].join(',')));
+    for (const e of exits) {
+      const [ec, er] = e.split(',').map(Number);
+      drawCastle(m, (ec + 0.5) * s, (er + 0.5) * s, s);
+    }
   }
 
   mapLayer = layer;
@@ -976,6 +1218,70 @@ function buildMapLayer(map: MapDef): void {
 // sale de hash2 determinista) y cacheada en un canvas offscreen, igual que el
 // suelo base. Resolución modesta (se dibuja oscura y ampliada, se ve suave), con
 // las dimensiones capadas para no castigar la memoria móvil.
+// NOTA · aquí vivían el dibujo del camino del laberinto y su previsualización al
+// apuntar una celda. Ambos se retiraron: con los monstruos entrando por TODO el
+// frente de arriba no hay un camino, sino uno por cada punto de entrada, así que
+// cualquier línea que se dibuje es la de UNO y da una idea falsa del resto. Como
+// en el Line Tower Wars, el laberinto se lee por las torres.
+
+// ARENA · de quién es cada carril. Sin esto el tablero son ocho pasillos
+// idénticos y nadie sabe cuál es el suyo. Se marca el borde con el color del
+// dueño, se resalta el propio, y los de los eliminados se apagan.
+function drawPlots(g: CanvasRenderingContext2D, gs: GameStore): void {
+  const plots = gs.map.plots;
+  if (!plots || !gs.latest) return;
+  const s = view.scale;
+  for (let i = 0; i < plots.length; i++) {
+    const plot = plots[i];
+    const snapP = gs.latest.players.find((pl) => pl.plot === i);
+    const info = snapP ? gs.init.players.find((pl) => pl.id === snapP.id) : undefined;
+    const mine = snapP?.id === store.playerId;
+    const x = toX(plot.x);
+    const y = toY(plot.y);
+    const w = plot.w * s;
+    const h = plot.h * s;
+
+    // parcela sin jugador (mesa de más) o de alguien ya eliminado: se apaga para
+    // que la vista se vaya sola a las que siguen en juego
+    if (!snapP || snapP.eliminated) {
+      g.fillStyle = 'rgba(0,0,0,0.42)';
+      g.fillRect(x, y, w, h);
+    }
+
+    g.save();
+    g.strokeStyle = snapP && !snapP.eliminated ? (info?.color ?? '#fff') : 'rgba(255,255,255,0.18)';
+    g.lineWidth = mine ? 3 : 1.5;
+    if (!mine) g.globalAlpha = 0.7;
+    g.strokeRect(x + 1, y + 1, w - 2, h - 2);
+    g.restore();
+
+    // etiqueta: nombre y vidas. Solo con zoom suficiente para que se lea.
+    if (snapP && s > 12) {
+      const label = snapP.eliminated
+        ? `☠ ${info?.name ?? ''}`
+        : `${info?.name ?? ''} ❤️${snapP.lives}${mine ? ' (tú)' : ''}`;
+      g.save();
+      g.font = `${Math.min(16, Math.max(10, s * 0.42))}px system-ui, sans-serif`;
+      g.textBaseline = 'top';
+      const pad = 4;
+      const tw = g.measureText(label).width;
+      g.fillStyle = 'rgba(0,0,0,0.55)';
+      g.fillRect(x + 3, y + 3, tw + pad * 2, 18);
+      g.fillStyle = snapP.eliminated ? 'rgba(255,255,255,0.5)' : (info?.color ?? '#fff');
+      g.fillText(label, x + 3 + pad, y + 6);
+      g.restore();
+    }
+  }
+}
+
+// NOTA · aquí vivía el dibujo del camino "actual" del laberinto. Se retiró: con
+// los monstruos entrando por TODO el frente de arriba no existe un camino, sino
+// uno por cada punto de entrada, así que pintar la ruta del centro daba una idea
+// falsa de por dónde van a bajar. Como en el Line Tower Wars, el jugador lee el
+// laberinto por las torres. Lo que SÍ se conserva es la previsualización al
+// apuntar una celda (drawPlacement), que responde a «¿qué cambia si construyo
+// aquí?» y solo aparece mientras estás decidiendo.
+
 function buildSurroundLayer(map: MapDef): void {
   const M = SURROUND_CELLS;
   const cellsW = map.gridW + M * 2;
@@ -1299,6 +1605,9 @@ function drawCastle(m: CanvasRenderingContext2D, x: number, y: number, s: number
 // animaciones sobre la capa estática: espiral del portal y bandera del castillo
 function drawMapAnimations(gs: GameStore, now: number): void {
   const map = gs.map;
+  // LABERINTO · no hay portal ni castillo que animar: la entrada y la meta son
+  // franjas, no puntos (las pinta la capa del mapa).
+  if (map.maze === true) return;
   const s = view.scale;
   const t = now / 1000;
   // F9c · portal TINTADO del color de quien reclamó la puerta (pedido directo:
@@ -1313,6 +1622,7 @@ function drawMapAnimations(gs: GameStore, now: number): void {
   for (let pi = 0; pi < map.paths.length; pi++) {
     const path = map.paths[pi];
     const [sc, sr] = path[0];
+    if (!cellVisible(sc, sr, 2)) continue; // portal fuera de pantalla
     const x = toX(sc + 0.5);
     const y = toY(sr + 0.5);
     if (closedDoors.has(pi)) {
@@ -1373,6 +1683,7 @@ function drawMapAnimations(gs: GameStore, now: number): void {
   const exits = new Set(map.paths.map((p) => p[p.length - 1].join(',')));
   for (const e of exits) {
     const [ec, er] = e.split(',').map(Number);
+    if (!cellVisible(ec, er, 2)) continue; // salida fuera de pantalla
     const x = toX(ec + 0.5);
     const y = toY(er + 0.5);
     // mástil + bandera ondeante
@@ -1400,12 +1711,15 @@ function drawMapAnimations(gs: GameStore, now: number): void {
 // Es responsabilidad SOCIAL, no restringe dónde construye nadie.
 function drawDoorBanners(gs: GameStore, now: number): void {
   const map = gs.map;
+  // en laberinto no se reclaman puertas: cada uno tiene su carril entero
+  if (map.maze === true) return;
   const s = view.scale;
   const t = now / 1000;
   for (const p of gs.init.players) {
     const door = p.door;
     if (door === undefined || door < 0 || door >= map.paths.length) continue;
     const [sc, sr] = map.paths[door][0];
+    if (!cellVisible(sc, sr, 2)) continue; // estandarte fuera de pantalla
     const x = toX(sc + 0.5);
     const y = toY(sr + 0.5);
     g.save();
@@ -1624,6 +1938,11 @@ interface InterpResult {
   projs: { id: number; kindIdx: number; x: number; y: number; towerTypeIdx: number }[];
 }
 
+// buffers de interpolate() reutilizados entre frames (ver nota en la función)
+const interpAEnemies = new Map<number, SnapEnemy>();
+const interpAProjs = new Map<number, [number, number, number, number, number]>();
+const interpOut: InterpResult = { enemies: [], projs: [] };
+
 function interpolate(gs: GameStore, rt: number): InterpResult | null {
   const frames = gs.frames;
   if (frames.length === 0) return null;
@@ -1642,42 +1961,60 @@ function interpolate(gs: GameStore, rt: number): InterpResult | null {
   const span = b.time - a.time;
   const alpha = span > 0 ? Math.min(1, Math.max(0, (rt - a.time) / span)) : 1;
 
-  const aEnemies = new Map<number, SnapEnemy>();
-  for (const e of a.snap.enemies) aEnemies.set(e[0], e);
+  // Buffers REUTILIZADOS entre frames: el resultado se consume dentro del mismo
+  // frame (drawTowers/drawEnemies/drawProjectiles), así que no hace falta crear
+  // 2 Maps y cientos de objetos nuevos 60 veces por segundo (presión de GC que
+  // se notaba como micro-tirones en oleadas grandes).
+  interpAEnemies.clear();
+  for (const e of a.snap.enemies) interpAEnemies.set(e[0], e);
 
-  const enemies: InterpResult['enemies'] = [];
+  const enemies = interpOut.enemies;
+  let en = 0;
   for (const e of b.snap.enemies) {
-    const prev = aEnemies.get(e[0]);
-    if (prev) {
-      enemies.push({
-        id: e[0],
-        typeIdx: e[1],
-        x: prev[2] + (e[2] - prev[2]) * alpha,
-        y: prev[3] + (e[3] - prev[3]) * alpha,
-        hpFrac: prev[4] + (e[4] - prev[4]) * alpha,
-        flags: e[5],
-        affix: e[6] ?? 0,
-      });
-    } else {
-      enemies.push({ id: e[0], typeIdx: e[1], x: e[2], y: e[3], hpFrac: e[4], flags: e[5], affix: e[6] ?? 0 });
+    let o = enemies[en];
+    if (!o) {
+      o = { id: 0, typeIdx: 0, x: 0, y: 0, hpFrac: 0, flags: 0, affix: 0 };
+      enemies[en] = o;
     }
+    const prev = interpAEnemies.get(e[0]);
+    o.id = e[0];
+    o.typeIdx = e[1];
+    o.flags = e[5];
+    o.affix = e[6] ?? 0;
+    if (prev) {
+      o.x = prev[2] + (e[2] - prev[2]) * alpha;
+      o.y = prev[3] + (e[3] - prev[3]) * alpha;
+      o.hpFrac = prev[4] + (e[4] - prev[4]) * alpha;
+    } else {
+      o.x = e[2];
+      o.y = e[3];
+      o.hpFrac = e[4];
+    }
+    en++;
   }
+  enemies.length = en;
 
-  const aProjs = new Map<number, [number, number, number, number, number]>();
-  for (const p of a.snap.projs) aProjs.set(p[0], p);
-  const projs: InterpResult['projs'] = [];
+  interpAProjs.clear();
+  for (const p of a.snap.projs) interpAProjs.set(p[0], p);
+  const projs = interpOut.projs;
+  let pn = 0;
   for (const p of b.snap.projs) {
-    const prev = aProjs.get(p[0]);
-    projs.push({
-      id: p[0],
-      kindIdx: p[1],
-      x: prev ? prev[2] + (p[2] - prev[2]) * alpha : p[2],
-      y: prev ? prev[3] + (p[3] - prev[3]) * alpha : p[3],
-      towerTypeIdx: p[4],
-    });
+    let o = projs[pn];
+    if (!o) {
+      o = { id: 0, kindIdx: 0, x: 0, y: 0, towerTypeIdx: 0 };
+      projs[pn] = o;
+    }
+    const prev = interpAProjs.get(p[0]);
+    o.id = p[0];
+    o.kindIdx = p[1];
+    o.x = prev ? prev[2] + (p[2] - prev[2]) * alpha : p[2];
+    o.y = prev ? prev[3] + (p[3] - prev[3]) * alpha : p[3];
+    o.towerTypeIdx = p[4];
+    pn++;
   }
+  projs.length = pn;
 
-  return { enemies, projs };
+  return interpOut;
 }
 
 // ---------- torres ----------
@@ -1776,7 +2113,8 @@ export function countBannerTargets(snap: Snap, bannerId: number): number {
 function drawTowers(gs: GameStore, interp: InterpResult | null, now: number, dt: number): void {
   const snap = gs.latest;
   if (!snap) return;
-  const auras = computeBannerAuras(snap);
+  snapMemos(snap); // orden de pintado + auras + índice celda→torre (por snapshot, no por frame)
+  const auras = aurasMemo;
   const s = view.scale;
   const t = now / 1000;
   // v17 · tick de sim del último snapshot: el Sentry temporal parpadea en sus
@@ -1797,23 +2135,23 @@ function drawTowers(gs: GameStore, interp: InterpResult | null, now: number, dt:
   }
   const alive = new Set<number>();
 
-  // Algoritmo del pintor: dibujar las torres ordenadas por fila (Y, luego X) para
-  // que las de abajo queden ENCIMA de las de arriba y no tapen sus cañones ni sus
-  // proyectiles. El orden de `snap.towers` es indiferente para el resto del bucle
-  // (el Set `alive` se rellena por id y `towerAnim` se indexa por id), así que
-  // reordenar aquí es seguro.
-  const sortedTowers = [...snap.towers].sort((a, b) => a[3] - b[3] || a[2] - b[2]);
-
-  for (const tw of sortedTowers) {
+  // Algoritmo del pintor (torres ordenadas por fila para que las de abajo queden
+  // ENCIMA): el orden vive en sortedTowersMemo, recalculado solo por snapshot.
+  for (const tw of sortedTowersMemo) {
     const [id, typeIdx, cx, cy, level, ownerIdx] = tw;
     const spec = tw[9] ?? -1;
     const fusionIdx = tw[13] ?? -1;
     const fusion = fusionByIndex(fusionIdx);
     const type = TOWER_ORDER[typeIdx];
     const owner = gs.init.players[ownerIdx];
+    alive.add(id);
+    const selected = selSet.has(id);
+    // culling: fuera de pantalla no se dibuja NADA de esta torre (las
+    // seleccionadas se libran: su círculo de alcance puede asomar en pantalla
+    // aunque la torre quede fuera)
+    if (!selected && !cellVisible(cx, cy, 2)) continue;
     const x = toX(cx);
     const y = toY(cy);
-    alive.add(id);
 
     let anim = towerAnim.get(id);
     if (!anim) {
@@ -1821,15 +2159,19 @@ function drawTowers(gs: GameStore, interp: InterpResult | null, now: number, dt:
       towerAnim.set(id, anim);
     }
     const lvl = tupleStats(tw);
-    const canAir = fusion ? fusion.targetsAir : towerTargetsAir(type, spec);
-    const target = nearestEnemyAngle(interp, cx + 0.5, cy + 0.5, lvl.range, type, canAir);
-    if (target !== null) anim.angle = lerpAngle(anim.angle, target, Math.min(1, dt * 10));
+    // solo las torres CON torreta persiguen enemigos con la mirada; escanear los
+    // enemigos también para bancos/estandartes/trampas era O(torres×enemigos)
+    if (fusion !== null || !NO_TURRET.has(type)) {
+      const canAir = fusion ? fusion.targetsAir : towerTargetsAir(type, spec);
+      const target = nearestEnemyAngle(interp, cx + 0.5, cy + 0.5, lvl.range, type, canAir);
+      if (target !== null) anim.angle = lerpAngle(anim.angle, target, Math.min(1, dt * 10));
+    }
     anim.recoil = Math.max(0, anim.recoil - dt * 5);
     anim.flash = Math.max(0, anim.flash - dt * 8);
 
     // aura pasiva (Escarcha Eterna): solo visible con la torre SELECCIONADA
     // (como el círculo de alcance de las demás torres)
-    if (lvl.slowAura && selSet.has(id)) {
+    if (lvl.slowAura && selected) {
       const pulse = 0.5 + Math.sin(t * 2.4) * 0.12;
       g.fillStyle = `rgba(79,195,247,${0.07 + pulse * 0.05})`;
       g.strokeStyle = `rgba(129,212,250,${0.4 + pulse * 0.2})`;
@@ -1842,7 +2184,7 @@ function drawTowers(gs: GameStore, interp: InterpResult | null, now: number, dt:
 
     // aura del Alquimista: anillo verde en el suelo (como el dorado del Estandarte).
     // solo visible con la torre SELECCIONADA.
-    if (lvl.auraBounty !== undefined && lvl.auraBounty > 0 && selSet.has(id)) {
+    if (lvl.auraBounty !== undefined && lvl.auraBounty > 0 && selected) {
       const pulse = 0.5 + Math.sin(t * 2.4) * 0.12;
       g.fillStyle = `rgba(76,175,80,${0.05 + pulse * 0.05})`;
       g.strokeStyle = `rgba(129,199,132,${0.4 + pulse * 0.2})`;
@@ -1857,7 +2199,7 @@ function drawTowers(gs: GameStore, interp: InterpResult | null, now: number, dt:
 
     // aura del Estandarte: anillo cálido en el suelo, solo visible con la torre
     // SELECCIONADA. El tono vira a celeste si el aura es de celeridad (hastebanner).
-    if ((lvl.auraDamage !== undefined || lvl.auraHaste !== undefined) && selSet.has(id)) {
+    if ((lvl.auraDamage !== undefined || lvl.auraHaste !== undefined) && selected) {
       const pulse = 0.5 + Math.sin(t * 2.4) * 0.12;
       const haste = (lvl.auraHaste ?? 0) > 0;
       const fill = haste ? `rgba(79,195,247,${0.05 + pulse * 0.05})` : `rgba(255,202,40,${0.05 + pulse * 0.05})`;
@@ -1893,7 +2235,7 @@ function drawTowers(gs: GameStore, interp: InterpResult | null, now: number, dt:
 
     // Lote 3 · Sentry: radio de DETECCIÓN (azul, discontinuo) solo al SELECCIONARLO,
     // como las auras. Reemplaza el círculo de alcance dorado genérico para el Sentry.
-    if (TOWERS[type].detects && selSet.has(id)) {
+    if (TOWERS[type].detects && selected) {
       const pulse = 0.5 + Math.sin(t * 2.4) * 0.12;
       g.fillStyle = `rgba(41,182,246,${0.05 + pulse * 0.05})`;
       g.strokeStyle = `rgba(129,212,250,${0.45 + pulse * 0.25})`;
@@ -1910,7 +2252,7 @@ function drawTowers(gs: GameStore, interp: InterpResult | null, now: number, dt:
     // se omite el círculo, que taparía el mapa entero; el Sentry usa su propio anillo).
     // Lote 4 · en un GRUPO grande (>3) el círculo va TENUE y sin relleno: se sigue
     // leyendo la cobertura sin apilar N discos blancos encima del tablero.
-    if (selSet.has(id) && lvl.range < 90 && !TOWERS[type].detects) {
+    if (selected && lvl.range < 90 && !TOWERS[type].detects) {
       const pulse = 0.5 + Math.sin(t * 4) * 0.08;
       g.strokeStyle = faintRange ? 'rgba(255,213,79,0.22)' : `rgba(255,213,79,${pulse})`;
       g.lineWidth = 1.5;
@@ -1932,7 +2274,7 @@ function drawTowers(gs: GameStore, interp: InterpResult | null, now: number, dt:
     // Lote 4 · vínculo de FOCUS: torre SELECCIONADA con objetivo fijado → línea
     // punteada sutil hasta la posición interpolada del enemigo + retícula pequeña.
     const focusId = tw[18] ?? 0;
-    if (selSet.has(id) && focusId > 0 && interpById) {
+    if (selected && focusId > 0 && interpById) {
       const fe = interpById.get(focusId);
       if (fe) {
         const ex = toX(fe.x);
@@ -1985,10 +2327,10 @@ function drawTowers(gs: GameStore, interp: InterpResult | null, now: number, dt:
       // marca de dueño: con sprites ya no se distingue de quién es cada torre (el
       // arte vectorial pintaba el color del dueño en la base, el sprite lo tapa).
       // Elipse sutil en el suelo, bajo el sprite, para no ensuciar el tablero.
+      // SIN shadowBlur: un desenfoque por torre y por frame era de lo más caro
+      // del render (y con cientos de torres, letal); el relleno translúcido +
+      // contorno marcan al dueño igual de bien.
       const oc = owner?.color ?? '#888888';
-      g.save();
-      g.shadowColor = oc;
-      g.shadowBlur = s * 0.12;
       g.fillStyle = `${oc}30`;
       g.strokeStyle = `${oc}b0`;
       g.lineWidth = Math.max(1.5, s * 0.045);
@@ -1996,16 +2338,22 @@ function drawTowers(gs: GameStore, interp: InterpResult | null, now: number, dt:
       g.ellipse(0, s * 0.44, s * 0.3, s * 0.1, 0, 0, Math.PI * 2);
       g.fill();
       g.stroke();
-      g.restore();
-      if (selSet.has(id)) {
+      if (selected) {
         g.shadowColor = 'rgba(255,213,79,0.85)';
         g.shadowBlur = s * 0.28;
       }
       // ancla: la base se apoya cerca del borde inferior de la celda
       g.drawImage(sprite, -w / 2 - rx, s * 0.5 - h - ry, w, h);
       g.shadowBlur = 0;
+    } else if (!selected && fusionIdx < 0 && NO_TURRET.has(type) && s <= TOWER_CACHE_MAX_S) {
+      // torre sin torreta y sin seleccionar: blit del atlas (un drawImage) en vez
+      // de redibujar el vector completo; la micro-animación se repone encima.
+      const { cv } = towerArtFrame(type, level, spec, owner?.color ?? '#888', s);
+      const half = TOWER_CACHE_EXT * s;
+      g.drawImage(cv, -half, -half, half * 2, half * 2);
+      drawTowerArtOverlay(type, s, t);
     } else {
-      drawTowerArt(type, s, level, t, anim, owner?.color ?? '#888', selSet.has(id), spec, fusionIdx);
+      drawTowerArt(type, s, level, t, anim, owner?.color ?? '#888', selected, spec, fusionIdx);
     }
     // Trampa de púas: contador de cargas restantes + barra de desgaste bajo la placa.
     const charges = tw[11] ?? 0;
@@ -2096,17 +2444,13 @@ function drawTowerArt(
   // sube de tamaño con el nivel; especializaciones y fusiones son más grandes
   const grow = fusion ? 1.3 : (1 + (level - 1) * 0.07) * (specialized ? 1.22 : 1);
 
-  // halo de poder de las torres especializadas/fusionadas (palpita en su color)
+  // halo de poder de las torres especializadas/fusionadas (palpita en su color);
+  // textura cacheada por color — nada de createRadialGradient por frame
   if (specialized || fusion) {
     const haloColor = fusion ? fusion.color : def.color;
     const pulse = 0.5 + Math.sin(t * 3) * 0.5;
-    const halo = g.createRadialGradient(0, 0, s * 0.2, 0, 0, s * 0.6);
-    halo.addColorStop(0, `${haloColor}66`);
-    halo.addColorStop(1, `${haloColor}00`);
-    g.fillStyle = halo;
-    g.beginPath();
-    g.arc(0, 0, s * (0.5 + pulse * 0.08), 0, Math.PI * 2);
-    g.fill();
+    const R = s * (0.5 + pulse * 0.08);
+    g.drawImage(haloTex(haloColor), -R, -R, R * 2, R * 2);
   }
 
   // base de piedra común
@@ -3252,6 +3596,109 @@ function drawSpecFlourish(type: TowerTypeId, spec: number, s: number, t: number,
   }
 }
 
+// ---------- atlas de ARTE DE TORRE (torres sin torreta) ----------
+// Mismo truco que el atlas de cuerpos de enemigo (ver más abajo): el arte
+// vectorial de una torre SIN torreta (banco, estandarte, trampa, alquimista,
+// barril, sentry) no depende del ángulo — solo de (tipo, nivel, spec, color del
+// dueño, tamaño). Con la meta de granjas de bancos (cientos de "casas" en mapas
+// de 24 jugadores) redibujar ese vector cada frame era carísimo: gradientes,
+// decenas de paths y monedas por torre. Se rasteriza UNA vez a un canvas
+// offscreen y se blitea. Las micro-animaciones (destello de la moneda, chispa de
+// la mecha) se pintan encima en vivo con drawTowerArtOverlay — son 2-4 paths.
+const NO_TURRET = new Set<TowerTypeId>(['bank', 'banner', 'trap', 'alchemist', 'boom', 'sentry']);
+const TOWER_CACHE_EXT = 1.15; // semi-lado del lienzo en múltiplos de s (corona/halos caben)
+const TOWER_CACHE_MAX_S = 56; // px de celda: por encima (zoom cercano) se dibuja directo
+const towerArtCache = new Map<string, HTMLCanvasElement>();
+let towerCacheDpr = 0;
+
+function towerArtFrame(type: TowerTypeId, level: number, spec: number, color: string, s: number): { cv: HTMLCanvasElement; sc: number } {
+  const dpr = currentDpr();
+  if (dpr !== towerCacheDpr) {
+    towerArtCache.clear();
+    towerCacheDpr = dpr;
+  }
+  if (towerArtCache.size > 320) towerArtCache.clear(); // presupuesto de RAM
+  const sc = Math.max(12, Math.min(TOWER_CACHE_MAX_S, Math.round(s / 4) * 4)); // cubetas de 4px
+  const key = `${type}:${level}:${spec}:${color}:${sc}`;
+  let cv = towerArtCache.get(key);
+  if (!cv) {
+    cv = document.createElement('canvas');
+    const half = TOWER_CACHE_EXT * sc;
+    cv.width = Math.max(1, Math.ceil(half * 2 * dpr));
+    cv.height = Math.max(1, Math.ceil(half * 2 * dpr));
+    const c = cv.getContext('2d')!;
+    c.setTransform(dpr, 0, 0, dpr, half * dpr, half * dpr);
+    // t fijo = 0.55: fase "en reposo" (sin destello del banco, chispa apagada);
+    // lo vivo lo repone drawTowerArtOverlay encima del blit.
+    const savedG = g;
+    g = c;
+    try {
+      drawTowerArt(type, sc, level, 0.55, { angle: -Math.PI / 2, recoil: 0, flash: 0 }, color, false, spec, -1);
+    } finally {
+      g = savedG;
+    }
+    towerArtCache.set(key, cv);
+  }
+  return { cv, sc };
+}
+
+// Micro-animaciones que el atlas congela y merece la pena reponer en vivo
+// (baratas: un par de paths). El resto de destellos sutiles se quedan en la fase
+// fija del atlas — invisible con cientos de torres en pantalla.
+function drawTowerArtOverlay(type: TowerTypeId, s: number, t: number): void {
+  if (type === 'bank') {
+    // destello de la pila de monedas (mismo ritmo que el arte vivo)
+    if ((t % 2.3) < 0.2) {
+      g.strokeStyle = 'rgba(255,255,255,0.9)';
+      g.lineWidth = Math.max(1, s * 0.02);
+      g.beginPath();
+      g.moveTo(s * 0.12 - s * 0.05, 0);
+      g.lineTo(s * 0.12 + s * 0.05, 0);
+      g.moveTo(s * 0.12, -s * 0.05);
+      g.lineTo(s * 0.12, s * 0.05);
+      g.stroke();
+    }
+  } else if (type === 'boom') {
+    // chispa parpadeante de la mecha (coordenadas del arte del barril)
+    const bw = s * 0.44;
+    const bh = s * 0.5;
+    const fx0 = bw * 0.12 + s * 0.03;
+    const fy0 = -bh / 2 + s * 0.06 - s * 0.22;
+    const sparkle = 0.55 + Math.sin(t * 9) * 0.45;
+    g.fillStyle = `rgba(255,213,79,${sparkle})`;
+    g.beginPath();
+    g.arc(fx0, fy0, s * (0.045 + 0.02 * sparkle), 0, Math.PI * 2);
+    g.fill();
+    g.fillStyle = `rgba(255,112,67,${sparkle * 0.8})`;
+    g.beginPath();
+    g.arc(fx0, fy0, s * 0.022, 0, Math.PI * 2);
+    g.fill();
+  }
+}
+
+// ---------- texturas de HALO (gradientes radiales cacheados) ----------
+// createRadialGradient por élite/campeón/torre especializada POR FRAME era una
+// lluvia de allocations. Un halo es siempre "color en el centro → transparente":
+// se rasteriza una vez por color a 64px y se blitea escalado (el pulso vive en
+// el tamaño/alfa del blit, no en el gradiente).
+const haloTexCache = new Map<string, HTMLCanvasElement>();
+function haloTex(color: string): HTMLCanvasElement {
+  let cv = haloTexCache.get(color);
+  if (!cv) {
+    cv = document.createElement('canvas');
+    cv.width = 64;
+    cv.height = 64;
+    const c = cv.getContext('2d')!;
+    const grad = c.createRadialGradient(32, 32, 10, 32, 32, 32);
+    grad.addColorStop(0, `${color}55`);
+    grad.addColorStop(1, `${color}00`);
+    c.fillStyle = grad;
+    c.fillRect(0, 0, 64, 64);
+    haloTexCache.set(color, cv);
+  }
+  return cv;
+}
+
 function muzzleFlash(dist: number, s: number, f: number): void {
   g.fillStyle = `rgba(255,224,130,${f})`;
   g.beginPath();
@@ -3431,6 +3878,13 @@ function drawEnemies(interp: InterpResult, now: number): void {
     const isElite = (e.flags & 8) !== 0;
     const isImmune = (e.flags & 16) !== 0;
     const isChampion = (e.flags & 256) !== 0; // F9a · campeón 👑
+    // la barra del jefe (HUD) se alimenta ANTES del culling: debe verse aunque
+    // el jefe esté fuera de pantalla
+    if (isBoss && (!boss || e.hpFrac > boss.hpFrac)) {
+      boss = { hpFrac: e.hpFrac, name: def.name };
+    }
+    // culling: enemigo fuera de pantalla → ni sombra, ni halo, ni barra de vida
+    if (!cellVisible(e.x, e.y, 2.5)) continue;
     // F9a · los JEFES con afijo también mandan máscara (icono sobre la cabeza)
     const affixes = isElite || isBoss ? affixesFromMask(e.affix) : [];
     if (stealth) g.globalAlpha = 0.5;
@@ -3447,30 +3901,21 @@ function drawEnemies(interp: InterpResult, now: number): void {
 
     if (def.flying) y += bob * s * 0.06 - s * 0.18;
 
-    // aura de élite (palpita en el color del primer afijo)
+    // aura de élite (palpita en el color del primer afijo). Textura de halo
+    // cacheada por color en vez de crear DOS gradientes por élite y por frame.
     if (isElite) {
       const auraColor = affixes[0] ? AFFIXES[affixes[0]].color : '#ffd54f';
       const pulse = 0.5 + Math.sin(t * 4 + e.id) * 0.5;
-      const halo = g.createRadialGradient(x, y, r * 0.6, x, y, r * 2);
-      halo.addColorStop(0, `${auraColor}55`);
-      halo.addColorStop(1, `${auraColor}00`);
-      g.fillStyle = halo;
-      g.beginPath();
-      g.arc(x, y, r * (1.6 + pulse * 0.3), 0, Math.PI * 2);
-      g.fill();
+      const R = r * (1.6 + pulse * 0.3);
+      g.drawImage(haloTex(auraColor), x - R, y - R, R * 2, R * 2);
     }
 
     // F9a · halo DORADO del campeón 👑 (mini-jefe de pelotón): más lento y regio
     // que el de élite, para que "pocos y gordos" se lea desde lejos.
     if (isChampion) {
       const pulse = 0.5 + Math.sin(t * 2.2 + e.id) * 0.5;
-      const halo = g.createRadialGradient(x, y, r * 0.7, x, y, r * 2.2);
-      halo.addColorStop(0, 'rgba(255,213,79,0.4)');
-      halo.addColorStop(1, 'rgba(255,213,79,0)');
-      g.fillStyle = halo;
-      g.beginPath();
-      g.arc(x, y, r * (1.7 + pulse * 0.25), 0, Math.PI * 2);
-      g.fill();
+      const R = r * (1.7 + pulse * 0.25);
+      g.drawImage(haloTex('#ffd54f'), x - R, y - R, R * 2, R * 2);
     }
 
     g.save();
@@ -3622,9 +4067,6 @@ function drawEnemies(interp: InterpResult, now: number): void {
       g.fillText('👑', x, iconY);
     }
 
-    if (isBoss && (!boss || e.hpFrac > boss.hpFrac)) {
-      boss = { hpFrac: e.hpFrac, name: def.name };
-    }
     if (stealth) g.globalAlpha = 1; // restablecer antes del siguiente enemigo
   }
 
@@ -4743,6 +5185,10 @@ function drawProjectiles(interp: InterpResult): void {
     const ang = prev ? Math.atan2(p.y - prev.y, p.x - prev.x) : 0;
     projPrev.set(p.id, { x: p.x, y: p.y });
 
+    // culling DESPUÉS del bookkeeping (projSeen/projPrev deben seguir al día
+    // para que el fogonazo y el ángulo no salten al entrar en pantalla)
+    if (!cellVisible(p.x, p.y, 1)) continue;
+
     // sprite real del proyectil (rotado hacia su dirección; apunta al norte en el PNG);
     // si no hay sprite, cae al dibujo vectorial de siempre.
     const pn = PROJ_BY_TYPE[type];
@@ -4831,38 +5277,57 @@ function drawPlacement(gs: GameStore, now: number): void {
   const s = view.scale;
   const map = gs.map;
   const ctx = getPlacementCtx(map);
-  const towerSet = new Set(gs.latest.towers.map((t) => `${t[2]},${t[3]}`));
+  // índice celda→torre del snapshot (memo compartido): nada de crear un Set de
+  // strings con TODAS las torres en cada frame de la colocación
+  snapMemos(gs.latest);
+  const hasTower = (tcx: number, tcy: number): boolean => towerCellMemo.has(tcx * 8192 + tcy);
 
-  // rejilla + celdas construibles
-  g.strokeStyle = 'rgba(255,255,255,0.06)';
+  // rejilla + celdas construibles, SOLO en el rango visible (en mapas gigantes
+  // recorrer todo el grid eran miles de rects/strokes por frame mientras colocas)
+  const cx0 = Math.max(0, Math.floor(visL));
+  const cx1 = Math.min(map.gridW, Math.ceil(visR));
+  const cy0 = Math.max(0, Math.floor(visT));
+  const cy1 = Math.min(map.gridH, Math.ceil(visB));
+  const maze = map.maze === true;
+  // LABERINTO · se dibuja también la rejilla FINA (media casilla), porque es la
+  // que de verdad manda al colocar: sin ella el jugador no ve las posiciones
+  // intermedias donde puede apoyar la torre para cerrar una escalera.
+  const stepGrid = maze ? 1 / SUB : 1;
   g.lineWidth = 1;
-  for (let cx = 0; cx <= map.gridW; cx++) {
+  for (let cx = cx0; cx <= cx1; cx += stepGrid) {
+    g.strokeStyle = Number.isInteger(cx) ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.028)';
     g.beginPath();
-    g.moveTo(toX(cx), toY(0));
-    g.lineTo(toX(cx), toY(map.gridH));
+    g.moveTo(toX(cx), toY(cy0));
+    g.lineTo(toX(cx), toY(cy1));
     g.stroke();
   }
-  for (let cy = 0; cy <= map.gridH; cy++) {
+  for (let cy = cy0; cy <= cy1; cy += stepGrid) {
+    g.strokeStyle = Number.isInteger(cy) ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.028)';
     g.beginPath();
-    g.moveTo(toX(0), toY(cy));
-    g.lineTo(toX(map.gridW), toY(cy));
+    g.moveTo(toX(cx0), toY(cy));
+    g.lineTo(toX(cx1), toY(cy));
     g.stroke();
   }
   const type = gs.selection.towerType;
   // la Trampa se coloca SOBRE el camino; el resto, fuera. Resalta las celdas
   // construibles según el tipo elegido.
   const onPathOnly = TOWERS[type].onPathOnly === true;
-  g.fillStyle = onPathOnly ? 'rgba(255,120,120,0.09)' : 'rgba(129,255,150,0.07)';
-  for (let cy = 0; cy < map.gridH; cy++) {
-    for (let cx = 0; cx < map.gridW; cx++) {
-      const key = `${cx},${cy}`;
-      if (towerSet.has(key)) continue;
-      if (onPathOnly) {
-        if (!ctx.paths.has(key)) continue; // la Trampa solo resalta el camino
-      } else if (ctx.paths.has(key) || ctx.blocked.has(key)) {
-        continue;
+  // En laberinto NO se pinta la alfombra de casillas construibles: con media
+  // casilla las posiciones válidas se solapan y el resultado es una mancha que
+  // no informa de nada. Manda la rejilla fina y el fantasma de la torre.
+  if (!maze) {
+    g.fillStyle = onPathOnly ? 'rgba(255,120,120,0.09)' : 'rgba(129,255,150,0.07)';
+    for (let cy = cy0; cy < cy1; cy++) {
+      for (let cx = cx0; cx < cx1; cx++) {
+        const key = `${cx},${cy}`;
+        if (hasTower(cx, cy)) continue;
+        if (onPathOnly) {
+          if (!ctx.paths.has(key)) continue; // la Trampa solo resalta el camino
+        } else if (ctx.paths.has(key) || ctx.blocked.has(key)) {
+          continue;
+        }
+        g.fillRect(toX(cx) + 1, toY(cy) + 1, s - 2, s - 2);
       }
-      g.fillRect(toX(cx) + 1, toY(cy) + 1, s - 2, s - 2);
     }
   }
 
@@ -4873,9 +5338,17 @@ function drawPlacement(gs: GameStore, now: number): void {
   const lvl = TOWERS[type].levels[0];
   const key = `${cx},${cy}`;
   const inGrid = cx >= 0 && cy >= 0 && cx < map.gridW && cy < map.gridH;
-  const ok = inGrid && !towerSet.has(key) && (
-    onPathOnly ? ctx.paths.has(key) : !ctx.paths.has(key) && !ctx.blocked.has(key)
-  );
+  // en laberinto la validez la decide la MISMA función que usa el servidor, así
+  // que la celda roja y el rechazo real nunca pueden discrepar
+  const towerCells = maze
+    ? gs.latest.towers.map((t) => ({ cx: t[2], cy: t[3], type: TOWER_ORDER[t[1]] }))
+    : [];
+  const ok = maze
+    ? inGrid && placementError(map, ctx, towerCells, cx, cy, type, myPlot(map) ?? undefined) === null
+    : inGrid && !hasTower(cx, cy) && (
+        onPathOnly ? ctx.paths.has(key) : !ctx.paths.has(key) && !ctx.blocked.has(key)
+      );
+
 
   // rango
   g.fillStyle = ok ? 'rgba(120,220,120,0.08)' : 'rgba(240,80,80,0.08)';
@@ -4931,6 +5404,7 @@ function drawPremoves(gs: GameStore, now: number): void {
   for (const pm of pms) {
     if (pm.kind === 'place') {
       const { cx, cy, towerType } = pm;
+      if (!cellVisible(cx, cy, 2)) continue; // fantasma fuera de pantalla
       g.strokeStyle = `rgba(79,195,247,${0.55 + pulse * 0.35})`;
       g.lineWidth = 2;
       g.setLineDash([5, 4]);
@@ -4950,6 +5424,7 @@ function drawPremoves(gs: GameStore, now: number): void {
       if (!t) continue;
       const cx = t[2];
       const cy = t[3];
+      if (!cellVisible(cx, cy, 2)) continue; // anillo de mejora fuera de pantalla
       g.strokeStyle = `rgba(255,213,79,${0.55 + pulse * 0.35})`;
       g.lineWidth = 2.5;
       g.setLineDash([5, 4]);
@@ -5017,40 +5492,50 @@ function drawMiniMap(gs: GameStore, now: number): void {
   roundRect(g, bx - 4, by - 4, mw + 8, mh + 8, 6);
   g.fill();
 
-  // terreno cacheado escalado al recuadro
-  if (mapLayer) {
-    g.save();
-    roundRect(g, bx, by, mw, mh, 3);
-    g.clip();
-    g.drawImage(mapLayer, bx, by, mw, mh);
-    g.restore();
-  }
-
+  // terreno + puntos, desde la capa cacheada (un solo drawImage por frame)
   const snap = gs.latest;
-  if (snap) {
-    // torres: punto del color del dueño
-    for (const t of snap.towers) {
-      const owner = gs.init.players[t[5]];
-      g.fillStyle = owner?.color ?? '#ccc';
-      g.beginPath();
-      g.arc(bx + (t[2] + 0.5) * s, by + (t[3] + 0.5) * s, Math.max(1.2, s * 0.35), 0, Math.PI * 2);
-      g.fill();
+  const mdpr = currentDpr();
+  const mkey = `${Math.round(mw * mdpr)}x${Math.round(mh * mdpr)}`;
+  if (!miniLayer || miniLayerKey !== mkey || miniLayerSnap !== snap) {
+    miniLayerKey = mkey;
+    miniLayerSnap = snap;
+    if (!miniLayer) miniLayer = document.createElement('canvas');
+    miniLayer.width = Math.max(1, Math.round(mw * mdpr));
+    miniLayer.height = Math.max(1, Math.round(mh * mdpr));
+    const c = miniLayer.getContext('2d')!;
+    c.setTransform(mdpr, 0, 0, mdpr, 0, 0);
+    if (mapLayer) {
+      c.save();
+      roundRect(c, 0, 0, mw, mh, 3);
+      c.clip();
+      c.drawImage(mapLayer, 0, 0, mw, mh);
+      c.restore();
     }
-    // enemigos: rojo normal, morado si élite (flag 8)
-    for (const e of snap.enemies) {
-      // Lote 3 · invisible no detectado: tampoco en el minimapa (solo los detectados)
-      if ((e[5] & 64) !== 0 && (e[5] & 128) === 0) continue;
-      const elite = (e[5] & 8) !== 0;
-      g.fillStyle = elite ? '#c77dff' : '#ff5252';
-      g.beginPath();
-      g.arc(bx + e[2] * s, by + e[3] * s, Math.max(1.2, s * (elite ? 0.42 : 0.32)), 0, Math.PI * 2);
-      g.fill();
+    if (snap) {
+      // puntos como cuadraditos: a 1-2px se leen igual que un círculo y cuestan
+      // una fracción (nada de beginPath/arc/fill por punto)
+      for (const t of snap.towers) {
+        const owner = gs.init.players[t[5]];
+        c.fillStyle = owner?.color ?? '#ccc';
+        const rr = Math.max(1.2, s * 0.35);
+        c.fillRect((t[2] + 0.5) * s - rr, (t[3] + 0.5) * s - rr, rr * 2, rr * 2);
+      }
+      // enemigos: rojo normal, morado si élite (flag 8); invisibles no detectados
+      // tampoco en el minimapa (Lote 3)
+      for (const e of snap.enemies) {
+        if ((e[5] & 64) !== 0 && (e[5] & 128) === 0) continue;
+        const elite = (e[5] & 8) !== 0;
+        c.fillStyle = elite ? '#c77dff' : '#ff5252';
+        const rr = Math.max(1.2, s * (elite ? 0.42 : 0.32));
+        c.fillRect(e[2] * s - rr, e[3] * s - rr, rr * 2, rr * 2);
+      }
     }
   }
+  g.drawImage(miniLayer, bx, by, mw, mh);
 
   // F9c · pulsos de PELIGRO: la puerta por la que acaba de fugar un enemigo
-  // parpadea en rojo ~2.6s. Con la cámara capada (viewCap) es el radar que
-  // sustituye al "ver todo el mapa": miras el minimapa y sabes qué puerta arde.
+  // parpadea en rojo ~2.6s. Jugando con zoom acercado es tu radar: miras el
+  // minimapa y sabes qué puerta arde aunque esté fuera de pantalla.
   for (const [idx, t0] of dangerFlashes) {
     const age = now - t0;
     if (age > DANGER_FLASH_MS) {
@@ -5202,6 +5687,9 @@ function loop(): void {
   g.lineWidth = 3;
   g.strokeRect(view.ox, view.oy, gs.map.gridW * view.scale, gs.map.gridH * view.scale);
 
+  // ARENA · los límites de cada parcela y de quién es
+  drawPlots(g, gs);
+
   // animaciones decorativas del decorado (espiral del portal, bandera del castillo):
   // solo en ALTA; en MEDIA/LIGERA quedan estáticas (las pinta la capa del mapa).
   if (tier === 0) drawMapAnimations(gs, now);
@@ -5225,4 +5713,15 @@ function loop(): void {
   if (tier < 2) drawVignette(); // la viñeta (gradiente a pantalla completa) se corta en LIGERA
   drawMiniMap(gs, now);
   syncPlaceBubble(gs);
+
+  // trabajo síncrono real de ESTE frame (señal de holgura del modo AUTO). Solo
+  // mide la CPU del render — el vsync no lo contamina como al intervalo.
+  busyEMA += (Math.min(performance.now() - now, 100) - busyEMA) * 0.1;
+
+  // chip de FPS de la barra superior (si está activado en Ajustes)
+  if (fpsShown && now - fpsLastUpdate > 500) {
+    fpsLastUpdate = now;
+    if (!fpsEl) fpsEl = document.getElementById('hud-fps');
+    if (fpsEl) fpsEl.textContent = `${Math.round(1000 / Math.max(1, frameEMA))} fps`;
+  }
 }

@@ -1,12 +1,15 @@
 import type {
   AttackTypeId,
+  EnemyDef,
   EnemyState,
   EnemyTypeId,
   GameEvent,
   GameState,
   MapDef,
   PlayerCommand,
+  PlayerState,
   ProjectileState,
+  SpawnEntry,
   TowerState,
   Vec,
 } from '../types.js';
@@ -49,6 +52,7 @@ import {
   INVISIBLE_EVERY,
   INVISIBLE_FROM,
   LEAK_WAVE_DIV,
+  MAZE_STUN_EVERY_CELLS,
   POISON_PCT_CAP_DPS,
   SHRED_DURATION,
   SHRED_RADIUS,
@@ -68,7 +72,23 @@ import {
   WOOD_PRICE_REVERT,
 } from '../constants.js';
 import { rand } from '../rng.js';
-import { dist, pathLength, pathWaypoints, type PlacementContext } from './grid.js';
+import { blocksMovement, dist, pathLength, pathWaypoints, type PlacementContext } from './grid.js';
+import {
+  blockedGrid,
+  buildField,
+  fieldDist,
+  laneGoalPoint,
+  laneGoalRow,
+  laneGoalSubs,
+  nextSub,
+  plotOf,
+  reachable,
+  SUB,
+  subCenter,
+  subOf,
+  UNREACHABLE,
+  type FlowField,
+} from './field.js';
 import { applyCommands } from './commands.js';
 
 export interface SimContext {
@@ -76,19 +96,136 @@ export interface SimContext {
   placement: PlacementContext;
   waypoints: Vec[][]; // por camino
   pathLens: number[];
+  // LABERINTO · un campo de rutas por carril (vacío en mapas de recorrido fijo).
+  // Se deriva de (mapa, torres muro), NO del estado: por eso no viaja en
+  // GameState y los guardados/replays no cambian de formato. Ver sim/field.ts.
+  fields: FlowField[];
+  // Rejilla de muros con la que se construyeron esos campos. Sirve de testigo:
+  // si la ocupación cambia (construir, vender, fusionar), syncFields lo detecta
+  // comparando y reconstruye. Comparar la rejilla entera es EXACTO —una firma
+  // resumida podría colisionar y dejar a los enemigos siguiendo un laberinto que
+  // ya no existe— y a este tamaño de rejilla el coste es despreciable.
+  walls: Uint8Array;
 }
 
 export function makeSimContext(map: MapDef, placement: PlacementContext): SimContext {
-  return {
+  const ctx: SimContext = {
     map,
     placement,
     waypoints: map.paths.map((_, i) => pathWaypoints(map, i)),
     pathLens: map.paths.map((_, i) => pathLength(map, i)),
+    fields: [],
+    walls: new Uint8Array(map.maze === true ? map.gridW * map.gridH : 0),
   };
+  // el laberinto arranca vacío: solo con los obstáculos decorativos del mapa
+  if (map.maze === true) rebuildFields(ctx, []);
+  return ctx;
+}
+
+// LABERINTO · recalcula el campo de cada carril con los muros actuales. En mapas
+// con PARCELAS cada carril se acota a la suya, así que un monstruo nunca puede
+// cruzar al terreno del vecino.
+function rebuildFields(ctx: SimContext, walls: { cx: number; cy: number }[]): void {
+  const perPlot = ctx.map.plots !== undefined;
+  ctx.fields = ctx.map.paths.map((_, i) => {
+    const grid = perPlot ? blockedGrid(ctx.map, walls, plotOf(ctx.map, i)) : ctx.walls;
+    return buildField(ctx.map, grid, laneGoalSubs(ctx.map, i));
+  });
+}
+
+// LABERINTO · sincroniza los campos con las torres actuales. Se llama una vez
+// por tick (tras aplicar los comandos): si nadie tocó el laberinto, sale por el
+// camino barato sin reconstruir nada.
+//
+// Reconstruir en UN solo punto —en vez de invalidar desde cada comando que mueve
+// torres (place/sell/fuse)— evita la clase de bug más cara aquí: olvidarse de
+// invalidar en una ruta nueva y dejar a los enemigos atravesando muros.
+export function syncFields(ctx: SimContext, towers: TowerState[]): void {
+  if (ctx.map.maze !== true) return;
+  const wallTowers = towers.filter((t) => blocksMovement(t.type));
+  // testigo SIN acotar a parcela: representa la ocupación del mapa entero, que es
+  // justo lo que hay que vigilar para saber si algún laberinto cambió
+  const walls = blockedGrid(ctx.map, wallTowers);
+  let changed = walls.length !== ctx.walls.length;
+  if (!changed) {
+    for (let i = 0; i < walls.length; i++) {
+      if (walls[i] !== ctx.walls[i]) {
+        changed = true;
+        break;
+      }
+    }
+  }
+  if (!changed) return;
+  ctx.walls = walls;
+  rebuildFields(ctx, wallTowers);
+}
+
+// Distancia que le queda a un enemigo hasta la meta, en celdas: es lo que ordena
+// los modos de puntería «primero» y «último».
+//
+// En los mapas de recorrido fijo sale de restar lo andado a la longitud total.
+// En LABERINTO la da directamente el campo de rutas —que es exactamente eso,
+// pasos hasta la meta—, así que además de más simple es más fiel: mide el camino
+// que el enemigo va a recorrer de verdad, laberinto incluido. Los que van por
+// libre (aéreos y encerrados) no están en el campo: para ellos vale la línea
+// recta, que es la distancia que realmente les queda.
+function remainingToGoal(ctx: SimContext, e: EnemyState): number {
+  if (ctx.map.maze !== true) return ctx.pathLens[e.pathIdx] - e.travelled;
+  const lane = e.pathIdx < ctx.fields.length ? e.pathIdx : 0;
+  const d = fieldDist(ctx.fields[lane], subOf(e.x), subOf(e.y));
+  if (d !== UNREACHABLE) return d;
+  const g = laneGoalPoint(ctx.map, lane);
+  return dist(e.x, e.y, g.x, g.y);
 }
 
 function connectedCount(state: GameState): number {
+  // ARENA · cada parcela recibe la oleada ENTERA y la defiende una sola persona,
+  // así que el escalado por jugadores no aplica: siempre cuenta como 1.
+  //
+  // No es un detalle: si escalara con los conectados, cada jugador eliminado
+  // abarataría la partida a los que siguen vivos — exactamente al revés de lo que
+  // debe pasar en una competición por ver quién aguanta más.
+  if (state.mode === 'arena') return 1;
   return Math.max(1, state.players.filter((p) => p.connected).length);
+}
+
+// ARENA · dueño de la parcela por la que va un enemigo. Fuera de arena devuelve
+// null y todo sigue funcionando contra los contadores de equipo de siempre.
+function plotOwner(state: GameState, lane: number): PlayerState | null {
+  if (state.mode !== 'arena') return null;
+  return state.players.find((p) => p.plot === lane) ?? null;
+}
+
+// ARENA · se acabó para este jugador: pierde la parcela y pasa a espectador.
+// Sus torres se retiran y sus monstruos se esfuman (sin botín para nadie): ni
+// ensucian la pantalla ni gastan CPU en una parcela que ya no compite.
+function eliminatePlayer(state: GameState, p: PlayerState, events: GameEvent[]): void {
+  if (p.eliminated) return;
+  p.eliminated = true;
+  p.lives = 0;
+  p.waveReached = state.wave;
+  p.eliminatedTick = state.tick;
+  state.towers = state.towers.filter((t) => t.owner !== p.id);
+  // marcar en vez de filtrar: stepEnemies está iterando el array ahora mismo y
+  // ya lo limpia por hp al terminar el bucle
+  for (const e of state.enemies) if (e.pathIdx === p.plot) e.hp = 0;
+  events.push({ e: 'eliminated', playerId: p.id, name: p.name, wave: state.wave });
+  checkArenaOver(state, events);
+}
+
+// ARENA · la partida acaba cuando queda uno en pie (o ninguno). Con un solo
+// jugador —pruebas, partida en solitario— acaba cuando cae él.
+function checkArenaOver(state: GameState, events: GameEvent[]): void {
+  if (state.mode !== 'arena' || state.over) return;
+  const alive = state.players.filter((p) => !p.eliminated);
+  const many = state.players.length > 1;
+  if (alive.length === 0 || (many && alive.length === 1)) {
+    // `victory` es un dato de partida, no de persona: el cliente decide qué
+    // enseñarle a cada uno comparando con el ranking (waveReached).
+    state.over = { victory: alive.length === 1 };
+    for (const p of alive) p.waveReached = state.wave;
+    events.push({ e: 'gameover', victory: alive.length === 1 });
+  }
 }
 
 function spawnEnemy(
@@ -101,7 +238,19 @@ function spawnEnemy(
   const def = ENEMIES[type];
   const players = connectedCount(state);
   const hpMult = waveHpMult(Math.max(1, state.wave), state.difficulty, players);
-  const start = ctx.waypoints[pathIdx][0];
+  // LABERINTO · sin portal: cada monstruo entra por un punto CUALQUIERA del
+  // borde de arriba. Con un único punto de nacimiento el laberinto óptimo sería
+  // siempre el mismo embudo; con el frente abierto hay que cubrirlo entero.
+  // Consume RNG de la sim, así que sigue siendo reproducible con la misma semilla.
+  let start: Vec;
+  if (ctx.map.maze === true) {
+    const plot = plotOf(ctx.map, pathIdx);
+    const span = plot.w * SUB;
+    const off = Math.min(span - 1, Math.floor(rand(state) * span));
+    start = { x: subCenter(plot.x * SUB + off), y: subCenter(plot.y * SUB) };
+  } else {
+    start = ctx.waypoints[pathIdx][0];
+  }
   const enemy: EnemyState = {
     id: state.nextId++,
     type,
@@ -112,6 +261,12 @@ function spawnEnemy(
     pathIdx,
     wpIdx: at ? at.wpIdx : 1,
     travelled: at ? at.travelled : 0,
+    // LABERINTO · nace apuntando a su propia subcelda: el primer tick de
+    // movimiento la alcanza (ya está en ella) y consulta el campo. Así no hace
+    // falta un caso especial de arranque, y las crías que nacen a medio camino
+    // se recolocan solas.
+    tgtSx: subOf(at ? at.x : start.x),
+    tgtSy: subOf(at ? at.y : start.y),
     slowFactor: 1,
     slowUntil: 0,
     poisonDps: 0,
@@ -511,10 +666,10 @@ function pickTarget(
     let score: number;
     switch (tower.targetMode) {
       case 'first':
-        score = -(ctx.pathLens[e.pathIdx] - e.travelled); // menor distancia restante = mayor score
+        score = -remainingToGoal(ctx, e); // menor distancia restante = mayor score
         break;
       case 'last':
-        score = ctx.pathLens[e.pathIdx] - e.travelled;
+        score = remainingToGoal(ctx, e);
         break;
       case 'strong':
         score = e.hp;
@@ -633,7 +788,14 @@ function fireTower(
   // F9a (v19) · Poder Vital: +vitalPower de daño mientras el EQUIPO conserve
   // ≥VITAL_LIVES_MIN vidas. Lee state.lives (determinista); en horda las vidas
   // nunca bajan, así que allí es un +20% plano — aceptable: su coste ya lo paga.
-  const vitalOn = (lvl.vitalPower ?? 0) > 0 && state.lives >= VITAL_LIVES_MIN;
+  // ARENA · mide las vidas de SU dueño: no hay fortaleza común que consultar, y
+  // leer un contador de equipo aquí premiaría a una torre por lo bien que
+  // defiende otro jugador.
+  const vitalLives =
+    state.mode === 'arena'
+      ? (state.players.find((p) => p.id === tower.owner)?.lives ?? 0)
+      : state.lives;
+  const vitalOn = (lvl.vitalPower ?? 0) > 0 && vitalLives >= VITAL_LIVES_MIN;
   const vitalMult = vitalOn ? 1 + (lvl.vitalPower ?? 0) : 1;
   // Crecimiento permanente (Arco Largo/Explorador II): el bono acumulado se suma al
   // daño base ANTES del aura. Se captura el bono ACTUAL para este disparo y luego se
@@ -986,6 +1148,77 @@ function nearestSappableTower(
   return best;
 }
 
+// LABERINTO · avance de un enemigo siguiendo el campo de rutas. Devuelve true si
+// ha alcanzado la meta en este tick (el llamador decide entonces si es fuga, robo
+// o vuelta de horda, exactamente igual que en los mapas de recorrido fijo).
+function moveThroughMaze(
+  ctx: SimContext,
+  enemy: EnemyState,
+  def: EnemyDef,
+  moveLeft: number,
+): boolean {
+  const lane = enemy.pathIdx < ctx.fields.length ? enemy.pathIdx : 0;
+  const field = ctx.fields[lane];
+  const goalRow = laneGoalRow(ctx.map, lane);
+  const goalY = subCenter(goalRow);
+
+  // Dos casos bajan en línea recta, sin laberinto:
+  //   · los AÉREOS, porque vuelan (regla del género: el laberinto no les afecta);
+  //   · un terrestre ENCERRADO. La regla anti-bloqueo impide cerrar el frente,
+  //     pero no impide que le construyan una bolsa alrededor a media oleada. Un
+  //     monstruo clavado para siempre sería peor que uno que atraviesa, y además
+  //     atravesar es MÁS corto que rodear: encerrar a propósito sale mal, que es
+  //     justo el incentivo que queremos.
+  // Bajan RECTO manteniendo su columna: la meta es todo el borde de abajo, no un
+  // punto, así que no tienen que converger a ningún sitio.
+  const boxedIn = !reachable(field, subOf(enemy.x), subOf(enemy.y));
+  if (def.flying || boxedIn) {
+    const d = goalY - enemy.y;
+    if (d <= moveLeft) {
+      enemy.y = goalY;
+      enemy.travelled += Math.max(0, d);
+      return true;
+    }
+    enemy.y += moveLeft;
+    enemy.travelled += moveLeft;
+    return false;
+  }
+
+  // El campo decrece hacia la meta, así que el bucle termina solo; el tope es una
+  // salvaguarda para que un mapa mal declarado no cuelgue el tick.
+  let guard = 0;
+  while (moveLeft > 0 && guard++ < 512) {
+    // ¿le construyeron encima de la subcelda a la que iba? Entonces ya no está en
+    // el campo: recalcula desde donde está y sigue sin perder el tick.
+    if (fieldDist(field, enemy.tgtSx, enemy.tgtSy) === UNREACHABLE) {
+      const redirect = nextSub(field, subOf(enemy.x), subOf(enemy.y));
+      if (!redirect) return false;
+      enemy.tgtSx = redirect.sx;
+      enemy.tgtSy = redirect.sy;
+    }
+    const tx = subCenter(enemy.tgtSx);
+    const ty = subCenter(enemy.tgtSy);
+    const d = dist(enemy.x, enemy.y, tx, ty);
+    if (d > moveLeft) {
+      enemy.x += ((tx - enemy.x) / d) * moveLeft;
+      enemy.y += ((ty - enemy.y) / d) * moveLeft;
+      enemy.travelled += moveLeft;
+      return false;
+    }
+    // alcanzó el centro de la subcelda: gasta la distancia y elige la siguiente
+    enemy.x = tx;
+    enemy.y = ty;
+    enemy.travelled += d;
+    moveLeft -= d;
+    if (enemy.tgtSy >= goalRow) return true; // cruzó el frente de meta
+    const step = nextSub(field, enemy.tgtSx, enemy.tgtSy);
+    if (!step) return false;
+    enemy.tgtSx = step.sx;
+    enemy.tgtSy = step.sy;
+  }
+  return false;
+}
+
 function stepEnemies(state: GameState, ctx: SimContext, events: GameEvent[]): void {
   const players = connectedCount(state);
   const speedMult = state.difficulty === 'easy' ? 0.9 : state.difficulty === 'hard' ? 1.08 : 1;
@@ -1107,31 +1340,48 @@ function stepEnemies(state: GameState, ctx: SimContext, events: GameEvent[]): vo
       }
     }
 
-    // movimiento por waypoints (el zapador que está aturdiendo NO avanza)
+    // movimiento (el zapador que está aturdiendo NO avanza)
     let moveLeft = sapping
       ? 0
       : (def.speed * speedMult * enemy.speedMult * enemy.slowFactor * rageMult * hasteMult) / TICK_RATE;
     const wps = ctx.waypoints[enemy.pathIdx];
-    while (moveLeft > 0 && enemy.wpIdx < wps.length) {
-      const wp = wps[enemy.wpIdx];
-      const d = dist(enemy.x, enemy.y, wp.x, wp.y);
-      if (d <= moveLeft) {
-        enemy.x = wp.x;
-        enemy.y = wp.y;
-        enemy.travelled += d;
-        moveLeft -= d;
-        enemy.wpIdx += 1;
-      } else {
-        enemy.x += ((wp.x - enemy.x) / d) * moveLeft;
-        enemy.y += ((wp.y - enemy.y) / d) * moveLeft;
-        enemy.travelled += moveLeft;
-        moveLeft = 0;
+    const maze = ctx.map.maze === true;
+    // LABERINTO · el aturdimiento del Behemot ya no puede colgar de las esquinas
+    // del recorrido: un laberinto tiene decenas y lo volvería devastador sin que
+    // nadie tocara su balance. Se dispara cada MAZE_STUN_EVERY_CELLS recorridas,
+    // que en un mapa clásico equivale más o menos a una esquina. Comparar el
+    // tramo antes/después no necesita estado nuevo y es determinista.
+    const stunTrackBefore = maze ? Math.floor(enemy.travelled / MAZE_STUN_EVERY_CELLS) : 0;
+    let arrived = false;
+
+    if (maze) {
+      arrived = moveThroughMaze(ctx, enemy, def, moveLeft);
+    } else {
+      while (moveLeft > 0 && enemy.wpIdx < wps.length) {
+        const wp = wps[enemy.wpIdx];
+        const d = dist(enemy.x, enemy.y, wp.x, wp.y);
+        if (d <= moveLeft) {
+          enemy.x = wp.x;
+          enemy.y = wp.y;
+          enemy.travelled += d;
+          moveLeft -= d;
+          enemy.wpIdx += 1;
+        } else {
+          enemy.x += ((wp.x - enemy.x) / d) * moveLeft;
+          enemy.y += ((wp.y - enemy.y) / d) * moveLeft;
+          enemy.travelled += moveLeft;
+          moveLeft = 0;
+        }
       }
+      arrived = enemy.wpIdx >= wps.length;
     }
 
     // Behemot: al CRUZAR una esquina (avanza el índice de waypoint) aturde todas las
     // torres en radio. Se dispara una vez por esquina (compara con lastWpIdx).
-    if (def.stunOnCorner && enemy.wpIdx > enemy.lastWpIdx && enemy.wpIdx < wps.length) {
+    const crossedCorner = maze
+      ? Math.floor(enemy.travelled / MAZE_STUN_EVERY_CELLS) > stunTrackBefore
+      : enemy.wpIdx > enemy.lastWpIdx && enemy.wpIdx < wps.length;
+    if (def.stunOnCorner && crossedCorner) {
       const stun = state.tick + Math.round(def.stunOnCorner.seconds * TICK_RATE);
       for (const t of state.towers) {
         if (dist(enemy.x, enemy.y, t.cx + 0.5, t.cy + 0.5) <= def.stunOnCorner.radius) {
@@ -1142,7 +1392,7 @@ function stepEnemies(state: GameState, ctx: SimContext, events: GameEvent[]): vo
     enemy.lastWpIdx = enemy.wpIdx;
 
     // llegó al final del camino
-    if (enemy.wpIdx >= wps.length) {
+    if (arrived) {
       if (state.mode === 'horde') {
         // BUCLE: no escapa ni quita vidas — se teletransporta al inicio de su
         // camino conservando su hp actual, pero gana un stack de CANSANCIO.
@@ -1151,6 +1401,10 @@ function stepEnemies(state: GameState, ctx: SimContext, events: GameEvent[]): vo
         enemy.y = start.y;
         enemy.wpIdx = 1;
         enemy.travelled = 0;
+        // LABERINTO · al reinyectarlo hay que devolverle también el destino, o
+        // seguiría caminando hacia la subcelda que tenía junto a la meta.
+        enemy.tgtSx = subOf(enemy.x);
+        enemy.tgtSy = subOf(enemy.y);
         // cansancio: −10% del maxHp BASE por vuelta (suelo 10%). Reconstruimos el
         // maxHp base a partir de la retención de la vuelta actual y aplicamos la
         // de la siguiente, clampeando la hp. Determinista (solo aritmética).
@@ -1165,7 +1419,11 @@ function stepEnemies(state: GameState, ctx: SimContext, events: GameEvent[]): vo
         // determinista (orden estable de players; el resto va al primero).
         enemy.hp = 0;
         const total = def.stealGold;
-        const ps = state.players;
+        // ARENA · el Ladrón roba SOLO a quien defiende esa parcela. Repartir el
+        // robo entre todos —como en cooperativo— haría que un despiste tuyo le
+        // vaciara el bolsillo a tus rivales.
+        const victim = plotOwner(state, enemy.pathIdx);
+        const ps = victim ? [victim] : state.players;
         const per = Math.floor(total / ps.length);
         let taken = 0;
         for (let pi = 0; pi < ps.length; pi++) {
@@ -1174,7 +1432,14 @@ function stepEnemies(state: GameState, ctx: SimContext, events: GameEvent[]): vo
           ps[pi].gold -= real;
           taken += real;
         }
-        events.push({ e: 'steal', gold: taken, x: enemy.x, y: enemy.y, pathIdx: enemy.pathIdx });
+        events.push({
+          e: 'steal',
+          gold: taken,
+          x: enemy.x,
+          y: enemy.y,
+          pathIdx: enemy.pathIdx,
+          ...(victim ? { playerId: victim.id } : {}),
+        });
       } else {
         // fuga escalonada: cuesta `livesCost + floor(oleada/10)` (+extra si es élite;
         // F9a: un CAMPEÓN fuga MUY caro — CHAMPION_EXTRA_LIVES encima — total 5-8).
@@ -1183,12 +1448,27 @@ function stepEnemies(state: GameState, ctx: SimContext, events: GameEvent[]): vo
           Math.floor(state.wave / LEAK_WAVE_DIV) +
           (enemy.elite ? ELITE_EXTRA_LIVES : 0) +
           (enemy.champion ? CHAMPION_EXTRA_LIVES : 0);
-        state.lives = Math.max(0, state.lives - cost);
         enemy.hp = 0; // sale del juego sin bounty
-        events.push({ e: 'leak', lives: state.lives, type: enemy.type, pathIdx: enemy.pathIdx });
-        if (state.lives <= 0 && !state.over) {
-          state.over = { victory: false };
-          events.push({ e: 'gameover', victory: false });
+        // ARENA · la fuga la paga el DUEÑO de la parcela por la que escapó, no un
+        // marcador común: aquí cada uno responde de su propio laberinto.
+        const owner = plotOwner(state, enemy.pathIdx);
+        if (owner) {
+          owner.lives = Math.max(0, owner.lives - cost);
+          events.push({
+            e: 'leak',
+            lives: owner.lives,
+            type: enemy.type,
+            pathIdx: enemy.pathIdx,
+            playerId: owner.id,
+          });
+          if (owner.lives <= 0) eliminatePlayer(state, owner, events);
+        } else {
+          state.lives = Math.max(0, state.lives - cost);
+          events.push({ e: 'leak', lives: state.lives, type: enemy.type, pathIdx: enemy.pathIdx });
+          if (state.lives <= 0 && !state.over) {
+            state.over = { victory: false };
+            events.push({ e: 'gameover', victory: false });
+          }
         }
       }
     }
@@ -1211,6 +1491,22 @@ function stepEnemies(state: GameState, ctx: SimContext, events: GameEvent[]): vo
   void players;
 }
 
+// ARENA · reparte la misma oleada por todas las parcelas que siguen en juego.
+// Las copias de una misma entrada salen con delay 0 para que aparezcan en el
+// MISMO tick (el bucle de spawn procesa de golpe todo lo que no espera): si
+// fueran escalonadas, unos jugadores recibirían su oleada antes que otros.
+function mirrorWaveToPlots(state: GameState, entries: SpawnEntry[]): SpawnEntry[] {
+  const lanes = state.players.filter((p) => !p.eliminated).map((p) => p.plot);
+  if (lanes.length === 0) return [];
+  const out: SpawnEntry[] = [];
+  for (const entry of entries) {
+    for (let i = 0; i < lanes.length; i++) {
+      out.push({ ...entry, pathIdx: lanes[i], delay: i === 0 ? entry.delay : 0 });
+    }
+  }
+  return out;
+}
+
 function stepWaves(state: GameState, ctx: SimContext, events: GameEvent[]): void {
   if (state.over) return;
 
@@ -1223,15 +1519,19 @@ function stepWaves(state: GameState, ctx: SimContext, events: GameEvent[]): void
       // F9d · PUERTAS CERRADAS: los spawns se reparten SOLO entre las rutas
       // abiertas y la densidad escala con su número (con todas abiertas y ≤3
       // rutas el resultado es byte-idéntico al de siempre).
+      // ARENA · la oleada se genera UNA vez, como si fuese para un jugador y una
+      // sola ruta, y luego se copia íntegra a cada parcela. Así todos afrontan
+      // exactamente lo mismo y la comparación entre jugadores es limpia.
+      const arena = state.mode === 'arena';
       const gen = generateWave(
         state,
         state.wave + 1,
         connectedCount(state),
-        ctx.map.paths.length,
+        arena ? 1 : ctx.map.paths.length,
         state.mode,
-        openPathIndices(ctx.map.paths.length, state.closedDoors),
+        arena ? [0] : openPathIndices(ctx.map.paths.length, state.closedDoors),
       );
-      state.pendingWave = gen.entries;
+      state.pendingWave = arena ? mirrorWaveToPlots(state, gen.entries) : gen.entries;
       state.pendingBoss = gen.hasBoss;
       state.pendingBossType = gen.bossType;
       state.nextWaveComp = gen.comp;
@@ -1352,7 +1652,9 @@ function stepWaves(state: GameState, ctx: SimContext, events: GameEvent[]): void
       ) - comp,
     );
     state.blessedBonusMult = 1;
+    // ARENA · un eliminado ya no cobra: su partida terminó
     for (const p of state.players) {
+      if (p.eliminated) continue;
       p.gold += bonus;
       p.stats.goldEarned += bonus;
     }
@@ -1361,7 +1663,10 @@ function stepWaves(state: GameState, ctx: SimContext, events: GameEvent[]): void
       const lvl = statsOf(tower);
       if (!lvl.incomePerWave) continue;
       const amount = lvl.incomePerWave;
-      const recipients = lvl.incomeToAll ? state.players : state.players.filter((p) => p.id === tower.owner);
+      // ARENA · «reparte a todo el equipo» no aplica: aquí no hay equipo, y la
+      // mina de un rival no puede financiarte a ti.
+      const shareAll = lvl.incomeToAll && state.mode !== 'arena';
+      const recipients = shareAll ? state.players : state.players.filter((p) => p.id === tower.owner);
       for (const p of recipients) {
         p.gold += amount;
         p.stats.goldEarned += amount;
@@ -1377,8 +1682,13 @@ function stepWaves(state: GameState, ctx: SimContext, events: GameEvent[]): void
     events.push({ e: 'wave_end', wave: state.wave, bonus });
 
     // el mercado de madera "respira": el precio revierte suave hacia la base
-    // al final de cada oleada (aritmética pura, determinista)
-    state.woodPrice += (WOOD_PRICE_BASE - state.woodPrice) * WOOD_PRICE_REVERT;
+    // al final de cada oleada (aritmética pura, determinista). En ARENA cada
+    // jugador tiene el suyo, así que respiran por separado.
+    if (state.mode === 'arena') {
+      for (const p of state.players) p.woodPrice += (WOOD_PRICE_BASE - p.woodPrice) * WOOD_PRICE_REVERT;
+    } else {
+      state.woodPrice += (WOOD_PRICE_BASE - state.woodPrice) * WOOD_PRICE_REVERT;
+    }
 
     if (state.totalWaves > 0 && state.wave >= state.totalWaves) {
       state.over = { victory: true };
@@ -1614,6 +1924,10 @@ export function stepGame(
     p.wood += rate / TICK_RATE;
   }
   applyCommands(state, ctx.map, ctx.placement, commands, events);
+  // LABERINTO · los comandos de este tick pueden haber movido muros (construir,
+  // vender, fusionar): reconstruye el campo de rutas ANTES de que nadie lo lea.
+  // Un único punto de sincronización, en vez de invalidar desde cada comando.
+  syncFields(ctx, state.towers);
   stepWaves(state, ctx, events);
   stepTowerAuras(state);
   stepEnemies(state, ctx, events);

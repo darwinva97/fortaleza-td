@@ -177,8 +177,12 @@
                  estandarte de su color. Opcional y social (no limita construcción). -->
             <div id="lobby-doors-box" hidden>
               <h4 class="lobby-doors-title">🚩 Tu puerta</h4>
+              <!-- mapa de puertas: cada puerta numerada (como los chips) y teñida
+                   del color de quien la reclamó — así se VE dónde aparecerás.
+                   Interactivo: tocar una puerta la reclama/libera. -->
+              <canvas id="lobby-doors-map" class="doors-map" aria-label="Mapa de puertas: toca una puerta libre para reclamarla, o la tuya para liberarla"></canvas>
               <ul id="lobby-doors" class="door-list"></ul>
-              <p class="hint">Reclama una puerta para plantar tu estandarte en su entrada. Es opcional y social: no limita dónde construyes.</p>
+              <p class="hint">Reclama una puerta para plantar tu estandarte en su entrada y saber por dónde te atacarán. Es opcional y social: no limita dónde construyes.</p>
             </div>
           </div>
 
@@ -189,6 +193,7 @@
                 <button data-value="classic" type="button"><span class="seg-row"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3.3 19 6v5.6c0 4.8-3 8.3-7 9.3-4-1-7-4.5-7-9.3V6l7-2.7Z"/></svg>Clásico</span><small>36 oleadas</small></button>
                 <button data-value="endless" type="button"><span class="seg-row"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 12c-1.7-2.8-3.2-4.2-5.2-4.2a4.2 4.2 0 0 0 0 8.4c2 0 3.5-1.4 5.2-4.2Zm0 0c1.7 2.8 3.2 4.2 5.2 4.2a4.2 4.2 0 0 0 0-8.4c-2 0-3.5 1.4-5.2 4.2Z"/></svg>Infinito</span><small>récords</small></button>
                 <button data-value="horde" type="button"><span class="seg-row"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M12 12a2.3 2.3 0 1 0 2.3 2.3"/><path d="M12 12a5 5 0 1 0 5 5"/><path d="M12 12a7.8 7.8 0 1 1-7.8 7.8"/></svg>Horda</span><small>récords</small></button>
+                <button data-value="arena" type="button"><span class="seg-row"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="4.5" width="7" height="6" rx="1"/><rect x="13.5" y="4.5" width="7" height="6" rx="1"/><rect x="3.5" y="13.5" width="7" height="6" rx="1"/><rect x="13.5" y="13.5" width="7" height="6" rx="1"/></svg>Arena</span><small>compites</small><span class="beta-tag">beta</span></button>
               </div>
               <h3>Dificultad</h3>
               <div id="lobby-diff" class="seg">
@@ -255,6 +260,12 @@
           <span id="hud-gold" class="stat gold">🪙 0</span>
           <button id="hud-wood" class="stat wood" title="Madera: tu orco leñador la tala sin parar. Especializar (★) cuesta 🪵45 y el Rango II (★★) 🪵60. Toca para abrir el MERCADO. Atajos: C compra · V vende.">🪵 0</button>
           <span id="hud-alive" class="stat" hidden>👾 0</span>
+          <!-- ARENA · cuántos siguen en pie. Solo aparece en ese modo; hud.ts
+               alterna [hidden] y reescribe el número. -->
+          <span id="hud-rivals" class="stat" title="Jugadores que siguen en pie" hidden>⚔️ 0</span>
+          <!-- FPS en letra pequeña (opt-in): se muestra/oculta desde Ajustes ⚙.
+               El renderer solo toca su textContent (2 veces/s), nunca el markup. -->
+          <span id="hud-fps" class="stat fps" title="FPS actuales (media móvil)" hidden>— fps</span>
         </div>
         <div class="hud-group">
           <!-- hud.ts solo toca #callwave-timer (innerHTML) y btn.hidden — el prefijo
@@ -320,6 +331,14 @@
             <button type="button" data-quality="auto">Auto</button>
             <button type="button" data-quality="alta">Alta</button>
             <button type="button" data-quality="ligera">Ligera</button>
+          </div>
+        </div>
+        <!-- contador de FPS en la barra superior (chip #hud-fps): ver/ocultar -->
+        <div class="set-row set-quality-row">
+          <span>📈 FPS en pantalla</span>
+          <div id="set-fps" class="set-quality" role="group" aria-label="Mostrar FPS en la barra superior">
+            <button type="button" data-fps="1">Ver</button>
+            <button type="button" data-fps="0">Ocultar</button>
           </div>
         </div>
         <!-- continuar en otro dispositivo (issue #6): copia un enlace con el

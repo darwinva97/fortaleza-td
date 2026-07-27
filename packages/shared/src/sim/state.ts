@@ -1,5 +1,7 @@
 import type { Difficulty, GameMode, GameState, PlayerState } from '../types.js';
 import {
+  ARENA_TEST_GOLD,
+  ARENA_TEST_WOOD,
   CLASSIC_WAVES,
   FIRST_INTERLUDE_SEC,
   sanitizeClosedDoors,
@@ -18,7 +20,13 @@ export interface NewPlayerInput {
   color: string;
 }
 
-export function makePlayer(input: NewPlayerInput, gold: number, wood = START_WOOD): PlayerState {
+export function makePlayer(
+  input: NewPlayerInput,
+  gold: number,
+  wood = START_WOOD,
+  // ARENA · parcela que defiende. Fuera de arena da igual (tablero compartido).
+  plot = 0,
+): PlayerState {
   return {
     id: input.id,
     name: input.name,
@@ -28,6 +36,15 @@ export function makePlayer(input: NewPlayerInput, gold: number, wood = START_WOO
     orcLevel: 1,
     connected: true,
     stats: { kills: 0, damage: 0, goldEarned: 0, goldSpent: 0, towersBuilt: 0 },
+    plot,
+    lives: START_LIVES,
+    maxLives: START_LIVES,
+    eliminated: false,
+    waveReached: 0,
+    eliminatedTick: 0,
+    woodPrice: WOOD_PRICE_BASE,
+    boomsBought: 0,
+    repairsBought: 0,
   };
 }
 
@@ -82,7 +99,19 @@ export function createGame(
     enemies: [],
     towers: [],
     projectiles: [],
-    players: players.map((p) => makePlayer(p, START_GOLD[difficulty])),
+    // ARENA · a cada jugador su parcela, por orden de entrada. Todas son
+    // idénticas, así que repartirlas por índice no favorece a nadie.
+    // ⚠️ PROVISIONAL: mientras el modo está en pruebas se arranca con oro y
+    // madera de sobra (ARENA_TEST_GOLD/WOOD en constants.ts) para poder trastear
+    // con el laberinto sin esperar a la economía.
+    players: players.map((p, i) =>
+      makePlayer(
+        p,
+        mode === 'arena' && ARENA_TEST_GOLD !== null ? ARENA_TEST_GOLD : START_GOLD[difficulty],
+        mode === 'arena' && ARENA_TEST_WOOD !== null ? ARENA_TEST_WOOD : START_WOOD,
+        i,
+      ),
+    ),
     woodPrice: WOOD_PRICE_BASE,
     nextId: 1,
     over: null,

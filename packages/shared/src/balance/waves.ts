@@ -83,6 +83,10 @@ export function isImmuneWave(wave: number): boolean {
 // el clásico caen exactamente 3 invisibles: 12, 18 y 24 (la 30 es inmune y la 36
 // jefe). Sin `mode` se asume endless (comportamiento previo intacto).
 export function isInvisibleWave(wave: number, mode: GameMode = 'endless'): boolean {
+  // ARENA · sin oleadas invisibles. El modo va de construir mejor que el rival,
+  // y una oleada que exige tener un detector plantado justo entonces se decide
+  // por acordarse del Sentry, no por el laberinto.
+  if (mode === 'arena') return false;
   if (wave < INVISIBLE_FROM || (wave - INVISIBLE_FROM) % INVISIBLE_EVERY !== 0) return false;
   return !isImmuneWave(wave) && !waveHasBoss(wave, mode);
 }
@@ -438,6 +442,9 @@ function generateChampionWave(
   wave: number,
   playerCount: number,
   openPaths: number[],
+  // el modo viaja para que las exenciones por modo (arena no tiene invisibles)
+  // valgan también aquí, y no solo en la generación normal
+  mode: GameMode = 'endless',
 ): GeneratedWave {
   const candidates = CHAMPION_SPECIES.filter((t) => ENEMIES[t].minWave <= wave);
   const type = candidates.length > 0 ? pick(state, candidates) : 'brute';
@@ -447,7 +454,7 @@ function generateChampionWave(
   );
   const ordered = Array.from({ length: count }, () => type);
   const immune = isImmuneWave(wave); // nunca coincide por cadencia; defensa en profundidad
-  const invisible = isInvisibleWave(wave); // ídem
+  const invisible = isInvisibleWave(wave, mode); // ídem
   const entries = buildEntries(state, wave, ordered, openPaths, {
     eliteAffixes: new Map(),
     immune,
@@ -505,7 +512,7 @@ export function generateWave(
     // fuera del calendario (no debería ocurrir en clásico de 36): cae al generador
   }
   if (mode !== 'classic' && isChampionWave(wave, mode)) {
-    return generateChampionWave(state, wave, playerCount, paths);
+    return generateChampionWave(state, wave, playerCount, paths, mode);
   }
 
   const picks: EnemyTypeId[] = [];

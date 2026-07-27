@@ -16,6 +16,17 @@ import {
   isInvisibleWave,
   makePlacementContext,
   makeSimContext,
+  blockedGrid,
+  buildField,
+  fieldDist,
+  inPlot,
+  laneEntrySubs,
+  laneGoalSubs,
+  nextSub,
+  plotOf,
+  sealsMaze,
+  STEP_STRAIGHT,
+  SUB,
   pathCells,
   pathLength,
   pathWaypoints,
@@ -105,6 +116,7 @@ import {
   type ReplayEntry,
   type SaveData,
   type SaveSlot,
+  type SimContext,
   type TowerState,
   type TowerTypeId,
 } from '@td/shared';
@@ -652,6 +664,10 @@ for (const map of MAPS) {
 // partida rápida con bots en cada mapa (además de la completa en «sendero»)
 for (const map of MAPS) {
   if (map.id === MAP_ID) continue;
+  // los mapas de ARENA son parcelas aisladas, una por jugador: en cooperativo
+  // serían 8 caminos independientes para dos bots, o sea injugables. Se prueban
+  // en su propio modo, en la sección de arena.
+  if (map.plots !== undefined) continue;
   const r = runScenario(map.id, TICK_RATE * 60 * 4);
   assert(
     r.maxWave >= 3 && r.totalKills > 10,
@@ -3484,13 +3500,44 @@ console.log('— F9a · Niveles 5→10: veteranía con oro+madera, tope clásico
     assert(evs.some((e) => e.e === 'reject' && e.reason.includes('madera')), 'sin madera: rechazado (no se compra nivel 10 sin pagar madera)');
     assert(t.level === 4, 'la torre no sube');
   }
-  // (e) las torres que NO disparan no compran veteranía (+8% de nada = trampa)
+  // (e) un Estandarte ★★ compra su RANGO III (cúspide de lujo, 10k🪙 + 1k🪵) —
+  // y en el nivel 5 se acabó: un aura sigue sin comprar veteranía (+8% de nada).
   {
     const st = mk('classic');
     const t = mkTower('banner', { id: 7004, level: 4, spec: 0, invested: 800 });
     st.towers.push(t);
-    const evs = stepGame(st, simCtx, [{ playerId: 'p1', cmd: { kind: 'upgrade', towerId: 7004 } }]);
-    assert(evs.some((e) => e.e === 'reject'), 'un Estandarte ★★ NO compra veteranía (no dispara)');
+    const goldBefore = st.players[0].gold;
+    const woodBefore = st.players[0].wood;
+    stepGame(st, simCtx, [{ playerId: 'p1', cmd: { kind: 'upgrade', towerId: 7004 } }]);
+    assert(t.level === 5, 'un Estandarte ★★ compra su Rango III (nivel 5)');
+    // la madera con tolerancia: el orco tala unas décimas durante el propio tick
+    assert(
+      goldBefore - st.players[0].gold === 10000 && Math.abs(woodBefore - st.players[0].wood - 1000) < 0.5,
+      'el Rango III cuesta 🪙10000 + 🪵1000',
+    );
+    const r3 = statsOf(t);
+    assert((r3.auraDamage ?? 0) === 1.2 && r3.range === 4.2, 'Guerra III: aura +120% de daño y radio 4.2');
+    const evs2 = stepGame(st, simCtx, [{ playerId: 'p1', cmd: { kind: 'upgrade', towerId: 7004 } }]);
+    assert(evs2.some((e) => e.e === 'reject'), 'en Rango III ya no hay más (un aura no compra veteranía)');
+  }
+  // (e2) el Estandarte del Vencedor (sin Rango II clásico) compra su Vencedor II
+  // al MISMO precio de cúspide (10k🪙 + 1k🪵) por la ruta del Rango II con madera propia.
+  {
+    const st = mk('classic');
+    const t = mkTower('banner', { id: 7014, level: 3, spec: 2, invested: 800 });
+    st.towers.push(t);
+    const goldBefore = st.players[0].gold;
+    const woodBefore = st.players[0].wood;
+    stepGame(st, simCtx, [{ playerId: 'p1', cmd: { kind: 'upgrade', towerId: 7014 } }]);
+    assert(t.level === 4, 'el Vencedor sube a Vencedor II (nivel 4)');
+    assert(
+      goldBefore - st.players[0].gold === 10000 && Math.abs(woodBefore - st.players[0].wood - 1000) < 0.5,
+      'Vencedor II cuesta 🪙10000 + 🪵1000 (madera propia del rango)',
+    );
+    const v2 = statsOf(t);
+    assert((v2.auraCrit ?? 0) === 0.3 && v2.range === 4.0, 'Vencedor II: +30% de crítico y radio 4.0');
+    const evs2 = stepGame(st, simCtx, [{ playerId: 'p1', cmd: { kind: 'upgrade', towerId: 7014 } }]);
+    assert(evs2.some((e) => e.e === 'reject'), 'Vencedor II es la cima de su rama');
   }
   // (f) una torre SIN especializar sigue clavada en el nivel 3 (refuerza especializar)
   {
@@ -4044,6 +4091,287 @@ function crowdProbe(closedDoors: number[], wavesTarget: number): { peak: number;
   assert(doorDensityMult(9, 1) === 1.25 && doorDensityMult(9, 4) === 2 && doorDensityMult(9, 8) === 3,
     'la RAMPA entra suave: ×1.25 en la o1, ×2 en la o4, plena desde la o8');
   assert(sanitizeClosedDoors(9, [0, 1, 2, 3, 4]).length === 5, 'sanitizeClosedDoors directo (5 cerradas válidas)');
+}
+
+// ---------------------------------------------------------------------------
+// LABERINTO (mapas maze): el camino no está trazado, lo forman las torres. Estas
+// pruebas cubren lo que puede romper el modo en silencio: que rodear alargue de
+// verdad, que no se pueda sellar el paso, que las trampas de suelo se pisen, y
+// que el laberinto siga siendo determinista aunque cambie a mitad de oleada.
+// ---------------------------------------------------------------------------
+console.log('— LABERINTO · campo de rutas, regla anti-bloqueo y determinismo —');
+{
+  const mz = getMap('llano');
+  assert(mz.maze === true, 'el mapa del laberinto declara maze');
+  const pctx = makePlacementContext(mz);
+  const entrada = laneEntrySubs(mz, 0);
+  const meta = laneGoalSubs(mz, 0);
+  const anchoSub = mz.gridW * SUB;
+  // Coste desde una entrada CONCRETA (la esquina de arriba a la izquierda). El
+  // mínimo de todo el frente no sirve para medir el rodeo: mientras quede una
+  // columna libre sigue habiendo una bajada recta y el mínimo no se mueve — que
+  // es justo la gracia del frente ancho.
+  const costeDesde = (f: ReturnType<typeof buildField>): number => f.dist[entrada[0]];
+
+  // 1. el campo mide el camino REAL de arriba abajo, y un muro lo alarga
+  const libre = buildField(mz, blockedGrid(mz, []), meta);
+  const directo = costeDesde(libre);
+  // muro horizontal que cruza casi todo el carril, dejando un hueco al final
+  const muro = Array.from({ length: 10 }, (_, i) => ({ cx: i, cy: 8, type: 'arrow' as const }));
+  const conMuro = buildField(mz, blockedGrid(mz, muro), meta);
+  const rodeo = costeDesde(conMuro);
+  // el campo mide COSTE (10 por paso recto, 14 en diagonal) sobre la rejilla FINA
+  console.log(`   camino libre ${directo} de coste → con un muro que cruza, ${rodeo}`);
+  assert(
+    directo === (mz.gridH * SUB - 1) * STEP_STRAIGHT,
+    `sin torres se baja recto (${directo})`,
+  );
+  assert(rodeo > directo, `un muro OBLIGA a rodear (${rodeo} > ${directo})`);
+  assert(entrada.length === anchoSub, `el frente de entrada cubre TODO el ancho (${entrada.length})`);
+
+  // 1b. SIN SESGO HACIA ABAJO: si el laberinto lo obliga, los monstruos SUBEN.
+  //     Se monta una U abierta por arriba (suelo + dos paredes) y se comprueba
+  //     que desde dentro la ruta retrocede hacia arriba para salir, en vez de
+  //     empujar contra el suelo. Es lo que permite los serpentines de verdad.
+  {
+    const u: { cx: number; cy: number; type: 'arrow' }[] = [];
+    for (let x = 3; x <= 8; x++) u.push({ cx: x, cy: 10, type: 'arrow' }); // suelo
+    for (let y = 6; y <= 10; y++) {
+      u.push({ cx: 3, cy: y, type: 'arrow' }); // pared izquierda
+      u.push({ cx: 8, cy: y, type: 'arrow' }); // pared derecha
+    }
+    const fu = buildField(mz, blockedGrid(mz, u), meta);
+    // dentro de la U, junto al suelo
+    let sx = Math.floor(5.5 * SUB);
+    let sy = Math.floor(9.5 * SUB);
+    let subio = false;
+    for (let i = 0; i < 200; i++) {
+      const nxt = nextSub(fu, sx, sy);
+      if (!nxt) break;
+      if (nxt.sy < sy) subio = true;
+      sx = nxt.sx;
+      sy = nxt.sy;
+      if (sy >= mz.gridH * SUB - 1) break;
+    }
+    assert(subio, 'atrapado en una U, el monstruo SUBE para salir (no hay sesgo hacia abajo)');
+    assert(sy >= mz.gridH * SUB - 1, 'y después baja hasta la meta rodeando la U');
+  }
+
+  // 2. DIAGONALES: dos torres que solo se tocan en esquina NO cierran el paso —
+  //    el monstruo se cuela por el hueco. Es la regla que hace posible el
+  //    laberinto en escalera del Line Tower Wars.
+  const escalera = [
+    { cx: 4, cy: 5, type: 'arrow' as const },
+    { cx: 5, cy: 6, type: 'arrow' as const },
+  ];
+  assert(
+    !sealsMaze(mz, escalera, 3, 4),
+    'dos torres en diagonal NO cierran el paso (se cuela por la esquina)',
+  );
+
+  // 3. REJILLA FINA · se construye cada MEDIA casilla, y dos torres se estorban
+  //    si sus cuerpos se solapan aunque no compartan casilla
+  assert(placementError(mz, pctx, [], 3.5, 6, 'arrow') === null, 'se puede construir a media casilla');
+  assert(placementError(mz, pctx, [], 3.25, 6, 'arrow') === 'fuera', 'un cuarto de casilla NO vale');
+  const unaTorre = [{ cx: 3, cy: 6, type: 'arrow' as const }];
+  assert(
+    placementError(mz, pctx, unaTorre, 3.5, 6, 'arrow') === 'ocupado',
+    'a media casilla de otra torre, los cuerpos se solapan (ocupado)',
+  );
+  assert(
+    placementError(mz, pctx, unaTorre, 4, 6, 'arrow') === null,
+    'pegada sin solapar (una casilla exacta) sí vale',
+  );
+
+  // 4. la regla anti-bloqueo: solo salta cuando el frente se queda sin NINGÚN
+  //    hueco por el que bajar
+  assert(
+    placementError(mz, pctx, muro, 10, 8, 'arrow') === null,
+    'mientras quede un hueco en la barrera, se permite construir',
+  );
+  const casiCerrado = [...muro, { cx: 10, cy: 8, type: 'arrow' as const }];
+  assert(
+    placementError(mz, pctx, casiCerrado, 11, 8, 'arrow') === 'sella',
+    'tapar el ÚLTIMO hueco de la barrera se rechaza (sella)',
+  );
+  // 5. las trampas de suelo se pisan: nunca sellan
+  assert(
+    placementError(mz, pctx, casiCerrado, 11, 8, 'boom') === null,
+    'una trampa de suelo puede ir en el último hueco (no es muro)',
+  );
+  // 6. las franjas de nacimiento y de meta están reservadas
+  assert(placementError(mz, pctx, [], 5, 0, 'arrow') === 'bloqueado', 'no se construye en la franja de entrada');
+  assert(
+    placementError(mz, pctx, [], 5, mz.gridH - 1, 'arrow') === 'bloqueado',
+    'no se construye en la franja de meta',
+  );
+
+  // 5b. LOS MONSTRUOS SE MUEVEN Y LLEGAN. Parece una obviedad y no lo es: un bug
+  //     del campo de rutas los dejó plantados en la entrada, y ninguna prueba lo
+  //     cazó porque estar quieto es perfectamente determinista y el camino se
+  //     seguía midiendo bien. Se comprueba lo único que importa: que avanzan y
+  //     que, sin nadie defendiendo, acaban costando vidas.
+  {
+    const st = createGame('llano', 'endless', 'normal', 5150, [{ id: 'p1', name: 'A', color: '#fff' }]);
+    const sc = makeSimContext(mz, makePlacementContext(mz));
+    for (let i = 0; i < TICK_RATE * 40 && st.enemies.length === 0; i++) stepGame(st, sc, []);
+    assert(st.enemies.length > 0, 'la oleada llega a salir al tablero');
+    const antes = st.enemies[0].travelled;
+    for (let i = 0; i < TICK_RATE * 5; i++) stepGame(st, sc, []);
+    const vivo = st.enemies.find((e) => e.travelled > antes);
+    assert(vivo !== undefined, 'los monstruos AVANZAN por el laberinto (no se quedan clavados)');
+    const vidas0 = st.lives;
+    for (let i = 0; i < TICK_RATE * 60 * 3; i++) stepGame(st, sc, []);
+    assert(st.lives < vidas0, `sin defensa los monstruos LLEGAN a la meta (${vidas0} → ${st.lives} vidas)`);
+  }
+
+  // 6. determinismo con el laberinto CAMBIANDO a mitad de partida: se levanta un
+  //    muro, se juega, se vende media columna y se sigue. Es el caso que más
+  //    fácil desincroniza, porque obliga a recalcular rutas con enemigos vivos.
+  function correrLaberinto(): string {
+    const st = createGame('llano', 'endless', 'normal', 90210, [{ id: 'p1', name: 'A', color: '#fff' }]);
+    const sc = makeSimContext(mz, makePlacementContext(mz));
+    st.players[0].gold = 200000;
+    stepGame(st, sc, muro.map((m) => ({
+      playerId: 'p1',
+      cmd: { kind: 'place', towerType: 'arrow', cx: m.cx, cy: m.cy } as const,
+    })));
+    for (let i = 0; i < 1500; i++) stepGame(st, sc, []);
+    // vender media columna: el camino se rehace con enemigos ya en ruta
+    const vender = st.towers.filter((t) => t.cy < 5).map((t) => ({
+      playerId: 'p1',
+      cmd: { kind: 'sell', towerId: t.id } as const,
+    }));
+    stepGame(st, sc, vender);
+    for (let i = 0; i < 1500; i++) stepGame(st, sc, []);
+    return JSON.stringify([
+      st.tick, st.wave, st.lives, st.rng, st.nextId, st.towers.length,
+      st.enemies.map((e) => [e.id, Math.round(e.x * 1e6), Math.round(e.y * 1e6), e.hp, e.tgtCx, e.tgtCy]),
+    ]);
+  }
+  const mzA = correrLaberinto();
+  const mzB = correrLaberinto();
+  assert(mzA === mzB, 'el laberinto es determinista aunque cambie con enemigos en ruta');
+}
+
+// ---------------------------------------------------------------------------
+// ARENA · PvE competitivo: una parcela por jugador, la MISMA oleada para todos,
+// eliminación al quedarse sin vidas. Lo que se vigila aquí es la igualdad (que
+// nadie reciba más o menos que otro), el aislamiento (que un monstruo no se
+// escape a la parcela del vecino) y que eliminar a alguien no cambie el reto.
+// ---------------------------------------------------------------------------
+console.log('— ARENA · parcelas, oleada espejo, aislamiento y eliminación —');
+{
+  const am = getMap('arena');
+  assert(am.plots !== undefined && am.plots.length === MAX_PLAYERS, `la arena tiene ${MAX_PLAYERS} parcelas`);
+  assert(am.maze === true, 'la arena se juega con laberinto');
+
+  // todas las parcelas MIDEN lo mismo y tienen los mismos obstáculos relativos:
+  // si no, el modo sería injusto por sorteo
+  const p0 = plotOf(am, 0);
+  const rel = (i: number) =>
+    am.blocked
+      .filter(([c, r]) => inPlot(plotOf(am, i), c, r))
+      .map(([c, r]) => `${c - plotOf(am, i).x},${r - plotOf(am, i).y}`)
+      .sort()
+      .join('|');
+  let iguales = true;
+  for (let i = 1; i < (am.plots?.length ?? 0); i++) {
+    const pi = plotOf(am, i);
+    if (pi.w !== p0.w || pi.h !== p0.h || rel(i) !== rel(0)) iguales = false;
+  }
+  assert(iguales, 'todas las parcelas son idénticas (mismo tamaño y obstáculos)');
+
+  const roster = ['p1', 'p2', 'p3', 'p4'].map((id, i) => ({ id, name: `J${i + 1}`, color: '#fff' }));
+  function correrArena(seed: number, ticks: number, players = roster) {
+    const st = createGame('arena', 'arena', 'normal', seed, players);
+    const sc = makeSimContext(am, makePlacementContext(am));
+    for (let i = 0; i < ticks; i++) stepGame(st, sc, []);
+    return { st, sc };
+  }
+  // avanza hasta que la oleada esté REALMENTE en el tablero (el primer interludio
+  // dura bastante; contar antes daría cero y no probaría nada)
+  function hastaMonstruos(st: GameState, sc: SimContext, tope = TICK_RATE * 120): void {
+    for (let i = 0; i < tope && st.enemies.length === 0; i++) stepGame(st, sc, []);
+  }
+
+  // 1. cada jugador con su parcela
+  const { st, sc } = correrArena(777, 60);
+  hastaMonstruos(st, sc);
+  assert(st.players.every((p, i) => p.plot === i), 'cada jugador defiende su propia parcela');
+  assert(st.players.every((p) => p.lives === p.maxLives || p.lives > 0), 'las vidas arrancan propias');
+
+  // 2. oleada ESPEJO: el mismo número de monstruos en cada parcela
+  const porParcela = new Map<number, number>();
+  for (const e of st.enemies) porParcela.set(e.pathIdx, (porParcela.get(e.pathIdx) ?? 0) + 1);
+  const cuentas = [...porParcela.values()];
+  console.log(`   oleada ${st.wave}: ${st.enemies.length} monstruos repartidos ${JSON.stringify([...porParcela.entries()].sort())}`);
+  assert(porParcela.size === roster.length, `salen monstruos en las ${roster.length} parcelas`);
+  assert(cuentas.every((n) => n === cuentas[0]), 'todas las parcelas reciben la MISMA cantidad');
+
+  // 3. aislamiento: nadie pisa la parcela del vecino
+  const fugados = st.enemies.filter((e) => !inPlot(plotOf(am, e.pathIdx), Math.floor(e.x), Math.floor(e.y)));
+  assert(fugados.length === 0, `ningún monstruo se sale de su parcela (${fugados.length} fuera)`);
+
+  // 4. el escalado NO depende de cuánta gente juegue: con 1 o con 4, la misma hp
+  const solo = correrArena(777, 60, [roster[0]]);
+  const grupo = correrArena(777, 60);
+  hastaMonstruos(solo.st, solo.sc);
+  hastaMonstruos(grupo.st, grupo.sc);
+  const hpU = solo.st.enemies[0]?.maxHp ?? 0;
+  const hpC = grupo.st.enemies[0]?.maxHp ?? 0;
+  assert(hpU > 0 && hpU === hpC, `la dificultad no cambia con el nº de jugadores (${hpU} vs ${hpC})`);
+
+  // 5. eliminación: sin defender nadie caen todos y la partida se cierra. El
+  //    ÚLTIMO en pie no se marca eliminado — es el ganador. Hace falta bastante
+  //    tiempo: el carril mide 32 celdas y cruzarlo entero lleva su rato.
+  const { st: largo } = correrArena(777, TICK_RATE * 60 * 45);
+  assert(largo.over !== null, 'la partida termina sola cuando la gente cae');
+  const enPie = largo.players.filter((p) => !p.eliminated);
+  assert(enPie.length <= 1, `queda como mucho uno en pie (quedaron ${enPie.length})`);
+  assert(largo.players.every((p) => p.waveReached > 0), 'cada jugador guarda la oleada que alcanzó');
+  console.log(`   ranking: ${largo.players.map((p) => `${p.name} w${p.waveReached}`).join(' · ')}`);
+
+  // 5c. SIN INVISIBLES en arena: la oleada que exige tener un detector plantado
+  //     justo entonces se decidiría por acordarse del Sentry, no por construir
+  //     mejor. Se comprueba en el calendario y en una partida de verdad.
+  let algunaInvisibleArena = false;
+  let algunaInvisibleEndless = false;
+  for (let w = 1; w <= 60; w++) {
+    if (isInvisibleWave(w, 'arena')) algunaInvisibleArena = true;
+    if (isInvisibleWave(w, 'endless')) algunaInvisibleEndless = true;
+  }
+  assert(!algunaInvisibleArena, 'en arena NINGUNA oleada es invisible');
+  assert(algunaInvisibleEndless, 'en infinito las invisibles siguen existiendo (no se tocó el resto)');
+  const largoInv = correrArena(4242, TICK_RATE * 60 * 20).st;
+  assert(
+    largoInv.enemies.every((e) => !e.invisible),
+    'en una partida de arena no nace ni un monstruo invisible',
+  );
+  // …y por tanto el detector tampoco se puede plantar: sin invisibles solo sería
+  // oro tirado. La barra y la tienda lo esconden; el servidor lo rechaza igual.
+  {
+    const st = createGame('arena', 'arena', 'normal', 99, [{ id: 'p1', name: 'A', color: '#fff' }]);
+    const sc = makeSimContext(am, makePlacementContext(am));
+    const evs = stepGame(st, sc, [
+      { playerId: 'p1', cmd: { kind: 'place', towerType: 'sentry', cx: 3, cy: 5 } },
+    ]);
+    assert(
+      evs.some((e) => e.e === 'reject' && /Sentry/.test(e.reason)),
+      'el servidor RECHAZA plantar un Sentry en arena',
+    );
+    assert(st.towers.length === 0, 'y no queda ninguna torre puesta');
+  }
+
+  // 6. determinismo del modo entero
+  const a1 = correrArena(31337, 3000).st;
+  const a2 = correrArena(31337, 3000).st;
+  const firma = (s: typeof a1) => JSON.stringify([
+    s.tick, s.wave, s.rng, s.nextId, s.over,
+    s.players.map((p) => [p.lives, p.eliminated, p.waveReached, p.gold]),
+    s.enemies.map((e) => [e.id, e.pathIdx, Math.round(e.x * 1e6), Math.round(e.y * 1e6), e.hp]),
+  ]);
+  assert(firma(a1) === firma(a2), 'la arena es determinista');
 }
 
 console.log('— Determinismo: misma semilla + mismos comandos → mismo estado —');

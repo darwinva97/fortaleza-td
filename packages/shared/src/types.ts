@@ -1,5 +1,9 @@
 export type Difficulty = 'easy' | 'normal' | 'hard';
-export type GameMode = 'classic' | 'endless' | 'horde';
+// ARENA (4º modo) · PvE COMPETITIVO en paralelo, no versus: cada jugador tiene su
+// propia parcela y sus propias vidas, todos reciben las mismas oleadas y nadie
+// interactúa con nadie. Al quedarte sin vidas quedas eliminado; gana el último en
+// pie y el ranking va por oleada alcanzada.
+export type GameMode = 'classic' | 'endless' | 'horde' | 'arena';
 export type TargetMode = 'first' | 'last' | 'strong' | 'weak' | 'near';
 
 // ---------- F5.1 · matriz ataque × armadura ----------
@@ -163,15 +167,24 @@ export interface TowerSpecDef extends TowerLevelDef {
   name: string;
   desc: string;
   rank2?: TowerRank2Def; // mejora del Rango II (nivel 4)
+  // Rango III (nivel 5): cúspide de lujo de una spec con rank2. Hoy solo lo
+  // estrenan los ESTANDARTES (pedido directo: tercer nivel a 10k🪙 + 1k🪵).
+  // OJO si algún día lo usa una torre que DISPARA: eliteSteps() cuenta la
+  // veteranía desde el nivel 5 — habría que desplazarla (el nivel 5 contaría
+  // doble). Con auras (damage 0, cooldown 0) el solape es inocuo.
+  rank3?: TowerRank2Def;
   // F9a (v19) · coste de madera propio de la spec (ausente = WOOD_COST_SPEC).
   // Las specs "gordas" nuevas (Estandarte del Vencedor) cuestan más madera.
   woodCost?: number;
 }
 
-// Overrides del Rango II: mismos campos que un nivel de torre, más su coste.
+// Overrides de un rango (II o III): mismos campos que un nivel de torre, más su
+// coste. `woodCost` permite a un rango caro cobrar su propia madera (los rangos
+// de 10k de los estandartes); ausente = la constante WOOD_COST_RANK2.
 export interface TowerRank2Def extends Partial<TowerLevelDef> {
   cost: number;
   desc?: string; // descripción de la mejora (para el panel)
+  woodCost?: number;
 }
 
 export interface TowerDef {
@@ -251,13 +264,31 @@ export interface MapDef {
   paths: [number, number][][];
   blocked: [number, number][]; // celdas decorativas no construibles
   theme: 'grass' | 'desert' | 'snow' | 'volcano' | 'crystal';
-  // Tope opcional de celdas visibles al ALEJAR la cámara del todo (ancho×alto en
-  // celdas). PORQUÉ: en mapas XL «de fondo» (p. ej. El Gran Concilio, 52×60) el
-  // diseño pierde tensión si el jugador abarca el mapa entero de un vistazo; capar
-  // el zoom-out a ~un cuarto del mapa conserva la escala monumental y la niebla de
-  // guerra estratégica. Ausente = sin tope (se ve el mapa completo, como hasta
-  // ahora). Lo consume la cámara/renderer del cliente; la sim lo ignora.
-  viewCap?: { w: number; h: number };
+  // LABERINTO · el mapa NO tiene recorrido trazado: las torres son muros y los
+  // enemigos buscan su camino de la entrada a la meta (ver sim/field.ts). En
+  // estos mapas cada `paths[i]` declara solo DOS puntos —entrada y meta— y el
+  // recorrido intermedio lo dibuja el jugador construyendo.
+  //
+  // Ausente = mapa clásico de recorrido fijo: el motor se comporta EXACTAMENTE
+  // igual que siempre (mismo movimiento por waypoints, misma regla de que no se
+  // construye sobre el camino). Los mapas que ya existen no cambian ni un tick.
+  maze?: boolean;
+  // ARENA · PARCELAS: `plots[i]` es el rectángulo de terreno del carril i. Cada
+  // jugador juega dentro de la suya: no puede construir fuera, y el campo de
+  // rutas de un carril trata como muro todo lo externo — sin eso un monstruo se
+  // cruzaría a la parcela vecina y acabaría defendido por las torres del rival.
+  //
+  // Todas las parcelas son IDÉNTICAS (mismo tamaño, mismos obstáculos relativos):
+  // es lo que hace que la competición sea justa y que la diferencia entre dos
+  // jugadores sea solo cómo construyeron.
+  //
+  // Ausente = un único tablero compartido, que es como funcionan los tres modos
+  // de siempre.
+  plots?: { x: number; y: number; w: number; h: number }[];
+  // (El campo opcional `viewCap` — tope de celdas visibles al alejar, usado por
+  //  El Gran Concilio — fue RETIRADO en jul-2026: la «niebla de guerra» por cámara
+  //  confundía más de lo que aportaba. El jugador siempre puede alejar hasta ver
+  //  el mapa entero o acercar hasta su cámara; el zoom lo gobierna el cliente.)
 }
 
 // ---------- Estado de partida (runtime, vive en el servidor) ----------
@@ -272,6 +303,12 @@ export interface EnemyState {
   pathIdx: number;
   wpIdx: number; // índice del próximo waypoint
   travelled: number; // distancia recorrida en celdas
+  // LABERINTO · SUBCELDA hacia la que camina AHORA (solo en mapas maze; en los
+  // de recorrido fijo no se usa). Guardar el destino en vez de recalcularlo
+  // desde la posición evita que oscile entre dos subceldas cuando va a medio
+  // camino: avanza hasta su centro y solo entonces vuelve a consultar el campo.
+  tgtSx: number;
+  tgtSy: number;
   slowFactor: number; // 1 = sin slow
   slowUntil: number; // tick
   poisonDps: number;
@@ -424,6 +461,29 @@ export interface PlayerState {
   orcLevel: number;
   connected: boolean;
   stats: PlayerStats;
+  // --- ARENA · lo que en los otros modos es del EQUIPO, aquí es de cada uno ---
+  // Índice de la PARCELA que defiende (= índice de carril). Fuera de arena es 0 y
+  // no significa nada: el tablero es compartido.
+  plot: number;
+  // Vidas propias. En arena manda esto; en los otros tres modos la sim sigue
+  // leyendo state.lives y estos campos no se tocan.
+  lives: number;
+  maxLives: number;
+  // Se quedó sin vidas: sigue en la sala como espectador, pero su parcela ya no
+  // cuenta para decidir quién gana.
+  eliminated: boolean;
+  // Oleada a la que llegó (la que estaba activa al caer). Es el criterio de
+  // ranking; el desempate lo da `eliminatedTick`.
+  waveReached: number;
+  eliminatedTick: number;
+  // En arena estos tres son PROPIOS; en los otros modos no se usan y manda el
+  // contador de sala equivalente (state.woodPrice / boomsBought / repairsBought).
+  // Compartirlos en una competición sería una vía de interferencia entre
+  // jugadores: comprar madera le subiría el precio al rival, y comprar barriles
+  // se los encarecería a todos.
+  woodPrice: number;
+  boomsBought: number;
+  repairsBought: number;
 }
 
 export interface SpawnEntry {
@@ -663,8 +723,11 @@ export type GameEvent =
   // `pathIdx` (F9a, pedido del lote de mapas XL): índice de la RUTA por la que
   // fugó/robó el enemigo — el cliente atribuye la fuga a la "puerta" de cada
   // jugador en los mapas multi-carril. Evento efímero: ganar campos no exige bump.
-  | { e: 'leak'; lives: number; type: EnemyTypeId; pathIdx: number }
-  | { e: 'steal'; gold: number; x: number; y: number; pathIdx: number } // el Ladrón escapó y robó oro
+  // ARENA · `playerId` marca a QUIÉN le pasó (el dueño del carril). En los otros
+  // modos la fuga es de todos y el campo va ausente. Sin él, el aviso saldría a
+  // toda la sala con las vidas de otro y nadie entendería el número.
+  | { e: 'leak'; lives: number; type: EnemyTypeId; pathIdx: number; playerId?: string }
+  | { e: 'steal'; gold: number; x: number; y: number; pathIdx: number; playerId?: string } // el Ladrón escapó y robó oro
   | { e: 'wave_start'; wave: number; comp: WaveComp[] }
   | { e: 'wave_end'; wave: number; bonus: number }
   | { e: 'income'; playerId: string; amount: number; x: number; y: number }
@@ -696,6 +759,8 @@ export type GameEvent =
   | { e: 'adapt'; x: number; y: number; attackType: AttackTypeId }
   // F9a (v19) · REPARACIÓN de la fortaleza: vidas/aforo nuevos + quién pagó.
   | { e: 'repair'; playerId: string; lives: number; cost: number }
+  // ARENA · a este jugador se le acabaron las vidas: queda fuera y pasa a mirar
+  | { e: 'eliminated'; playerId: string; name: string; wave: number }
   // ORO DE ASISTENCIA (co-op): el mayor dañador de un enemigo (≥35% de su maxHp) cobra
   // un extra al morir este SI no fue quien dio el golpe final. `player` = playerId del
   // asistente; `gold` = oro cobrado. El cliente pinta "+N 🤝" en su color.

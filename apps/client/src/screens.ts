@@ -2,6 +2,7 @@ import {
   MAPS,
   MULTI_DOOR_MIN,
   type EndStats,
+  type EndStatsPlayer,
   type HighscoreEntry,
   type MapDef,
   type PublicRoomInfo,
@@ -16,7 +17,7 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getEleme
 
 const DIFF_LABELS: Record<string, string> = { easy: 'Fácil', normal: 'Normal', hard: 'Difícil' };
 const DIFF_EMOJI: Record<string, string> = { easy: '😊', normal: '🙂', hard: '😈' };
-const MODE_LABELS: Record<string, string> = { classic: 'Clásico', endless: 'Infinito', horde: 'Horda 🌀' };
+const MODE_LABELS: Record<string, string> = { classic: 'Clásico', endless: 'Infinito', horde: 'Horda 🌀', arena: 'Arena ⚔️' };
 
 // F9b/F9d · nº mínimo de rutas para habilitar puertas (reclamo y cierre): ahora
 // viene de @td/shared (MULTI_DOOR_MIN) — la misma constante que usan
@@ -137,10 +138,20 @@ function renderMapCards(
   doorColors?: (string | undefined)[],
   // F9d · puertas CERRADAS del mapa seleccionado (gris + cruz en la miniatura)
   closedDoors?: number[],
+  // ARENA · los mapas de parcelas SOLO se ofrecen en modo arena, y en arena solo
+  // se ofrecen esos: mezclarlos daría partidas imposibles (ocho caminos aislados
+  // en cooperativo). El servidor lo corrige igualmente en sanitizeSettings, pero
+  // enseñar una opción que se va a ignorar es engañar al jugador.
+  arenaMode = false,
 ): void {
   const box = $(containerId);
+  // el carrusel se re-renderiza con CADA lobby_state: conservar el scroll para
+  // que la tira no salte al principio mientras alguien reclama puertas o chatea
+  const prevScroll = box.scrollLeft;
   box.innerHTML = '';
+  let selectedCard: HTMLButtonElement | null = null;
   for (const map of MAPS) {
+    if ((map.plots !== undefined) !== arenaMode) continue;
     const card = document.createElement('button');
     card.type = 'button';
     card.className = `map-card${map.id === selectedId ? ' selected' : ''}`;
@@ -158,6 +169,45 @@ function renderMapCards(
     card.appendChild(meta);
     card.addEventListener('click', () => onSelect(map.id));
     box.appendChild(card);
+    if (map.id === selectedId) selectedCard = card;
+  }
+  // rueda del ratón = desplazar la tira (en escritorio no hay scroll horizontal
+  // natural sin Shift); cableado UNA vez — el contenedor persiste entre renders
+  if (!box.dataset.wheelWired) {
+    box.dataset.wheelWired = '1';
+    box.addEventListener(
+      'wheel',
+      (e) => {
+        if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+          e.preventDefault();
+          box.scrollLeft += e.deltaY;
+        }
+      },
+      { passive: false },
+    );
+  }
+  box.scrollLeft = prevScroll; // restauración instantánea (sin animar)
+  // Al cambiar el mapa seleccionado se centra su tarjeta… pero SOLO si no se ve
+  // ya entera. Centrar siempre hacía que la tira se desplazara sola justo después
+  // de tocar una tarjeta que tenías delante: elegías bien, pero el carrusel daba
+  // un salto lateral que parecía que había elegido otra cosa. El centrado sigue
+  // valiendo para lo que se pensó — que el ANFITRIÓN cambie a un mapa que tú
+  // tienes fuera de pantalla, o abrir el lobby con uno ya seleccionado.
+  if (selectedCard && box.dataset.lastSelected !== selectedId) {
+    box.dataset.lastSelected = selectedId;
+    // Medido con rectángulos REALES, no con offsetLeft: `.map-grid` no crea
+    // contexto de posicionamiento, así que el offsetParent de las tarjetas no es
+    // el carrusel y offsetLeft venía inflado con la posición del carrusel en la
+    // página — el destino del scroll salía desplazado y la tira se iba a la
+    // derecha. Con rects el cálculo no depende del CSS.
+    const cardRect = selectedCard.getBoundingClientRect();
+    const boxRect = box.getBoundingClientRect();
+    const fullyVisible = cardRect.left >= boxRect.left && cardRect.right <= boxRect.right;
+    if (!fullyVisible) {
+      const delta = cardRect.left - boxRect.left; // desplazamiento dentro de la tira
+      const target = box.scrollLeft + delta - (box.clientWidth - cardRect.width) / 2;
+      box.scrollTo({ left: Math.max(0, target), behavior: 'smooth' });
+    }
   }
 }
 
@@ -183,6 +233,154 @@ function doorColorsFor(map: MapDef | undefined): (string | undefined)[] | undefi
   return colors;
 }
 
+// ---------- mapa de puertas del lobby ----------
+// Reclamar puerta era A CIEGAS: los chips dicen «Puerta 1..N» pero nada indicaba
+// DÓNDE está cada una en el mapa (reporte directo: «escogen la puerta pero no
+// saben dónde aparecerán»). Este mapa dibuja el tablero seleccionado a tamaño
+// legible con cada puerta NUMERADA (mismo número que su chip) y teñida del color
+// de quien la reclamó; cerradas en gris con cruz, salidas con su castillo.
+// Interactivo: tocar una puerta libre la reclama, tocar la tuya la libera
+// (mismo comando claim_door que los chips; el server revalida igual).
+
+const DOOR_MARK_R = 11; // radio del marcador en px CSS (fijo: legible aunque la celda sea diminuta)
+interface DoorHit { x: number; y: number; door: number }
+let doorHits: DoorHit[] = [];
+let doorsMapLast: MapDef | null = null;
+let doorsMapWired = false;
+
+function drawDoorsMap(map: MapDef): void {
+  doorsMapLast = map;
+  const canvas = $<HTMLCanvasElement>('lobby-doors-map');
+  const boxW = canvas.parentElement?.clientWidth || 360;
+  const W = Math.max(200, Math.min(360, boxW));
+  const H = Math.max(90, Math.round((W * map.gridH) / map.gridW));
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
+  canvas.style.width = `${W}px`;
+  canvas.style.height = `${H}px`;
+  const c = canvas.getContext('2d')!;
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const s = W / map.gridW;
+  const t = MINI_THEME[map.theme];
+
+  // terreno con la variación sutil de las tarjetas
+  c.fillStyle = t.bg;
+  c.fillRect(0, 0, W, H);
+  c.fillStyle = 'rgba(255,255,255,0.04)';
+  for (let cy = 0; cy < map.gridH; cy++) {
+    for (let cx = (cy % 2); cx < map.gridW; cx += 2) c.fillRect(cx * s, cy * s, s, s);
+  }
+  // caminos
+  c.strokeStyle = t.path;
+  c.lineWidth = Math.max(2, s * 0.8);
+  c.lineCap = 'round';
+  c.lineJoin = 'round';
+  for (const path of map.paths) {
+    c.beginPath();
+    c.moveTo((path[0][0] + 0.5) * s, (path[0][1] + 0.5) * s);
+    for (let i = 1; i < path.length; i++) c.lineTo((path[i][0] + 0.5) * s, (path[i][1] + 0.5) * s);
+    c.stroke();
+  }
+  // decoración
+  c.fillStyle = t.blocked;
+  for (const [bx, by] of map.blocked) {
+    c.beginPath();
+    c.arc((bx + 0.5) * s, (by + 0.5) * s, Math.max(1.5, s * 0.32), 0, Math.PI * 2);
+    c.fill();
+  }
+  // salidas: castillo dorado (a tamaño fijo, legible en mapas gigantes)
+  c.font = `${Math.max(12, DOOR_MARK_R * 1.5)}px serif`;
+  c.textAlign = 'center';
+  c.textBaseline = 'middle';
+  for (const path of map.paths) {
+    const [ec, er] = path[path.length - 1];
+    c.fillText('🏰', (ec + 0.5) * s, (er + 0.5) * s);
+  }
+
+  // puertas: marcador numerado del color del dueño (o morado si libre)
+  const players = store.lobby.players;
+  const ownerByDoor = new Map<number, (typeof players)[number]>();
+  for (const p of players) if (p.door !== undefined) ownerByDoor.set(p.door, p);
+  const closed = new Set(store.lobby.settings.closedDoors ?? []);
+  doorHits = [];
+  for (let i = 0; i < map.paths.length; i++) {
+    const [sc, sr] = map.paths[i][0];
+    // clamp: que el marcador no se corte en el borde del lienzo
+    const x = Math.max(DOOR_MARK_R + 2, Math.min(W - DOOR_MARK_R - 2, (sc + 0.5) * s));
+    const y = Math.max(DOOR_MARK_R + 2, Math.min(H - DOOR_MARK_R - 2, (sr + 0.5) * s));
+    doorHits.push({ x, y, door: i });
+    const owner = ownerByDoor.get(i);
+    const isClosed = closed.has(i) && !owner;
+    const mine = owner?.id === store.playerId;
+
+    c.beginPath();
+    c.arc(x, y, DOOR_MARK_R, 0, Math.PI * 2);
+    c.fillStyle = isClosed ? '#4a4a55' : owner?.color ?? '#9575cd';
+    c.fill();
+    // aro: blanco grueso la MÍA, blanco fino las reclamadas, tenue las libres
+    c.strokeStyle = mine ? '#ffffff' : owner ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.35)';
+    c.lineWidth = mine ? 3 : 1.5;
+    c.stroke();
+    // número de puerta (el MISMO que el chip «Puerta N»)
+    c.fillStyle = isClosed ? 'rgba(230,230,235,0.6)' : '#ffffff';
+    c.font = `bold ${DOOR_MARK_R + 1}px system-ui, sans-serif`;
+    c.fillText(String(i + 1), x, y + 0.5);
+    if (isClosed) {
+      // cruz diagonal encima: por aquí no saldrán monstruos
+      c.strokeStyle = 'rgba(239,83,80,0.9)';
+      c.lineWidth = 2.5;
+      const r = DOOR_MARK_R * 0.8;
+      c.beginPath();
+      c.moveTo(x - r, y - r);
+      c.lineTo(x + r, y + r);
+      c.stroke();
+    }
+  }
+}
+
+// cablea la interacción del mapa de puertas UNA vez (el canvas es persistente)
+function wireDoorsMap(): void {
+  if (doorsMapWired) return;
+  doorsMapWired = true;
+  const canvas = $<HTMLCanvasElement>('lobby-doors-map');
+  const hitAt = (ev: MouseEvent): number | null => {
+    const r = canvas.getBoundingClientRect();
+    if (r.width === 0) return null;
+    // coords en el espacio LÓGICO del dibujo (por si el CSS lo estira)
+    const scale = (canvas.width / (Math.min(window.devicePixelRatio || 1, 2))) / r.width;
+    const px = (ev.clientX - r.left) * scale;
+    const py = (ev.clientY - r.top) * scale;
+    let best: number | null = null;
+    let bestD = DOOR_MARK_R + 7; // un pelín de margen táctil
+    for (const h of doorHits) {
+      const d = Math.hypot(h.x - px, h.y - py);
+      if (d < bestD) {
+        bestD = d;
+        best = h.door;
+      }
+    }
+    return best;
+  };
+  canvas.addEventListener('click', (ev) => {
+    const door = hitAt(ev);
+    if (door === null) return;
+    const me = store.lobby.players.find((p) => p.id === store.playerId);
+    const owner = store.lobby.players.find((p) => p.door === door);
+    const closed = new Set(store.lobby.settings.closedDoors ?? []);
+    if (closed.has(door) && !owner) return; // cerrada: no se reclama
+    if (owner && owner.id !== store.playerId) return; // ajena: no se roba
+    net.send({ type: 'claim_door', door: me?.door === door ? null : door });
+  });
+  canvas.addEventListener('mousemove', (ev) => {
+    canvas.style.cursor = hitAt(ev) !== null ? 'pointer' : 'default';
+  });
+  // al redimensionar, redibujar con el ancho nuevo (solo si el lobby está a la vista)
+  window.addEventListener('resize', () => {
+    if (doorsMapLast && store.screen === 'lobby' && !$('lobby-doors-box').hidden) drawDoorsMap(doorsMapLast);
+  });
+}
+
 // lista de puertas reclamables. Cada chip: clic para reclamar la libre o liberar
 // la propia; las de otros quedan deshabilitadas. Solo jugadores (no espectadores).
 // F9d · estado CERRADA 🚫: el ANFITRIÓN cierra/abre puertas LIBRES con el botón
@@ -194,9 +392,14 @@ function renderDoors(map: MapDef | undefined): void {
   if (!mapHasDoors(map) || store.spectator) {
     box.hidden = true;
     list.innerHTML = '';
+    doorsMapLast = null;
     return;
   }
   box.hidden = false;
+  // mapa de puertas numerado (se redibuja con cada cambio del lobby: reclamos,
+  // cierres del anfitrión, cambio de mapa…)
+  wireDoorsMap();
+  drawDoorsMap(map);
   const players = store.lobby.players;
   const closed = new Set(store.lobby.settings.closedDoors ?? []);
   const ownerByDoor = new Map<number, (typeof players)[number]>();
@@ -578,7 +781,8 @@ export function initLobby(): void {
       return;
     }
     const spectateBtn = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-spectate]');
-    if (spectateBtn && store.isHost) {
+    // el anfitrión mueve a cualquiera; cualquiera puede moverse a sí mismo
+    if (spectateBtn && (store.isHost || spectateBtn.dataset.spectate === store.playerId)) {
       net.send({ type: 'move_to_spectator', playerId: spectateBtn.dataset.spectate! });
     }
   });
@@ -588,7 +792,7 @@ export function initLobby(): void {
   $('lobby-spectators').addEventListener('click', (e) => {
     if (handleBanClick(e)) return;
     const toPlayerBtn = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-toplayer]');
-    if (toPlayerBtn && store.isHost) {
+    if (toPlayerBtn && (store.isHost || toPlayerBtn.dataset.toplayer === store.playerId)) {
       net.send({ type: 'move_to_player', spectatorId: toPlayerBtn.dataset.toplayer! });
     }
   });
@@ -690,7 +894,13 @@ export function renderLobby(): void {
       // mover a la zona de espectadores: para quien no quiere jugar la revancha,
       // sin sacarlo de la sala. Solo CONECTADOS: sin socket no hay a quién
       // reclasificar (el server lo rechaza igualmente).
-      const spectate = store.isHost && !isMe && !p.isHost && p.connected
+      // BUGFIX · cualquiera puede pasarse A SÍ MISMO a la grada: decidir si juegas
+      // o miras es tuyo, no del anfitrión. Se oculta si eres el único jugador,
+      // porque el servidor lo rechazaría (dejaría la sala sin nadie jugando).
+      const soloPlayer = players.filter((pl) => pl.connected).length <= 1;
+      const spectate = isMe && p.connected && !soloPlayer
+        ? `<button class="spectate-btn" data-spectate="${p.id}" title="Pasar a la zona de espectadores" aria-label="Pasar a espectadores">👁 Mirar</button>`
+        : store.isHost && !isMe && !p.isHost && p.connected
         ? `<button class="spectate-btn" data-spectate="${p.id}" title="Mover a ${escapeHtml(p.name)} a espectadores" aria-label="Mover a espectadores">👁</button>`
         : '';
       return `
@@ -710,7 +920,8 @@ export function renderLobby(): void {
 
   const selectedMap = MAPS.find((m) => m.id === settings.mapId);
   const doorColors = doorColorsFor(selectedMap);
-  renderMapCards('lobby-maps', settings.mapId, !store.isHost, (id) => sendSettings({ mapId: id }), doorColors, settings.closedDoors);
+  const arenaMode = settings.mode === 'arena';
+  renderMapCards('lobby-maps', settings.mapId, !store.isHost, (id) => sendSettings({ mapId: id }), doorColors, settings.closedDoors, arenaMode);
   $('lobby-map-desc').textContent = mapDesc(settings.mapId);
   // F9b · lista de puertas reclamables (solo mapas multi-ruta; oculta si no)
   renderDoors(selectedMap);
@@ -719,6 +930,8 @@ export function renderLobby(): void {
   setSeg('lobby-visibility', settings.public ? 'public' : 'private', !store.isHost);
   // MODO TURBO ⚡: en HORDA no aplica (economía de bucle) → se deshabilita y se
   // muestra el porqué. Fuera de horda: editable solo por el anfitrión.
+  // ARENA · reclamar puerta no aplica: la parcela te la asigna el orden de entrada
+  if (arenaMode) $('lobby-doors-box').hidden = true;
   const turboHorde = settings.mode === 'horde';
   setSeg('lobby-turbo', settings.turbo ? 'on' : 'off', !store.isHost || turboHorde);
   $('lobby-turbo-hint').textContent = turboHorde
@@ -825,7 +1038,11 @@ function renderSpectatorZone(): void {
   $('lobby-spectators').innerHTML = spectators
     .map((s) => {
       const isMe = s.id === store.playerId;
-      const toPlayer = store.isHost && !isMe
+      // BUGFIX · el espectador puede volver a jugar por su cuenta. Antes solo el
+      // anfitrión podía traerlo, así que quien se ponía a mirar quedaba atrapado.
+      const toPlayer = isMe
+        ? `<button class="cede-btn" data-toplayer="${s.id}" title="Volver a jugar" aria-label="Volver a jugar">🎮 Jugar</button>`
+        : store.isHost
         ? `<button class="cede-btn" data-toplayer="${s.id}" title="Traer a ${escapeHtml(s.name)} como jugador" aria-label="Traer como jugador">🎮</button>`
         : '';
       // banear también desde la zona de espectadores (p. ej. un expulsado que
@@ -846,6 +1063,46 @@ function renderSpectatorZone(): void {
 // ---------- fin de partida ----------
 
 export function showEnd(stats: EndStats): void {
+  // ARENA · aquí no hay una victoria común: cada uno tiene la suya. El título
+  // habla de TU resultado, y el ranking va por oleada alcanzada (desempate: quien
+  // aguantó más dentro de esa misma oleada).
+  if (stats.mode === 'arena') {
+    const me = stats.players.find((p) => p.id === store.playerId);
+    const ranking = arenaRanking(stats);
+    const myPos = me ? ranking.findIndex((p) => p.id === me.id) + 1 : 0;
+    const won = me !== undefined && !me.eliminated;
+    $('end-title').textContent = won ? '🏆 ¡El último en pie!' : myPos === 2 ? '🥈 Segundo puesto' : '💀 Eliminado';
+    $('end-sub').textContent = me
+      ? won
+        ? `Aguantaste hasta la oleada ${stats.wave} y sobreviviste a todos.`
+        : `Caíste en la oleada ${me.waveReached ?? stats.wave} · ${myPos}º de ${ranking.length}`
+      : `La arena terminó en la oleada ${stats.wave}.`;
+    $('end-podium').innerHTML = '';
+    $('end-stats').innerHTML = `
+    <table>
+      <thead><tr><th>#</th><th>Jugador</th><th>Oleada</th><th>Bajas</th><th>Daño</th><th>Torres</th></tr></thead>
+      <tbody>
+        ${ranking
+          .map(
+            (p, i) => `
+          <tr class="${i === 0 ? 'mvp' : ''}${p.id === store.playerId ? ' sb-me' : ''}">
+            <td>${i === 0 ? '🏆' : `${i + 1}º`}</td>
+            <td><span class="player-dot" style="background:${p.color};color:${p.color};display:inline-block;margin-right:6px"></span>${escapeHtml(p.name)}${p.id === store.playerId ? ' (tú)' : ''}</td>
+            <td>${p.eliminated ? `☠ ${p.waveReached ?? 0}` : `❤️ ${p.waveReached ?? stats.wave}`}</td>
+            <td>${p.kills}</td>
+            <td>${p.damage.toLocaleString()}</td>
+            <td>${p.towersBuilt}</td>
+          </tr>`,
+          )
+          .join('')}
+      </tbody>
+    </table>`;
+    const arenaOverlay = $('overlay-end');
+    arenaOverlay.hidden = false;
+    arenaOverlay.querySelectorAll('.confetti').forEach((el) => el.remove());
+    if (won) dropConfetti(arenaOverlay);
+    return;
+  }
   $('end-title').textContent = stats.victory ? '🎉 ¡VICTORIA!' : '💀 Derrota…';
   if (stats.mode === 'horde') {
     // en horda no hay victoria: se juega hasta la saturación
@@ -903,19 +1160,34 @@ export function showEnd(stats: EndStats): void {
 
   // confeti de victoria
   overlay.querySelectorAll('.confetti').forEach((el) => el.remove());
-  if (stats.victory) {
-    const colors = ['#ffd54f', '#4fc3f7', '#f06292', '#aed581', '#ba68c8', '#ffb74d'];
-    for (let i = 0; i < 60; i++) {
-      const c = document.createElement('span');
-      c.className = 'confetti';
-      c.style.left = `${Math.random() * 100}%`;
-      c.style.background = colors[i % colors.length];
-      c.style.animationDuration = `${2.4 + Math.random() * 2.2}s`;
-      c.style.animationDelay = `${Math.random() * 1.6}s`;
-      c.style.transform = `rotate(${Math.random() * 360}deg)`;
-      overlay.appendChild(c);
-    }
+  if (stats.victory) dropConfetti(overlay);
+}
+
+function dropConfetti(overlay: HTMLElement): void {
+  const colors = ['#ffd54f', '#4fc3f7', '#f06292', '#aed581', '#ba68c8', '#ffb74d'];
+  for (let i = 0; i < 60; i++) {
+    const c = document.createElement('span');
+    c.className = 'confetti';
+    c.style.left = `${Math.random() * 100}%`;
+    c.style.background = colors[i % colors.length];
+    c.style.animationDuration = `${2.4 + Math.random() * 2.2}s`;
+    c.style.animationDelay = `${Math.random() * 1.6}s`;
+    c.style.transform = `rotate(${Math.random() * 360}deg)`;
+    overlay.appendChild(c);
   }
+}
+
+// ARENA · orden final: primero quien llegó más lejos; a igualdad de oleada, quien
+// aguantó más tiempo dentro de ella. El superviviente va siempre el primero — no
+// tiene tick de caída porque no cayó.
+function arenaRanking(stats: EndStats): EndStatsPlayer[] {
+  return [...stats.players].sort((a, b) => {
+    if (!a.eliminated !== !b.eliminated) return a.eliminated ? 1 : -1;
+    const wa = a.waveReached ?? 0;
+    const wb = b.waveReached ?? 0;
+    if (wa !== wb) return wb - wa;
+    return (b.eliminatedTick ?? 0) - (a.eliminatedTick ?? 0);
+  });
 }
 
 export function hideEnd(): void {

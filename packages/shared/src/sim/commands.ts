@@ -1,5 +1,5 @@
 import type { GameEvent, GameState, MapDef, PlayerCommand } from '../types.js';
-import { TOWERS, towerLevel, hasRank2, rank2Cost } from '../balance/towers.js';
+import { TOWERS, towerLevel, hasRank2, rank2Cost, rank2Wood, hasRank3, rank3Cost } from '../balance/towers.js';
 import { FUSION_ORDER, findFusion, nextEliteLevelCost, towerFires } from '../balance/fusions.js';
 import {
   BOOM_COST_TEAM_STEP,
@@ -20,6 +20,7 @@ import {
   WOOD_SELL_SPREAD,
 } from '../constants.js';
 import { placementError, type PlacementContext } from './grid.js';
+import { plotOf } from './field.js';
 
 function reject(events: GameEvent[], playerId: string, reason: string) {
   events.push({ e: 'reject', playerId, reason });
@@ -53,17 +54,35 @@ export function applyCommands(
       case 'place': {
         const def = TOWERS[cmd.towerType];
         if (!def) break;
+        // ARENA · el detector no se ofrece porque no hay invisibles que revelar.
+        // La barra y la tienda ya lo esconden; esto lo rechaza si llega igual —
+        // el cliente nunca es fuente de verdad.
+        if (state.mode === 'arena' && def.detects) {
+          reject(events, playerId, 'El Sentry no sirve en la arena: aquí no hay invisibles');
+          break;
+        }
         const lvl = def.levels[0];
         // F9a (v19) · el Barril tiene precio ESCALADO por equipo: el server calcula
         // el precio real del estado actual (nada que el cliente pueda falsificar; si
         // dos jugadores compran en el mismo tick, el segundo paga el precio ya subido
         // — los comandos se aplican en orden estable dentro del tick).
-        const cost = def.detonates ? boomCost(state) : lvl.cost;
+        // ARENA · el precio escalado del Barril es TUYO: que los barriles del
+        // rival te encarecieran los propios sería competir por el mismo bolsillo.
+        const cost = def.detonates ? boomCost(state.mode === 'arena' ? player : state) : lvl.cost;
         if (player.gold < cost) {
           reject(events, playerId, 'No te alcanza el oro');
           break;
         }
-        const err = placementError(map, ctx, state.towers, cmd.cx, cmd.cy, cmd.towerType);
+        // ARENA · cada uno construye SOLO dentro de su parcela
+        const err = placementError(
+          map,
+          ctx,
+          state.towers,
+          cmd.cx,
+          cmd.cy,
+          cmd.towerType,
+          state.mode === 'arena' ? plotOf(map, player.plot) : undefined,
+        );
         if (err) {
           const msgs: Record<string, string> = {
             fuera: 'Fuera del mapa',
@@ -71,6 +90,8 @@ export function applyCommands(
             bloqueado: 'Celda bloqueada',
             ocupado: 'Ya hay una torre ahí',
             fuera_camino: 'Esta torre solo va SOBRE el camino',
+            sella: 'Ahí cierras el paso del todo: siempre debe quedar un hueco',
+            fuera_parcela: 'Esa parcela no es tuya',
           };
           reject(events, playerId, msgs[err]);
           break;
@@ -80,7 +101,10 @@ export function applyCommands(
         player.stats.towersBuilt += 1;
         // el contador del equipo SOLO sube con una compra consumada (tras validar
         // oro y celda); vender el barril NO lo baja — sin ciclos de reset del precio
-        if (def.detonates) state.boomsBought += 1;
+        if (def.detonates) {
+          if (state.mode === 'arena') player.boomsBought += 1;
+          else state.boomsBought += 1;
+        }
         state.towers.push({
           id: state.nextId++,
           type: cmd.towerType,
@@ -121,6 +145,27 @@ export function applyCommands(
         // REFRESCA su duración al total del nuevo nivel (mejorar = renovar el ward).
         if (TOWERS[tower.type].onPathOnly) {
           reject(events, playerId, 'Esta torre no se puede mejorar');
+          break;
+        }
+        // Rango III (nivel 5): cúspide de lujo de una spec en Rango II con `rank3`
+        // (hoy: los estandartes, 10k🪙 + 1k🪵). Va ANTES que la veteranía: los
+        // estandartes no disparan y nextEliteLevelCost los rechazaría.
+        if (tower.spec >= 0 && tower.level === 4 && hasRank3(tower.type, tower.spec)) {
+          const r3 = rank3Cost(tower.type, tower.spec)!;
+          if (player.gold < r3.gold) {
+            reject(events, playerId, 'No te alcanza el oro');
+            break;
+          }
+          if (player.wood < r3.wood) {
+            reject(events, playerId, `Te falta madera (necesitas 🪵${r3.wood})`);
+            break;
+          }
+          player.gold -= r3.gold;
+          player.stats.goldSpent += r3.gold;
+          player.wood -= r3.wood;
+          tower.level = 5;
+          tower.invested += r3.gold;
+          events.push({ e: 'upgrade', x: tower.cx + 0.5, y: tower.cy + 0.5, level: tower.level });
           break;
         }
         // F9a (v19) · NIVELES 5→10 (veteranía): una torre en su cúspide — fusión,
@@ -172,14 +217,16 @@ export function applyCommands(
             reject(events, playerId, 'No te alcanza el oro');
             break;
           }
-          // F5.2 · el Rango II también cuesta madera (la tala el orco leñador)
-          if (player.wood < WOOD_COST_RANK2) {
-            reject(events, playerId, `Te falta madera (necesitas 🪵${WOOD_COST_RANK2})`);
+          // F5.2 · el Rango II también cuesta madera (la tala el orco leñador);
+          // los rangos "gordos" (Vencedor II) traen su propio precio en madera.
+          const r2wood = rank2Wood(tower.type, tower.spec) ?? WOOD_COST_RANK2;
+          if (player.wood < r2wood) {
+            reject(events, playerId, `Te falta madera (necesitas 🪵${r2wood})`);
             break;
           }
           player.gold -= r2cost;
           player.stats.goldSpent += r2cost;
-          player.wood -= WOOD_COST_RANK2;
+          player.wood -= r2wood;
           tower.level = 4;
           tower.invested += r2cost;
           tower.cooldownLeft = 0;
@@ -403,16 +450,20 @@ export function applyCommands(
       // F5.4 · Mercado GLOBAL de madera: cada operación mueve el precio para toda
       // la sala. Vive en GameState y viaja como cualquier comando → determinista
       // y grabado en los replays sin trabajo extra.
+      // ARENA · el mercado es TUYO, no de la sala: si fuese común, comprar madera
+      // le encarecería el precio al rival y eso ya sería interferir en su partida.
+      // Ambos objetos exponen `woodPrice`, así que el resto del código no cambia.
       case 'buy_wood': {
-        const cost = Math.ceil(state.woodPrice * WOOD_LOT);
+        const market = state.mode === 'arena' ? player : state;
+        const cost = Math.ceil(market.woodPrice * WOOD_LOT);
         if (player.gold < cost) {
           reject(events, playerId, 'No te alcanza el oro');
           break;
         }
         player.gold -= cost;
         player.wood += WOOD_LOT;
-        state.woodPrice = Math.min(WOOD_PRICE_MAX, state.woodPrice * WOOD_PRICE_STEP);
-        events.push({ e: 'trade', playerId, buy: true, wood: WOOD_LOT, gold: cost, price: Math.round(state.woodPrice * 100) / 100 });
+        market.woodPrice = Math.min(WOOD_PRICE_MAX, market.woodPrice * WOOD_PRICE_STEP);
+        events.push({ e: 'trade', playerId, buy: true, wood: WOOD_LOT, gold: cost, price: Math.round(market.woodPrice * 100) / 100 });
         break;
       }
 
@@ -421,11 +472,12 @@ export function applyCommands(
           reject(events, playerId, `Necesitas 🪵${WOOD_LOT} para vender`);
           break;
         }
-        const gain = Math.floor(state.woodPrice * WOOD_SELL_SPREAD * WOOD_LOT);
+        const market = state.mode === 'arena' ? player : state;
+        const gain = Math.floor(market.woodPrice * WOOD_SELL_SPREAD * WOOD_LOT);
         player.wood -= WOOD_LOT;
         player.gold += gain;
-        state.woodPrice = Math.max(WOOD_PRICE_MIN, state.woodPrice / WOOD_PRICE_STEP);
-        events.push({ e: 'trade', playerId, buy: false, wood: WOOD_LOT, gold: gain, price: Math.round(state.woodPrice * 100) / 100 });
+        market.woodPrice = Math.max(WOOD_PRICE_MIN, market.woodPrice / WOOD_PRICE_STEP);
+        events.push({ e: 'trade', playerId, buy: false, wood: WOOD_LOT, gold: gain, price: Math.round(market.woodPrice * 100) / 100 });
         break;
       }
 
@@ -454,6 +506,12 @@ export function applyCommands(
       // criterio que el resto de comandos (oro que sale = goldSpent; oro que entra
       // = goldEarned). Determinista: sin RNG ni reloj.
       case 'give': {
+        // ARENA · regalarle recursos a un rival no tiene sentido en una
+        // competición, y abre la puerta a amañar el resultado entre dos.
+        if (state.mode === 'arena') {
+          reject(events, playerId, 'En la arena cada uno se vale por sí mismo');
+          break;
+        }
         const { to, gold, wood } = cmd;
         if (
           !Number.isInteger(gold) ||
@@ -505,16 +563,25 @@ export function applyCommands(
           reject(events, playerId, 'La fortaleza está intacta');
           break;
         }
-        const cost = repairCost(state);
+        // ARENA · reparas TU fortaleza, con TU precio escalado
+        if (state.mode === 'arena' && player.lives >= player.maxLives) {
+          reject(events, playerId, 'Tu fortaleza está intacta');
+          break;
+        }
+        const cost = repairCost(state.mode === 'arena' ? player : state);
         if (player.gold < cost) {
           reject(events, playerId, 'No te alcanza el oro');
           break;
         }
         player.gold -= cost;
         player.stats.goldSpent += cost;
-        state.repairsBought += 1;
+        if (state.mode === 'arena') player.repairsBought += 1;
+        else state.repairsBought += 1;
         let lives: number;
-        if (state.mode === 'endless') {
+        if (state.mode === 'arena') {
+          player.lives = Math.min(player.maxLives, player.lives + 1);
+          lives = player.lives;
+        } else if (state.mode === 'endless') {
           state.lives = Math.min(state.maxLives, state.lives + 1);
           lives = state.lives;
         } else {

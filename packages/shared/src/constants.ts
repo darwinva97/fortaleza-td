@@ -158,11 +158,14 @@ export const WOOD_PER_SEC = 0.4; // tala BASE del orco nivel 1 (= ORC_RATES[0])
 export const START_WOOD = 30; // madera inicial
 export const WOOD_COST_SPEC = 45; // coste en madera de una especialización (★)
 export const WOOD_COST_RANK2 = 60; // coste en madera del Rango II (★★)
-// F5.5 · el ORCO se MEJORA con oro (nivel 1..5): tala por segundo según nivel y
+// F5.5 · el ORCO se MEJORA con oro (nivel 1..8): tala por segundo según nivel y
 // coste de subir AL SIGUIENTE nivel (índice = nivel actual − 1). Es el motor de
-// madera a largo plazo; el mercado es la conversión instantánea.
-export const ORC_RATES = [0.4, 0.6, 0.8, 1.0, 1.25]; // 🪵/s por nivel de orco
-export const ORC_UPGRADE_COSTS = [140, 260, 420, 620]; // 🪙 para pasar a nv 2..5
+// madera a largo plazo; el mercado es la conversión instantánea. Los niveles
+// 6..8 (ampliación jul-2026, pedido directo: «que produzca más y más rápido»)
+// alimentan los sumideros tardíos de madera (Rango III de los estandartes a
+// 1000 🪵, veteranía) — y el orco CAMBIA DE FORMA con el nivel (ver drawOrcs).
+export const ORC_RATES = [0.4, 0.6, 0.8, 1.0, 1.25, 1.6, 2.0, 2.5]; // 🪵/s por nivel de orco
+export const ORC_UPGRADE_COSTS = [140, 260, 420, 620, 950, 1400, 2000]; // 🪙 para pasar a nv 2..8
 
 // ---------- F5.4 · mercado global de madera ----------
 // Un único mercado POR SALA (el precio vive en GameState → determinista, viaja
@@ -356,6 +359,13 @@ export const START_GOLD: Record<string, number> = {
   hard: 180,
 };
 
+// ARENA · gancho para probar el modo con recursos de sobra sin tocar nada más:
+// con un número aquí se arranca con ese oro/madera en vez de la economía normal.
+// En PRODUCCIÓN van en null — arena juega con la misma economía que el resto.
+// (Se usaron 50000/5000 durante el desarrollo del laberinto.)
+export const ARENA_TEST_GOLD: number | null = null;
+export const ARENA_TEST_WOOD: number | null = null;
+
 export const DIFF_HP_MULT: Record<string, number> = {
   easy: 0.8,
   normal: 1.0,
@@ -401,5 +411,12 @@ export const PLAYER_COLORS = [
 // el control del abuso queda SOLO en el precio ×1.3 de equipo. Campeones 👑 al
 // mordisco con tope y jefes con su asedio clásico — decisión del usuario tras
 // probar el nerf v19 en producción.
+// LABERINTO · cada cuántas celdas recorridas el Behemot aturde las torres de su
+// radio. En los mapas de recorrido fijo el disparador es «cruzar una esquina»,
+// pero un laberinto tiene decenas de giros y eso lo volvería devastador sin que
+// nadie hubiese tocado su balance. 8 celdas ≈ el ritmo de esquinas de un mapa
+// clásico. Solo aplica a mapas maze: los de siempre siguen con sus esquinas.
+export const MAZE_STUN_EVERY_CELLS = 8;
+
 export const BALANCE_VERSION = 20;
 export const PROTOCOL_VERSION = 1;

@@ -14,10 +14,14 @@ import {
   FUSION_ORDER,
   FUSIONS,
   hasRank2,
+  hasRank3,
   HORDE_CAP,
   nextEliteLevelCost,
   placementError,
+  inPlot,
   rank2Cost,
+  rank2Wood,
+  rank3Cost,
   SELL_REFUND,
   SENTRY_DURATION_SEC,
   START_LIVES,
@@ -38,6 +42,7 @@ import {
   type ArmorTypeId,
   type AttackTypeId,
   type Snap,
+  type SnapEnemy,
   type SnapTower,
   type TargetMode,
   type TowerDef,
@@ -133,8 +138,15 @@ function premoveUpgradeCost(snap: Snap, towerId: number): { gold: number; wood: 
   const fusion = t[13] ?? -1;
   if (fusion >= 0 || TOWERS[type].onPathOnly || TOWERS[type].detects) return null;
   if (spec >= 0) {
-    if (level >= 4 || !hasRank2(type, spec)) return null;
-    return { gold: rank2Cost(type, spec) ?? 0, wood: WOOD_COST_RANK2 };
+    if (level === 3 && hasRank2(type, spec)) {
+      // los rangos "gordos" (Vencedor II) traen su propio precio en madera
+      return { gold: rank2Cost(type, spec) ?? 0, wood: rank2Wood(type, spec) ?? WOOD_COST_RANK2 };
+    }
+    if (level === 4 && hasRank3(type, spec)) {
+      const r3 = rank3Cost(type, spec)!;
+      return { gold: r3.gold, wood: r3.wood };
+    }
+    return null;
   }
   if (level >= 3) return null; // nivel máximo sin especializar: hay que especializar, no mejorar
   return { gold: towerLevel(type, level + 1).cost, wood: 0 };
@@ -215,7 +227,7 @@ function processPremoves(snap: Snap): void {
   // refleje el gasto en el siguiente snapshot).
   let availGold = myGold(gs);
   let availWood = myWood(gs);
-  const towerCells = snap.towers.map((t) => ({ cx: t[2], cy: t[3] }));
+  const towerCells = snap.towers.map((t) => ({ cx: t[2], cy: t[3], type: TOWER_ORDER[t[1]] }));
   const keep: Premove[] = [];
   for (const pm of gs.premoves) {
     if (pm.kind === 'place') {
@@ -227,7 +239,7 @@ function processPremoves(snap: Snap): void {
       // F9a · el Barril usa el precio EFECTIVO del snapshot (escala por compra);
       // si otro compró entre medias, el server re-valida igual (reject visible).
       const cost = TOWERS[pm.towerType].detonates
-        ? snap.boomCost
+        ? myPrices(snap).boomCost
         : TOWERS[pm.towerType].levels[0].cost;
       if (availGold >= cost) {
         net.send({ type: 'cmd', cmd: { kind: 'place', towerType: pm.towerType, cx: pm.cx, cy: pm.cy } });
@@ -261,15 +273,25 @@ const BAR_GROUPS: TowerTypeId[][] = [
   ['trap', 'boom', 'sentry'],
 ];
 
+// ARENA · torres que no pintan nada en ese modo y por tanto no se ofrecen. El
+// Sentry solo sirve para revelar invisibles, y en arena no hay: dejarlo en la
+// barra sería invitar a tirar el oro.
+const HIDDEN_IN_ARENA: TowerTypeId[] = ['sentry'];
+
 export function buildTowerBar(): void {
   const bar = $('hud-towers');
   bar.innerHTML = '';
-  const flat = BAR_GROUPS.flat();
+  const arena = store.game?.init.mode === 'arena';
+  const hidden = arena ? HIDDEN_IN_ARENA : [];
+  const flat = BAR_GROUPS.flat().filter((t) => !hidden.includes(t));
   // el Sentry vive en el grupo de camino de la barra Y sigue estando en la 🛒
   // Tienda (accesible en ambos sitios). La red de seguridad de "extras" recoge
   // cualquier torre nueva que aún no se haya agrupado a mano.
-  const extras = TOWER_ORDER.filter((t) => !flat.includes(t));
-  const groups = extras.length > 0 ? [...BAR_GROUPS, extras] : BAR_GROUPS;
+  const extras = TOWER_ORDER.filter((t) => !flat.includes(t) && !hidden.includes(t));
+  const visibleGroups = BAR_GROUPS.map((grp) => grp.filter((t) => !hidden.includes(t))).filter(
+    (grp) => grp.length > 0,
+  );
+  const groups = extras.length > 0 ? [...visibleGroups, extras] : visibleGroups;
   for (let gi = 0; gi < groups.length; gi++)
   for (let ti = 0; ti < groups[gi].length; ti++) {
     const type = groups[gi][ti];
@@ -362,7 +384,7 @@ function syncPlacingInfo(): void {
   const def = TOWERS[type];
   const lvl = def.levels[0];
   // F9a (v19) · el Barril muestra su precio EFECTIVO de equipo (snap.boomCost)
-  const placeCost = def.detonates ? (gs.latest?.boomCost ?? lvl.cost) : lvl.cost;
+  const placeCost = def.detonates ? (gs.latest ? myPrices(gs.latest).boomCost : lvl.cost) : lvl.cost;
   const parts: string[] = [`${TOWER_ICONS[type]} <b>${def.name}</b> 🪙${placeCost}`];
   const isAura = lvl.auraDamage !== undefined || lvl.auraHaste !== undefined || lvl.auraBounty !== undefined;
   if (lvl.damage > 0 && !def.onPathOnly) parts.push(`Daño <b>${lvl.damage}</b>`);
@@ -435,6 +457,31 @@ export function toggleSpectatorTowers(): void {
 // sugerencia; en móvil, escondida por defecto tras el botón 🏗 — issue #5). Se
 // llama al entrar a la partida (jugador o espectador): por eso también es donde
 // se reinicia specTowersOpen, para que nunca sobreviva de una partida a otra.
+// ARENA · a qué parcela pertenece un monstruo. El snapshot no lo lleva —no hacía
+// falta mientras hubo un solo tablero— así que se deduce de su posición: las
+// parcelas no se solapan, de modo que la celda que pisa lo identifica sin
+// ambigüedad y sin engordar el snapshot.
+// Precios que te afectan A TI. En arena el mercado y los precios escalados son de
+// cada jugador; fuera de arena, SnapPlayer repite los de sala, así que leer
+// siempre los propios vale en los cuatro modos y evita duplicar condicionales.
+function myPrices(snap: Snap): { boomCost: number; repairCost: number; woodPrice: number } {
+  const me = snap.players.find((p) => p.id === store.playerId);
+  return {
+    boomCost: me?.boomCost ?? snap.boomCost,
+    repairCost: me?.repairCost ?? snap.repairCost,
+    woodPrice: me?.woodPrice ?? snap.woodPrice,
+  };
+}
+
+function enemyPlot(gs: GameStore, e: SnapEnemy): number {
+  const plots = gs.map.plots;
+  if (!plots) return 0;
+  const cx = Math.floor(e[2]);
+  const cy = Math.floor(e[3]);
+  for (let i = 0; i < plots.length; i++) if (inPlot(plots[i], cx, cy)) return i;
+  return -1;
+}
+
 export function applySpectatorUI(): void {
   const spec = store.spectator;
   $('spectator-banner').hidden = !spec;
@@ -880,7 +927,9 @@ function buildGroupPanel(
       : `${TOWER_ICONS[type]} ${def.name}`;
   const levelTag =
     level >= 5
-      ? `${fusion ? '⚗' : '★★'} Nv. ${level}` // F9a · veteranía
+      ? !fusion && hasRank3(type, spec)
+        ? '★★★ Rango III' // cúspide de lujo (estandartes)
+        : `${fusion ? '⚗' : '★★'} Nv. ${level}` // F9a · veteranía
       : fusion
         ? '⚗ Fusión'
         : level >= 4
@@ -1004,6 +1053,11 @@ function buildTowerPanel(gs: GameStore, selectedId: number): { html: string; liv
   // ¿puede subir al Rango II? torre especializada, aún en nivel 3, cuya spec tenga rank2
   const canRank2 = !fusion && specialized && level === 3 && hasRank2(type, spec);
   const r2cost = canRank2 ? rank2Cost(type, spec) : null;
+  // madera del Rango II (los rangos "gordos" — Vencedor II — traen la suya)
+  const r2wood = canRank2 ? (rank2Wood(type, spec) ?? WOOD_COST_RANK2) : WOOD_COST_RANK2;
+  // ¿puede subir al Rango III? spec en Rango II (nivel 4) cuya spec tenga rank3 (estandartes)
+  const canRank3 = !fusion && specialized && level === 4 && hasRank3(type, spec);
+  const r3cost = canRank3 ? rank3Cost(type, spec) : null;
   // F9a (v19) · ¿puede comprar su SIGUIENTE nivel de veteranía (5→10)? La misma
   // función que valida el server (cúspide, tope del clásico, torres que disparan).
   const eliteNext = nextEliteLevelCost({ type, level, spec, fusion: fusionIdx }, gs.init.mode);
@@ -1109,10 +1163,13 @@ function buildTowerPanel(gs: GameStore, selectedId: number): { html: string; liv
     : specialized
       ? `${TOWER_ICONS[type]} ${def.specs[spec].name}`
       : `${TOWER_ICONS[type]} ${def.name}`;
-  // F9a (v19) · nivel 5+ = VETERANÍA (post-élite): la etiqueta muestra el nivel real
+  // F9a (v19) · nivel 5+ = VETERANÍA (post-élite): la etiqueta muestra el nivel real.
+  // Excepción: una spec con rank3 en nivel 5 es su cúspide «★★★ Rango III».
   const levelTag =
     level >= 5
-      ? `${fusion ? '⚗' : '★★'} Nv. ${level}`
+      ? !fusion && hasRank3(type, spec)
+        ? '★★★ Rango III'
+        : `${fusion ? '⚗' : '★★'} Nv. ${level}`
       : fusion
         ? '⚗ Fusión'
         : isRank2
@@ -1244,16 +1301,33 @@ function buildTowerPanel(gs: GameStore, selectedId: number): { html: string; liv
     } else if (canRank2 && r2cost !== null) {
       // Rango II: mejora identidad de la especialización (reutiliza el comando upgrade)
       const r2desc = def.specs[spec].rank2?.desc ?? 'Mejora de Rango II';
-      const affordR2 = gold >= r2cost && wood >= WOOD_COST_RANK2;
+      const affordR2 = gold >= r2cost && wood >= r2wood;
       const r2btn = affordR2
-        ? `<button id="panel-upgrade" class="btn primary">★★ Rango II 🪙${r2cost} · 🪵${WOOD_COST_RANK2}</button>`
-        : premoveUpgradeBtn(id, `⏳ Premover Rango II ★★ 🪙${r2cost} · 🪵${WOOD_COST_RANK2}`);
+        ? `<button id="panel-upgrade" class="btn primary">★★ Rango II 🪙${r2cost} · 🪵${r2wood}</button>`
+        : premoveUpgradeBtn(id, `⏳ Premover Rango II ★★ 🪙${r2cost} · 🪵${r2wood}`);
       actions = `
         <div class="spec-title">Rango II</div>
         <p class="spec-desc" style="padding:0 4px 6px">${escapeHtml(r2desc)}</p>
         ${fuseHtml}
         <div class="prow">
           ${r2btn}
+          <button id="panel-sell" class="btn ghost">💸 ${sellValue}</button>
+        </div>
+        ${targetModesHtml(projKind, lvl, modeIdx)}
+        ${controlRow}`;
+    } else if (canRank3 && r3cost) {
+      // Rango III (estandartes): cúspide de lujo — mismo comando upgrade, precio gordo
+      const r3desc = def.specs[spec].rank3?.desc ?? 'Mejora de Rango III';
+      const affordR3 = gold >= r3cost.gold && wood >= r3cost.wood;
+      const r3btn = affordR3
+        ? `<button id="panel-upgrade" class="btn primary">★★★ Rango III 🪙${r3cost.gold} · 🪵${r3cost.wood}</button>`
+        : premoveUpgradeBtn(id, `⏳ Premover Rango III ★★★ 🪙${r3cost.gold} · 🪵${r3cost.wood}`);
+      actions = `
+        <div class="spec-title">Rango III</div>
+        <p class="spec-desc" style="padding:0 4px 6px">${escapeHtml(r3desc)}</p>
+        ${fuseHtml}
+        <div class="prow">
+          ${r3btn}
           <button id="panel-sell" class="btn ghost">💸 ${sellValue}</button>
         </div>
         ${targetModesHtml(projKind, lvl, modeIdx)}
@@ -1350,23 +1424,47 @@ export function onTick(snap: Snap): void {
     aliveChip.classList.toggle('danger', frac >= 0.9);
   } else {
     lives.hidden = false;
-    lives.textContent = `❤️ ${snap.lives}`;
-    lives.classList.toggle('danger', snap.lives <= 5);
+    // ARENA · tus vidas son TUYAS y los monstruos que cuentan son los de TU
+    // parcela: enseñar el total de la sala aquí sería contarle al jugador la
+    // partida de otro.
+    const me = snap.players.find((p) => p.id === store.playerId);
+    const arena = gs.init.mode === 'arena';
+    const myLives = arena && me ? me.lives : snap.lives;
+    const mine = arena && me ? snap.enemies.filter((e) => enemyPlot(gs, e) === me.plot).length : snap.enemies.length;
+    lives.textContent = `❤️ ${myLives}`;
+    lives.classList.toggle('danger', myLives <= 5);
     aliveChip.classList.remove('warn', 'danger');
     // enemigos vivos durante la oleada
-    if (snap.active && snap.enemies.length > 0) {
+    if (snap.active && mine > 0) {
       aliveChip.hidden = false;
-      aliveChip.textContent = `👾 ${snap.enemies.length}`;
+      aliveChip.textContent = `👾 ${mine}`;
     } else {
       aliveChip.hidden = true;
     }
   }
 
+  // ARENA · cuánta gente sigue en pie. Es el marcador del modo: te dice si vas
+  // ganando sin tener que mirar parcela por parcela.
+  const rivalsChip = $('hud-rivals');
+  if (gs.init.mode === 'arena') {
+    const alive = snap.players.filter((p) => !p.eliminated).length;
+    rivalsChip.hidden = false;
+    rivalsChip.textContent = `⚔️ ${alive}/${snap.players.length}`;
+    rivalsChip.classList.toggle('danger', alive <= 2 && snap.players.length > 2);
+  } else {
+    rivalsChip.hidden = true;
+  }
+
   // la etiqueta lleva sus dos formas (palabra en escritorio, 🌊 en móvil) y el
   // CSS muestra una u otra según el ancho de pantalla
   const waveLabel = '<span class="wv-word">Oleada</span><span class="wv-icon" aria-hidden="true">🌊</span>';
-  $('hud-wave').innerHTML =
-    snap.totalWaves > 0 ? `${waveLabel} ${snap.wave}/${snap.totalWaves}` : `${waveLabel} ${snap.wave} ∞`;
+  const waveEl = $('hud-wave');
+  const waveHtml = snap.totalWaves > 0 ? `${waveLabel} ${snap.wave}/${snap.totalWaves}` : `${waveLabel} ${snap.wave} ∞`;
+  // solo reescribir si CAMBIÓ (cambia 1 vez por oleada, no 15 veces/s)
+  if (waveEl.dataset.h !== waveHtml) {
+    waveEl.dataset.h = waveHtml;
+    waveEl.innerHTML = waveHtml;
+  }
   $('hud-gold').textContent = `🪙 ${myGold(gs)}`;
   $('hud-wood').textContent = `🪵 ${myWood(gs)}`;
 
@@ -1416,13 +1514,24 @@ export function onTick(snap: Snap): void {
     } else if (snap.nextFlying) {
       tags.push('<span class="wave-tag flying" title="Domina lo aéreo: necesitas anti-aire">🦅 aérea</span>');
     }
-    $('hud-preview-tags').innerHTML = tags.join('');
-    $('hud-preview-list').innerHTML = snap.nextWave
+    // dirty-check: la vista previa solo cambia entre oleadas, no cada tick
+    const tagsEl = $('hud-preview-tags');
+    const tagsHtml = tags.join('');
+    if (tagsEl.dataset.h !== tagsHtml) {
+      tagsEl.dataset.h = tagsHtml;
+      tagsEl.innerHTML = tagsHtml;
+    }
+    const listEl = $('hud-preview-list');
+    const listHtml = snap.nextWave
       .map(([typeIdx, count]) => {
         const type = ENEMY_ORDER[typeIdx];
         return `<span class="preview-chip" title="${ENEMIES[type].name}">${ENEMY_ICONS[type]}×${count}</span>`;
       })
       .join('');
+    if (listEl.dataset.h !== listHtml) {
+      listEl.dataset.h = listHtml;
+      listEl.innerHTML = listHtml;
+    }
   } else {
     preview.hidden = true;
   }
@@ -1475,7 +1584,7 @@ function syncMarket(snap: Snap): void {
   if (panel.hidden) return;
   const gs = store.game;
   if (!gs) return;
-  const price = snap.woodPrice;
+  const price = myPrices(snap).woodPrice;
   // no tocar el DOM si el texto no cambió (se llama en cada tick con el panel abierto)
   const setText = (el: HTMLElement, v: string) => {
     if (el.textContent !== v) el.textContent = v;
@@ -1591,7 +1700,9 @@ export function renderShop(): void {
   const grid = $('shop-grid');
   const mode = gs.init.mode;
   const wantRepair = mode !== 'classic';
-  const wantCount = SHOP_ITEMS.length + (wantRepair ? 1 : 0);
+  // ARENA · la tienda tampoco ofrece lo que no sirve en ese modo (el Sentry)
+  const items = SHOP_ITEMS.filter((it) => mode !== 'arena' || !HIDDEN_IN_ARENA.includes(it.towerType));
+  const wantCount = items.length + (wantRepair ? 1 : 0);
   if (grid.childElementCount !== wantCount) {
     const repairHtml = wantRepair
       ? `<button class="shop-item" data-action="repair">
@@ -1605,7 +1716,7 @@ export function renderShop(): void {
       </button>`
       : '';
     grid.innerHTML =
-      SHOP_ITEMS.map((it) => {
+      items.map((it) => {
         const cost = TOWERS[it.towerType].levels[0].cost;
         return `<button class="shop-item" data-item="${it.towerType}">
         <span class="shop-icon">${it.icon}</span>
@@ -1623,8 +1734,13 @@ export function renderShop(): void {
   // F9a · reparación: precio vivo del snapshot + estados (sin oro / vidas al máximo)
   const repairBtn = grid.querySelector<HTMLButtonElement>('[data-action="repair"]');
   if (repairBtn && snap) {
-    const cost = snap.repairCost;
-    const full = mode === 'endless' && snap.lives >= START_LIVES;
+    const cost = myPrices(snap).repairCost;
+    const me = snap.players.find((p) => p.id === store.playerId);
+    // ARENA · reparas TU fortaleza: el tope es el de tus vidas, no el del equipo
+    const full =
+      mode === 'arena'
+        ? (me?.lives ?? 0) >= (me?.maxLives ?? START_LIVES)
+        : mode === 'endless' && snap.lives >= START_LIVES;
     const costEl = repairBtn.querySelector<HTMLElement>('[data-repair-cost]');
     if (costEl) costEl.textContent = full ? 'intacta' : `🪙${cost}`;
     repairBtn.classList.toggle('poor', full || gold < cost);
@@ -1732,7 +1848,9 @@ export function renderScoreboard(): void {
     window.addEventListener('pointercancel', release);
   }
   const meId = store.playerId;
-  const canGive = !store.spectator && !store.replay && snap.players.some((p) => p.id === meId);
+  // ARENA · nada de regalar recursos: la sim lo rechaza y ofrecerlo confundiría
+  const isArena = gs.init.mode === 'arena';
+  const canGive = !isArena && !store.spectator && !store.replay && snap.players.some((p) => p.id === meId);
   const body = $('scoreboard-body');
 
   // ESTRUCTURA (roster/nombres/conexión/permisos): solo se reescribe si cambió de
@@ -1744,7 +1862,7 @@ export function renderScoreboard(): void {
         const info = gs.init.players.find((ip) => ip.id === p.id);
         return `${p.id}:${info?.name ?? ''}:${info?.color ?? ''}:${p.connected ? 1 : 0}`;
       })
-      .join('|') + `|give:${canGive ? 1 : 0}|me:${meId}`;
+      .join('|') + `|give:${canGive ? 1 : 0}|me:${meId}|arena:${isArena ? 1 : 0}`;
   if (structure !== sbStructure) {
     if (sbHeld) return; // reintenta en el próximo sync (250ms)
     sbStructure = structure;
@@ -1757,8 +1875,13 @@ export function renderScoreboard(): void {
           canGive && !isMe
             ? `<button class="btn small ghost sb-give" data-give="${escapeHtml(p.id)}" aria-label="Enviar recursos a ${name}" title="Enviar oro/madera a ${name}">🎁</button>`
             : '';
+        // ARENA · la columna que de verdad importa es cuánto le queda a cada uno:
+        // es el marcador del modo. En los otros modos las vidas son del equipo y
+        // ya salen en el HUD, así que la columna sobra.
+        const livesCell = isArena ? `<td class="sb-lives" data-sb="lives:${p.id}"></td>` : '';
         return `<tr class="${isMe ? 'sb-me' : ''}${p.connected ? '' : ' offline'}">
         <td class="sb-name"><span class="sb-dot" style="background:${info?.color};color:${info?.color}"></span>${name}</td>
+        ${livesCell}
         <td data-sb="gold:${p.id}"></td>
         <td data-sb="wood:${p.id}"></td>
         <td class="sb-dmg" data-sb="dmg:${p.id}"></td>
@@ -1769,7 +1892,7 @@ export function renderScoreboard(): void {
       .join('');
     body.innerHTML = `<table>
     <thead><tr>
-      <th class="sb-name">Jugador</th><th>🪙</th><th>🪵</th>
+      <th class="sb-name">Jugador</th>${isArena ? '<th title="Vidas que le quedan">❤️</th>' : ''}<th>🪙</th><th>🪵</th>
       <th title="Daño total de la partida">⚔️</th><th title="Bajas totales">💀</th><th></th>
     </tr></thead>
     <tbody>${rows}</tbody>
@@ -1786,6 +1909,8 @@ export function renderScoreboard(): void {
     setCell(`wood:${p.id}`, `🪵${p.wood}`);
     setCell(`dmg:${p.id}`, fmtDmg(p.damage));
     setCell(`kills:${p.id}`, String(p.kills));
+    // ARENA · el caído muestra hasta dónde llegó, que es su puesto en el ranking
+    if (isArena) setCell(`lives:${p.id}`, p.eliminated ? `☠ w${p.waveReached}` : `❤️${p.lives}`);
   }
   // pie con las métricas en vivo propias (dps · oro de la oleada · vidas): vive en
   // su propio slot — reescribirlo no toca ningún botón.

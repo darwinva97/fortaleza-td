@@ -2,7 +2,7 @@ import './style.css';
 import { ATTACK_TYPE_INFO, ENEMIES, ENEMY_ORDER, FUSIONS, GAME_SPEEDS, START_LIVES, TOWERS, type GameEvent, type Snap } from '@td/shared';
 import { net, wsPathJoin } from './net.js';
 import { pushFrame, roomPrevToken, saveName, saveRoomToken, seedRoomPrevToken, startGameStore, store } from './store.js';
-import { activeTier, addPing, addShake, flashDanger, getQualityMode, initRenderer, isMinimapOn, resetRenderer, setQualityMode, toggleMinimap, towerFired, type QualityMode } from './renderer.js';
+import { activeTier, addPing, addShake, flashDanger, getQualityMode, initRenderer, isFpsShown, isMinimapOn, perfStats, resetRenderer, setFpsShown, setQualityMode, toggleMinimap, towerFired, type QualityMode } from './renderer.js';
 import { initInput } from './input.js';
 import { initBestiary } from './bestiary.js';
 import { applySpectatorUI, buildTowerBar, hidePanel, initMarket, initScoreboard, initShop, onTick, toast, addChat, refreshPanel, syncSpeedButton, syncTowerBar, toggleSpectatorTowers } from './hud.js';
@@ -183,6 +183,10 @@ function processEvents(events: GameEvent[]): void {
         floatText(ev.x, ev.y - 0.2, '¡esquivó!', '#e0e0e0', 11);
         break;
       case 'leak':
+        // ARENA · la fuga es de UN jugador: solo se le avisa a él. Anunciar a
+        // toda la sala «quedan 12 vidas» cuando las tuyas son otras confunde más
+        // de lo que informa; quién va cayendo ya se ve en el marcador.
+        if (ev.playerId !== undefined && ev.playerId !== store.playerId) break;
         toast(`💔 ¡Se escapó un ${ENEMIES[ev.type].name}! Quedan ${ev.lives} vidas`);
         addShake(4);
         sfx.leak();
@@ -190,7 +194,21 @@ function processEvents(events: GameEvent[]): void {
         // con la cámara capada, donde esa puerta puede estar fuera de pantalla)
         if (ev.pathIdx !== undefined) flashDanger(ev.pathIdx);
         break;
+      // ARENA · alguien se quedó sin vidas. Se anuncia a toda la sala: saber
+      // quién va cayendo es media gracia del modo.
+      case 'eliminated':
+        toast(
+          ev.playerId === store.playerId
+            ? `☠️ Has caído en la oleada ${ev.wave}. Sigues como espectador.`
+            : `☠️ ${ev.name} ha caído en la oleada ${ev.wave}`,
+          ev.playerId === store.playerId ? undefined : 'info',
+        );
+        if (ev.playerId === store.playerId) addShake(6);
+        sfx.leak();
+        break;
       case 'steal':
+        // ídem: en arena el Ladrón roba a un jugador concreto
+        if (ev.playerId !== undefined && ev.playerId !== store.playerId) break;
         toast(`🪙 ¡El Ladrón te robó ${ev.gold} de oro!`);
         floatText(ev.x, ev.y - 0.3, `-🪙${ev.gold}`, '#ef5350', 14);
         waveGold.steal += ev.gold;
@@ -768,15 +786,38 @@ function wireHudButtons(): void {
   const syncQuality = () => {
     const mode = getQualityMode();
     for (const b of qBtns) b.classList.toggle('active', b.dataset.quality === mode);
-    qualityActive.textContent = mode === 'auto' ? `· ${TIER_ES[activeTier()]}` : '';
+    // en partida se muestran los FPS reales junto al escalón: es el termómetro
+    // para comprobar el objetivo de 60 fps sin abrir la consola
+    const fps = store.screen === 'game' ? ` · ${perfStats().fps} fps` : '';
+    qualityActive.textContent = (mode === 'auto' ? `· ${TIER_ES[activeTier()]}` : '') + fps;
   };
   syncQuality();
+  // con el panel abierto, el marcador de FPS se refresca solo (2 veces/s)
+  setInterval(() => {
+    if (!panel.hidden) syncQuality();
+  }, 500);
   for (const b of qBtns) {
     b.addEventListener('click', () => {
       setQualityMode((b.dataset.quality as QualityMode) ?? 'auto');
       syncQuality();
     });
   }
+  // ---------- FPS en pantalla (chip #hud-fps de la barra superior) ----------
+  // Ver/Ocultar persiste (td_fps); el renderer escribe el número 2 veces/s.
+  const fpsBox = $('set-fps');
+  const fpsBtns = [...fpsBox.querySelectorAll<HTMLButtonElement>('button[data-fps]')];
+  const syncFpsBtns = () => {
+    const cur = isFpsShown() ? '1' : '0';
+    for (const b of fpsBtns) b.classList.toggle('active', b.dataset.fps === cur);
+  };
+  syncFpsBtns();
+  for (const b of fpsBtns) {
+    b.addEventListener('click', () => {
+      setFpsShown(b.dataset.fps === '1');
+      syncFpsBtns();
+    });
+  }
+
   // el renderer emite td:quality al cambiar de escalón (auto) o de modo. Refrescamos
   // la etiqueta y, la PRIMERA vez que baja SOLO por debajo de Alta, un toast discreto.
   window.addEventListener('td:quality', (e) => {

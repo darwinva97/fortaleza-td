@@ -519,7 +519,10 @@ function anyStat(def: TowerDef, pred: (l: TowerLevelDef) => boolean): boolean {
 function towerTraits(def: TowerDef): Trait[] {
   const t: Trait[] = [];
   if (def.detects) t.push({ icon: '👁', label: 'Detector', cls: 'immune' });
-  if (def.onPathOnly) t.push({ icon: '🛣', label: 'Sobre el camino' });
+  // el bestiario es global (no sabe en qué mapa estás): «trampa de suelo» vale
+  // en los dos mundos — en los mapas de camino fijo va SOBRE el camino, y en los
+  // de laberinto en cualquier celda, pero en ambos se PISA en vez de rodearse.
+  if (def.onPathOnly) t.push({ icon: '🛣', label: 'Trampa de suelo' });
   if (def.targetsAir) t.push({ icon: '🦅', label: 'Anti-aire', cls: 'air' });
   else if (def.targetsGround && !def.onPathOnly && !def.detects) t.push({ icon: '🚶', label: 'Solo tierra' });
   if (anyStat(def, (l) => (l.splash ?? 0) > 0)) t.push({ icon: '💥', label: 'Área' });
@@ -602,12 +605,17 @@ function buildTowers(): void {
       specHtml = def.specs
         .map((s) => {
           const r2 = s.rank2
-            ? `<div class="tspec-r2">★★ ${s.rank2.desc ?? `${s.name} II`} <span class="tspec-cost">🪙 ${s.rank2.cost} · 🪵 ${WOOD_COST_RANK2}</span></div>`
+            ? `<div class="tspec-r2">★★ ${s.rank2.desc ?? `${s.name} II`} <span class="tspec-cost">🪙 ${s.rank2.cost} · 🪵 ${s.rank2.woodCost ?? WOOD_COST_RANK2}</span></div>`
+            : '';
+          // Rango III (estandartes): la cúspide de lujo, derivada del def igual que el II
+          const r3 = s.rank3
+            ? `<div class="tspec-r2">★★★ ${s.rank3.desc ?? `${s.name} III`} <span class="tspec-cost">🪙 ${s.rank3.cost} · 🪵 ${s.rank3.woodCost ?? WOOD_COST_RANK2}</span></div>`
             : '';
           return `<div class="tspec">
-            <div class="tspec-head">★ <b>${s.name}</b> <span class="tspec-cost">🪙 ${s.cost} · 🪵 ${WOOD_COST_SPEC}</span></div>
+            <div class="tspec-head">★ <b>${s.name}</b> <span class="tspec-cost">🪙 ${s.cost} · 🪵 ${s.woodCost ?? WOOD_COST_SPEC}</span></div>
             <p class="edesc">${s.desc}</p>
             ${r2}
+            ${r3}
           </div>`;
         })
         .join('');
@@ -668,7 +676,8 @@ function buildTowers(): void {
     <div class="guide-intro">
       <h3>🏰 Torres</h3>
       <p class="edesc">Toda torre sube a <b>nivel 3</b> y ahí elige una de <b>dos ★ especializaciones</b>
-      (cuestan 🪙 oro y 🪵 madera). Cada especialización puede subir una vez más al <b>★★ Rango II</b>.
+      (cuestan 🪙 oro y 🪵 madera). Cada especialización puede subir una vez más al <b>★★ Rango II</b> —
+      y los <b>Estandartes</b> tienen además una cúspide de lujo <b>★★★</b> (🪙10.000 + 🪵1.000).
       Dos torres ★ especializadas y pegadas del mismo dueño pueden <b>⚗ fusionarse</b> (ver la pestaña Fusiones).</p>
     </div>
     ${matrixTableHtml()}

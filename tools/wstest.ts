@@ -288,6 +288,10 @@ async function main(): Promise<void> {
   //   expulsar (puede volver, solo de espectador) vs banear (no vuelve jamás)
   await spectatorZoneScenario();
 
+  // 9.6b · BUGFIX · el jugador decide POR SÍ MISMO si mira o juega, y un
+  //   espectador del lobby entra a ver la partida cuando esta arranca.
+  await selfSpectatorScenario();
+
   // 9.7 · F9b · SELECCIÓN DE PUERTA POR COLOR (mapa multi-ruta): reclamar libre OK,
   //   reclamar ocupada rechazada, liberación al salir, y el reclamo viaja al GameInit.
   await doorScenario();
@@ -431,6 +435,83 @@ async function spectatorZoneScenario(): Promise<void> {
 // se rechaza; (3) al salir el jugador su puerta se LIBERA (otro la reclama
 // después); (4) el reclamo viaja al GameInit (para el estandarte del color del
 // dueño en el spawn durante la partida).
+// BUGFIX · dos fallos reportados:
+//   (1) solo el anfitrión podía mandar gente a la grada: el propio jugador no
+//       podía elegir mirar, ni volver a jugar una vez allí;
+//   (2) al empezar la partida, a los espectadores que ya estaban en el lobby no
+//       les llegaba nada: se quedaban con la cuenta atrás en pantalla mientras
+//       el resto jugaba.
+async function selfSpectatorScenario(): Promise<void> {
+  console.log('\n— Espectador por decisión propia + arranque con espectadores en el lobby —');
+  const nora = new TestClient('Nora', wsUrl({ create: true }));
+  await nora.open();
+  nora.send({
+    type: 'create_room',
+    name: 'Nora',
+    token: 'token-self-nora',
+    settings: { mapId: 'sendero', mode: 'classic', difficulty: 'normal' },
+  });
+  const nj = await nora.waitFor('room_joined');
+
+  const omar = new TestClient('Omar', wsUrl({ code: nj.code }));
+  await omar.open();
+  omar.send({ type: 'join_room', name: 'Omar', token: 'token-self-omar', code: nj.code });
+  const oj = await omar.waitFor('room_joined');
+
+  const pia = new TestClient('Pia', wsUrl({ code: nj.code }));
+  await pia.open();
+  pia.send({ type: 'join_room', name: 'Pia', token: 'token-self-pia', code: nj.code });
+  const pj = await pia.waitFor('room_joined');
+
+  // (1) Omar se pasa SOLO a la grada, sin pedirle permiso al anfitrión
+  omar.send({ type: 'move_to_spectator', playerId: oj.playerId });
+  const omarSpec = await omar.waitFor('room_joined');
+  assert(omarSpec.spectator === true, 'un jugador puede pasarse A SÍ MISMO a espectador');
+  for (;;) {
+    const lb = await nora.waitFor('lobby_state');
+    if (lb.spectators.some((s) => s.id === oj.playerId) && !lb.players.some((p) => p.id === oj.playerId)) {
+      assert(true, 'el lobby lo mueve a la zona de espectadores');
+      break;
+    }
+  }
+
+  // …y vuelve a jugar por su cuenta
+  omar.send({ type: 'move_to_player', spectatorId: oj.playerId });
+  const omarBack = await omar.waitFor('room_joined');
+  assert(omarBack.spectator === false, 'un espectador puede volver a jugador POR SÍ MISMO');
+
+  // un espectador NO puede colar a otro como jugador
+  omar.send({ type: 'move_to_spectator', playerId: oj.playerId });
+  await omar.waitFor('room_joined');
+  omar.send({ type: 'move_to_player', spectatorId: pj.playerId });
+  await sleep(300);
+  for (;;) {
+    const lb = await nora.waitFor('lobby_state');
+    assert(lb.players.some((p) => p.id === pj.playerId), 'un espectador no puede mover a OTROS');
+    break;
+  }
+
+  // (2) con Omar mirando desde el lobby, arranca la partida: debe entrar él también
+  pia.send({ type: 'set_ready', ready: true });
+  for (;;) {
+    const lb = await nora.waitFor('lobby_state');
+    if (lb.players.filter((p) => !p.isHost).every((p) => p.ready)) break;
+  }
+  nora.send({ type: 'start_game' });
+  await nora.waitFor('countdown');
+  const initHost = await nora.waitFor('game_started', 8000);
+  const initSpec = await omar.waitFor('game_started', 8000);
+  assert(initHost !== undefined, 'el anfitrión entra a la partida');
+  assert(
+    initSpec !== undefined && initSpec.init.mapId === initHost.init.mapId,
+    'el ESPECTADOR del lobby también entra a ver la partida (mismo mapa)',
+  );
+
+  nora.ws.close();
+  omar.ws.close();
+  pia.ws.close();
+}
+
 async function doorScenario(): Promise<void> {
   console.log('\n— F9b · Selección de puerta por color —');
   const ana = new TestClient('DoorAna', wsUrl({ create: true }));
