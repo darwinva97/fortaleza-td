@@ -51,6 +51,7 @@ import {
   INTERLUDE_SEC,
   INVISIBLE_EVERY,
   INVISIBLE_FROM,
+  ARENA_HP_MULT,
   LEAK_WAVE_DIV,
   MAZE_STUN_EVERY_CELLS,
   POISON_PCT_CAP_DPS,
@@ -189,6 +190,24 @@ function connectedCount(state: GameState): number {
   return Math.max(1, state.players.filter((p) => p.connected).length);
 }
 
+// ARENA · carril que defiende el dueño de una torre o proyectil. Devuelve -1
+// fuera de arena, donde no hay carriles y todo el mundo pega a todo.
+function ownerLane(state: GameState, owner: string): number {
+  if (state.mode !== 'arena') return -1;
+  return state.players.find((p) => p.id === owner)?.plot ?? -1;
+}
+
+// ARENA · ¿puede esta torre tocar a este monstruo? Solo si es de SU carril.
+//
+// Sin esto, una torre plantada junto al borde alcanzaba el carril del vecino —y
+// con el mortero, seis casillas dentro—: le limpiaba la oleada al rival y de paso
+// malgastaba sus disparos en monstruos que a ella no le cuestan ninguna vida.
+// En una competición eso lo estropea todo, y encima el daño y las bajas ajenas se
+// apuntaban en las estadísticas de quien disparaba.
+function inLane(lane: number, e: EnemyState): boolean {
+  return lane < 0 || e.pathIdx === lane;
+}
+
 // ARENA · dueño de la parcela por la que va un enemigo. Fuera de arena devuelve
 // null y todo sigue funcionando contra los contadores de equipo de siempre.
 function plotOwner(state: GameState, lane: number): PlayerState | null {
@@ -237,7 +256,11 @@ function spawnEnemy(
 ): EnemyState {
   const def = ENEMIES[type];
   const players = connectedCount(state);
-  const hpMult = waveHpMult(Math.max(1, state.wave), state.difficulty, players);
+  // ARENA · aguantan más: en un carril largo y laberintado, un monstruo con la
+  // vida estándar cae de un disparo y la oleada se deshace antes de llegar.
+  const hpMult =
+    waveHpMult(Math.max(1, state.wave), state.difficulty, players) *
+    (state.mode === 'arena' ? ARENA_HP_MULT : 1);
   // LABERINTO · sin portal: cada monstruo entra por un punto CUALQUIERA del
   // borde de arriba. Con un único punto de nacimiento el laberinto óptimo sería
   // siempre el mismo embudo; con el frente abierto hay que cubrirlo entero.
@@ -650,8 +673,11 @@ function pickTarget(
 
   let best: EnemyState | null = null;
   let bestScore = 0;
+  // ARENA · esta torre solo apunta a los monstruos de SU carril
+  const lane = ownerLane(state, tower.owner);
   for (const e of state.enemies) {
     if (e.hp <= 0) continue;
+    if (!inLane(lane, e)) continue;
     if (exclude && exclude.has(e.id)) continue;
     // Lote 3 · un invisible NO detectado no puede ser objetivo DIRECTO de ninguna
     // torre (los efectos de ÁREA sí lo tocan: ver explode/línea perforante/auras).
@@ -901,9 +927,12 @@ function fireTower(
       // buscar el siguiente eslabón cerca del último golpeado
       let next: EnemyState | null = null;
       let nextD = 1.9;
+      // ARENA · el rayo tampoco salta al carril del vecino
+      const chainLane = ownerLane(state, tower.owner);
       for (let bi = 0; bi < chainN; bi++) {
         const e = state.enemies[bi];
         if (e.hp <= 0 || hitIds.has(e.id)) continue;
+        if (!inLane(chainLane, e)) continue;
         if (e.invisible && !e.detected) continue; // el rayo no salta a un invisible no detectado
         const edef = ENEMIES[e.type];
         if (edef.flying && !canAir) continue;
@@ -1056,9 +1085,12 @@ function explode(
     // longitud fija: si una muerte genera crías (push a state.enemies) NO deben
     // recibir este mismo golpe de área (nacen en la posición del padre)
     const n = state.enemies.length;
+    // ARENA · la explosión tampoco se salta la frontera del carril
+    const lane = ownerLane(state, proj.owner);
     for (let i = 0; i < n; i++) {
       const e = state.enemies[i];
       if (e.hp <= 0) continue;
+      if (!inLane(lane, e)) continue;
       if (proj.groundOnly && ENEMIES[e.type].flying) continue;
       if (dist(x, y, e.x, e.y) <= proj.splash + ENEMIES[e.type].radius * e.radiusMult) {
         applyPayload(state, ctx, proj, e, events);
@@ -1133,11 +1165,15 @@ function nearestSappableTower(
   y: number,
   maxDist: number,
   claimed: Set<number>,
+  // ARENA · carril del zapador: solo puede subirse a las torres de ESE carril.
+  // Si no, uno que baja pegado al borde apagaría las torres del vecino.
+  lane = -1,
 ): TowerState | null {
   let best: TowerState | null = null;
   let bestD = maxDist;
   for (const t of state.towers) {
     if (claimed.has(t.id)) continue;
+    if (lane >= 0 && ownerLane(state, t.owner) !== lane) continue;
     if (!towerFires(t)) continue; // aturdir una mina/aura/trampa no hace nada
     const d = dist(x, y, t.cx + 0.5, t.cy + 0.5);
     if (d < bestD) {
@@ -1306,18 +1342,21 @@ function stepEnemies(state: GameState, ctx: SimContext, events: GameEvent[]): vo
     let sapping = false;
     if (def.sapper) {
       let tower: TowerState | null = null;
+      // ARENA · el zapador solo se sube a las torres de SU carril
+      const sapLane = state.mode === 'arena' ? enemy.pathIdx : -1;
       if (enemy.stunTowerId > 0) {
         const cur = state.towers.find((t) => t.id === enemy.stunTowerId);
         if (
           cur &&
           !sapClaimed.has(cur.id) &&
           towerFires(cur) &&
+          (sapLane < 0 || ownerLane(state, cur.owner) === sapLane) &&
           dist(enemy.x, enemy.y, cur.cx + 0.5, cur.cy + 0.5) <= sapRange
         ) {
           tower = cur;
         }
       }
-      if (!tower) tower = nearestSappableTower(state, enemy.x, enemy.y, sapRange, sapClaimed);
+      if (!tower) tower = nearestSappableTower(state, enemy.x, enemy.y, sapRange, sapClaimed, sapLane);
       if (tower) {
         sapClaimed.add(tower.id);
         tower.stunnedUntil = state.tick + stunTicks;
@@ -1384,6 +1423,9 @@ function stepEnemies(state: GameState, ctx: SimContext, events: GameEvent[]): vo
     if (def.stunOnCorner && crossedCorner) {
       const stun = state.tick + Math.round(def.stunOnCorner.seconds * TICK_RATE);
       for (const t of state.towers) {
+        // ARENA · el aturdimiento tampoco cruza: que el Behemot del vecino te
+        // apagara las torres sería que te castiguen por la partida de otro
+        if (!inLane(ownerLane(state, t.owner), enemy)) continue;
         if (dist(enemy.x, enemy.y, t.cx + 0.5, t.cy + 0.5) <= def.stunOnCorner.radius) {
           t.stunnedUntil = Math.max(t.stunnedUntil, stun);
         }
@@ -1762,9 +1804,12 @@ function stepTraps(state: GameState, ctx: SimContext, events: GameEvent[]): void
         const boomCap = Math.round(
           BOOM_HP_CAP_BASE * waveHpMult(Math.max(1, state.wave), state.difficulty, connectedCount(state)),
         );
+        // ARENA · el barril tampoco limpia el carril de al lado
+        const boomLane = ownerLane(state, trap.owner);
         for (let i = 0; i < n; i++) {
           const e = state.enemies[i];
           if (e.hp <= 0 || ENEMIES[e.type].flying) continue; // explosión a ras de suelo
+          if (!inLane(boomLane, e)) continue;
           if (dist(bx, by, e.x, e.y) <= splash + ENEMIES[e.type].radius * e.radiusMult) {
             if (ENEMIES[e.type].boss) {
               // los JEFES no se eliminan: reciben el daño del barril (asedio, con
@@ -1828,8 +1873,12 @@ function stepTowerAuras(state: GameState): void {
     const canAir = fusion ? fusion.targetsAir : towerTargetsAir(tower.type, tower.spec);
     const tx = tower.cx + 0.5;
     const ty = tower.cy + 0.5;
+    // ARENA · el aura se detiene en la frontera del carril: ralentizarle los
+    // monstruos al vecino es ayudarle, y aquí cada uno se defiende solo
+    const auraLane = ownerLane(state, tower.owner);
     for (const e of state.enemies) {
       if (e.hp <= 0) continue;
+      if (!inLane(auraLane, e)) continue;
       if (e.spellImmune) continue; // los inmunes ignoran el aura de Escarcha
       if (ENEMIES[e.type].flying && !canAir) continue;
       if (dist(tx, ty, e.x, e.y) > aura.radius) continue;

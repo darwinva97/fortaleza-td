@@ -359,6 +359,33 @@ export const START_GOLD: Record<string, number> = {
   hard: 180,
 };
 
+// ---------- ARENA · ajuste de dificultad y economía ----------
+// El carril de laberinto da MUCHÍSIMO más tiempo de fuego que un recorrido fijo:
+// cruzarlo vacío ya son ~21 s, y un laberinto decente lo multiplica por tres o
+// cuatro. Con la oleada estándar llegaban 7 monstruos de 32 de vida a la o1 —
+// morían de un disparo y había que acelerar el juego para no aburrirse.
+//
+// Tres palancas separadas a propósito, para poder afinar una sin tocar las otras:
+//   · OFFSET: la rampa arranca como si fuese una oleada más avanzada (mata la
+//     trivialidad del principio sin deformar la curva).
+//   · BUDGET: cuerpos por oleada (lo que se ve: más bichos bajando).
+//   · HP: cuánto aguanta cada uno (lo que se siente: no caen de un disparo).
+export const ARENA_WAVE_OFFSET = 2;
+export const ARENA_BUDGET_MULT = 1.5;
+// 2.0 no es un número redondo por casualidad: deja a la morralla de las primeras
+// oleadas en ~64 de vida, justo por ENCIMA de los 60 de daño del francotirador de
+// nivel 1. Antes caía de un disparo y la oleada se deshacía sola.
+export const ARENA_HP_MULT = 2;
+// Más cuerpos = más botín automáticamente (cada baja paga), así que la economía
+// sube sola. Esto es solo el arranque: con qué levantar el primer laberinto.
+export const ARENA_START_GOLD = 450;
+// Vidas PROPIAS de cada jugador (en los otros modos son 30 y del equipo). Aquí
+// llegan muchos más cuerpos y una fuga no es de todos, es tuya: con 30 una mala
+// oleada te sacaba de la partida antes de haber podido rehacer el laberinto.
+// Aguantar más también es lo que permite que el ranking distinga de verdad —
+// si todos caen en la misma oleada no hay competición que medir.
+export const ARENA_START_LIVES = 150;
+
 // ARENA · gancho para probar el modo con recursos de sobra sin tocar nada más:
 // con un número aquí se arranca con ese oro/madera en vez de la economía normal.
 // En PRODUCCIÓN van en null — arena juega con la misma economía que el resto.

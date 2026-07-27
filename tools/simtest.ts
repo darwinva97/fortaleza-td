@@ -19,6 +19,7 @@ import {
   blockedGrid,
   buildField,
   fieldDist,
+  ARENA_HP_MULT,
   inPlot,
   laneEntrySubs,
   laneGoalSubs,
@@ -4361,6 +4362,63 @@ console.log('— ARENA · parcelas, oleada espejo, aislamiento y eliminación �
       'el servidor RECHAZA plantar un Sentry en arena',
     );
     assert(st.towers.length === 0, 'y no queda ninguna torre puesta');
+  }
+
+  // 5d. RITMO de las primeras oleadas. Con la oleada estándar llegaban 7 cuerpos
+  //     de 32 de vida: el francotirador los borraba de un disparo y había que
+  //     acelerar el juego para no aburrirse. Un carril de laberinto da mucho más
+  //     tiempo de fuego que un recorrido fijo, así que la oleada pide más masa.
+  {
+    const gen1 = generateWave({ rng: 1234 }, 1, 1, 1, 'arena', [0]);
+    const hp1 = Math.round(ENEMIES.goblin.hp * waveHpMult(1, 'normal', 1) * ARENA_HP_MULT);
+    console.log(`   arena o1: ${gen1.entries.length} monstruos de ~${hp1} de vida`);
+    assert(gen1.entries.length >= 15, `la o1 de arena trae masa suficiente (${gen1.entries.length} ≥ 15)`);
+    assert(
+      hp1 > TOWERS.sniper.levels[0].damage,
+      `la morralla de la o1 aguanta un disparo del francotirador (${hp1} > ${TOWERS.sniper.levels[0].damage})`,
+    );
+    // …y el resto del juego NO se toca: mismo presupuesto que siempre en infinito
+    const endless1 = generateWave({ rng: 1234 }, 1, 1, 1, 'endless', [0]);
+    assert(
+      endless1.entries.length < gen1.entries.length,
+      `infinito conserva su oleada de siempre (${endless1.entries.length} cuerpos, arena ${gen1.entries.length})`,
+    );
+    const hpEndless = Math.round(ENEMIES.goblin.hp * waveHpMult(1, 'normal', 1));
+    assert(hpEndless === 32, `y su vida base no cambia (${hpEndless})`);
+  }
+
+  // 5e. LAS TORRES NO CRUZAN DE CARRIL. El alcance no entiende de fronteras: una
+  //     torre pegada al borde alcanzaba el carril del vecino (con el mortero, seis
+  //     casillas dentro), le limpiaba la oleada y malgastaba sus disparos en
+  //     monstruos que a ella no le cuestan vidas. En una competición eso lo
+  //     estropea todo. Se comprueban las DOS direcciones: que no toca al vecino y
+  //     que sigue disparando a los suyos.
+  {
+    const st = createGame('arena', 'arena', 'normal', 31337, [roster[0], roster[1]]);
+    const sc = makeSimContext(am, makePlacementContext(am));
+    st.players[0].gold = 999999;
+    // p1 siembra la columna pegada al borde de su carril (x=9, junto al carril 1)
+    const cmds: PlayerCommand[] = [];
+    for (let cy = 6; cy <= 24; cy += 3) {
+      cmds.push({ playerId: 'p1', cmd: { kind: 'place', towerType: 'archer', cx: 9, cy } });
+    }
+    stepGame(st, sc, cmds);
+    assert(st.towers.length > 0, `p1 planta sus torres en el borde (${st.towers.length})`);
+    hastaMonstruos(st, sc);
+    for (let i = 0; i < TICK_RATE * 90; i++) stepGame(st, sc, []);
+
+    const vecinosHeridos = st.enemies.filter((e) => e.pathIdx !== 0 && e.hp < e.maxHp);
+    assert(
+      vecinosHeridos.length === 0,
+      `las torres de p1 NO tocan el carril del vecino (${vecinosHeridos.length} heridos ajenos)`,
+    );
+    const dañoPropio = st.towers.reduce((a, t) => a + t.damage, 0);
+    assert(dañoPropio > 0, `…pero sí disparan a los suyos (${Math.round(dañoPropio)} de daño)`);
+    // y el vecino, sin defensa, pierde vidas: nadie le está limpiando la oleada
+    assert(
+      st.players[1].lives < st.players[1].maxLives,
+      'y al vecino indefenso se le escapan (no le estaban defendiendo gratis)',
+    );
   }
 
   // 6. determinismo del modo entero

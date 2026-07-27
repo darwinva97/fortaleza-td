@@ -1432,7 +1432,11 @@ export function onTick(snap: Snap): void {
     const myLives = arena && me ? me.lives : snap.lives;
     const mine = arena && me ? snap.enemies.filter((e) => enemyPlot(gs, e) === me.plot).length : snap.enemies.length;
     lives.textContent = `❤️ ${myLives}`;
-    lives.classList.toggle('danger', myLives <= 5);
+    // el aviso rojo va por PROPORCIÓN, no por un número fijo: con 30 vidas «5»
+    // es el último aliento, pero en arena se arranca con 150 y no saltaría hasta
+    // que ya no hay nada que hacer.
+    const maxLives = arena && me ? me.maxLives : START_LIVES;
+    lives.classList.toggle('danger', myLives <= Math.max(3, Math.round(maxLives * 0.17)));
     aliveChip.classList.remove('warn', 'danger');
     // enemigos vivos durante la oleada
     if (snap.active && mine > 0) {

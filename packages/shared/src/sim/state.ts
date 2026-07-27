@@ -1,5 +1,7 @@
 import type { Difficulty, GameMode, GameState, PlayerState } from '../types.js';
 import {
+  ARENA_START_GOLD,
+  ARENA_START_LIVES,
   ARENA_TEST_GOLD,
   ARENA_TEST_WOOD,
   CLASSIC_WAVES,
@@ -26,6 +28,8 @@ export function makePlayer(
   wood = START_WOOD,
   // ARENA · parcela que defiende. Fuera de arena da igual (tablero compartido).
   plot = 0,
+  // ARENA · vidas propias. En los otros modos manda state.lives y esto no se lee.
+  lives = START_LIVES,
 ): PlayerState {
   return {
     id: input.id,
@@ -37,8 +41,8 @@ export function makePlayer(
     connected: true,
     stats: { kills: 0, damage: 0, goldEarned: 0, goldSpent: 0, towersBuilt: 0 },
     plot,
-    lives: START_LIVES,
-    maxLives: START_LIVES,
+    lives,
+    maxLives: lives,
     eliminated: false,
     waveReached: 0,
     eliminatedTick: 0,
@@ -107,9 +111,12 @@ export function createGame(
     players: players.map((p, i) =>
       makePlayer(
         p,
-        mode === 'arena' && ARENA_TEST_GOLD !== null ? ARENA_TEST_GOLD : START_GOLD[difficulty],
+        mode === 'arena'
+          ? (ARENA_TEST_GOLD ?? ARENA_START_GOLD)
+          : START_GOLD[difficulty],
         mode === 'arena' && ARENA_TEST_WOOD !== null ? ARENA_TEST_WOOD : START_WOOD,
         i,
+        mode === 'arena' ? ARENA_START_LIVES : START_LIVES,
       ),
     ),
     woodPrice: WOOD_PRICE_BASE,

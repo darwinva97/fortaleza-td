@@ -20,6 +20,8 @@ import {
   ENDLESS_BOUNTY_STEP,
   HP_PER_EXTRA_PLAYER,
   IMMUNE_EVERY,
+  ARENA_BUDGET_MULT,
+  ARENA_WAVE_OFFSET,
   IMMUNE_FROM,
   INVISIBLE_EVERY,
   INVISIBLE_FROM,
@@ -516,7 +518,12 @@ export function generateWave(
   }
 
   const picks: EnemyTypeId[] = [];
-  let budget = waveBudget(wave, playerCount);
+  // ARENA · más cuerpos y rampa adelantada: un carril de laberinto da tanto
+  // tiempo de fuego que la oleada estándar se deshace sola (ver constants.ts).
+  let budget =
+    mode === 'arena'
+      ? Math.round(waveBudget(wave + ARENA_WAVE_OFFSET, playerCount) * ARENA_BUDGET_MULT)
+      : waveBudget(wave, playerCount);
   const hasBoss = waveHasBoss(wave, mode);
   let bossType: EnemyTypeId | null = null;
 
