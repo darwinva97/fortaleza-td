@@ -26,7 +26,10 @@ import type { MapDef } from '../types.js';
 // índice y no consume RNG, así que el campo es función PURA de (mapa, muros).
 // Por eso NO vive en GameState: se reconstruye idéntico al cargar un guardado.
 //
-// Los monstruos AÉREOS no usan el campo: vuelan recto a la meta. Ver stepEnemies.
+// En estos mapas los AÉREOS también recorren el laberinto (ver moveThroughMaze):
+// aquí el laberinto es el juego, y volar por encima vaciaba de sentido el oro
+// invertido en muros. Siguen siendo distintos en que solo les alcanzan las torres
+// antiaéreas y en que no pisan las trampas de suelo.
 
 // subceldas por casilla de terreno y eje (build grid de media casilla)
 export const SUB = 2;

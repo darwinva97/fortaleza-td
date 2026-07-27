@@ -4421,6 +4421,49 @@ console.log('— ARENA · parcelas, oleada espejo, aislamiento y eliminación �
     );
   }
 
+  // 5f. LOS AÉREOS TAMBIÉN RODEAN. En el género vuelan por encima, pero aquí el
+  //     laberinto ES el juego: con oleadas mayoritariamente aéreas (la 14 traía
+  //     28 de 47 voladores) el oro invertido en muros no valía nada. Siguen
+  //     siendo distintos en lo que importa — solo les alcanzan las antiaéreas.
+  {
+    const st = createGame('arena', 'arena', 'normal', 555, [roster[0]]);
+    const sc = makeSimContext(am, makePlacementContext(am));
+    st.players[0].gold = 999999;
+    // muro que cruza el carril salvo un hueco en la columna 0: lo que baje por la
+    // derecha TIENE que cruzar todo el ancho para pasar
+    const muro: PlayerCommand[] = [];
+    for (let cx = 1; cx <= 9; cx++) {
+      muro.push({ playerId: 'p1', cmd: { kind: 'place', towerType: 'archer', cx, cy: 12 } });
+    }
+    stepGame(st, sc, muro);
+
+    let seguido: number | null = null;
+    let xNace = 0;
+    let xMin = 99;
+    let cruzo = false;
+    for (let i = 0; i < TICK_RATE * 60 * 10 && !st.over; i++) {
+      stepGame(st, sc, []);
+      if (seguido === null) {
+        const air = st.enemies.find((e) => ENEMIES[e.type].flying && e.y < 3 && e.x > 5);
+        if (air) {
+          seguido = air.id;
+          xNace = air.x;
+          xMin = air.x;
+        }
+      } else {
+        const e = st.enemies.find((en) => en.id === seguido);
+        if (!e) break;
+        xMin = Math.min(xMin, e.x);
+        if (e.y > 12.5) cruzo = true;
+      }
+    }
+    assert(seguido !== null, 'sale algún aéreo por la derecha del carril');
+    assert(
+      cruzo && xMin < 1.5,
+      `el aéreo se desvía hasta el hueco en vez de pasar por encima (nace en x=${xNace.toFixed(1)}, llega a x=${xMin.toFixed(1)})`,
+    );
+  }
+
   // 6. determinismo del modo entero
   const a1 = correrArena(31337, 3000).st;
   const a2 = correrArena(31337, 3000).st;

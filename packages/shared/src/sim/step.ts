@@ -1198,17 +1198,20 @@ function moveThroughMaze(
   const goalRow = laneGoalRow(ctx.map, lane);
   const goalY = subCenter(goalRow);
 
-  // Dos casos bajan en línea recta, sin laberinto:
-  //   · los AÉREOS, porque vuelan (regla del género: el laberinto no les afecta);
-  //   · un terrestre ENCERRADO. La regla anti-bloqueo impide cerrar el frente,
-  //     pero no impide que le construyan una bolsa alrededor a media oleada. Un
-  //     monstruo clavado para siempre sería peor que uno que atraviesa, y además
-  //     atravesar es MÁS corto que rodear: encerrar a propósito sale mal, que es
-  //     justo el incentivo que queremos.
-  // Bajan RECTO manteniendo su columna: la meta es todo el borde de abajo, no un
-  // punto, así que no tienen que converger a ningún sitio.
+  // En un mapa de laberinto TODO EL MUNDO lo recorre, también los AÉREOS. En el
+  // género vuelan por encima, pero aquí el laberinto ES el juego: que un tercio de
+  // la oleada se lo saltara vaciaba de sentido el oro invertido en muros, y una
+  // oleada mayoritariamente aérea lo invalidaba de golpe. Los voladores siguen
+  // siendo distintos en lo que importa: solo les alcanzan las torres antiaéreas,
+  // no pisan trampas de suelo y el barril no los toca.
+  //
+  // Único caso que va en línea recta: un terrestre ENCERRADO. La regla
+  // anti-bloqueo impide cerrar el frente, pero no impide que le construyan una
+  // bolsa alrededor a media oleada. Uno clavado para siempre sería peor que uno
+  // que atraviesa, y además atravesar es MÁS corto que rodear: encerrar a
+  // propósito sale mal, que es justo el incentivo que queremos.
   const boxedIn = !reachable(field, subOf(enemy.x), subOf(enemy.y));
-  if (def.flying || boxedIn) {
+  if (boxedIn) {
     const d = goalY - enemy.y;
     if (d <= moveLeft) {
       enemy.y = goalY;
