@@ -53,6 +53,25 @@ export class DirectoryDO {
       return new Response(JSON.stringify(out), { headers: { 'content-type': 'application/json' } });
     }
 
+    // INVENTARIO administrativo: como /list pero SIN filtrar por `listed`, es decir
+    // también las salas privadas, que existen aquí solo para recibir los anuncios y
+    // no asoman por ninguna ruta pública. Cada entrada lleva `listed` (si sale en la
+    // portada) y `seenMs` (edad de su último latido: cuanto más cerca de STALE_MS,
+    // más sospechosa de estar agonizando).
+    if (url.pathname === '/all') {
+      const now = Date.now();
+      const out: (PublicRoomInfo & { listed: boolean; seenMs: number })[] = [];
+      for (const [code, e] of this.rooms) {
+        if (now - e.seen > STALE_MS) {
+          this.rooms.delete(code);
+          continue;
+        }
+        out.push({ ...e.info, listed: e.listed, seenMs: now - e.seen });
+      }
+      out.sort((a, b) => a.code.localeCompare(b.code));
+      return new Response(JSON.stringify(out), { headers: { 'content-type': 'application/json' } });
+    }
+
     if (url.pathname === '/list') {
       const now = Date.now();
       const out: PublicRoomInfo[] = [];

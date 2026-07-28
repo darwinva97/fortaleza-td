@@ -162,6 +162,64 @@ export default {
       return json({ rooms: codes.length, delivered });
     }
 
+    // INVENTARIO de salas activas, PRIVADAS INCLUIDAS: el /api/rooms público solo
+    // enseña las que se listan en la portada, así que sin esto no había forma de
+    // saber qué salas hay vivas (el único rastro era el contador `rooms` del
+    // anuncio, que obliga a mandarle un chat a todo el mundo). Mismo candado que
+    // el resto de /api/admin/*; de solo lectura, no toca ninguna sala.
+    //   curl -H "Authorization: Bearer $ADMIN_TOKEN" \
+    //     https://fortaleza-td.bezenti.com/api/admin/rooms
+    if (url.pathname === '/api/admin/rooms' && request.method === 'GET') {
+      const token = env.ADMIN_TOKEN;
+      const auth = request.headers.get('authorization') ?? '';
+      if (!token || auth !== `Bearer ${token}`) return json({ error: 'no autorizado' }, 401);
+      const ns = env.DIRECTORY;
+      if (!ns) return json({ rooms: [] });
+      const res = await ns.get(ns.idFromName('v1')).fetch('https://do/all');
+      const rooms = (await res.json()) as unknown[];
+      return json({ total: rooms.length, rooms });
+    }
+
+    // CERRAR una sala concreta a mano (moderación: una partida que hay que cortar,
+    // una sala colgada que no se quiere esperar los 30 min del cierre por
+    // inactividad). Mismo candado que el aviso: secreto ADMIN_TOKEN; sin secreto
+    // configurado la ruta no existe. El trabajo real lo hace el DO de la sala
+    // (borra su estado persistido y corta los sockets sin reconexión); aquí se
+    // valida y además se quita del directorio, por si el DO ya no tuviera a nadie.
+    //   curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
+    //     "https://fortaleza-td.bezenti.com/api/admin/close?code=EXQS" \
+    //     -H 'content-type: application/json' -d '{"reason":"🔒 Cerramos por mantenimiento."}'
+    if (url.pathname === '/api/admin/close' && request.method === 'POST') {
+      const token = env.ADMIN_TOKEN;
+      const auth = request.headers.get('authorization') ?? '';
+      if (!token || auth !== `Bearer ${token}`) return json({ error: 'no autorizado' }, 401);
+      const code = (url.searchParams.get('code') ?? '').toUpperCase();
+      if (!/^[A-Z]{4}$/.test(code)) return json({ error: 'código de sala inválido' }, 400);
+      let reason = '';
+      try {
+        const body = (await request.json()) as { reason?: string };
+        reason = String(body.reason ?? '').slice(0, 200).trim();
+      } catch {
+        /* sin cuerpo → el DO usa su aviso por defecto */
+      }
+      const stub = env.ROOM.get(env.ROOM.idFromName(code));
+      const res = await stub.fetch(`https://do/close?code=${code}`, {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+      });
+      const out = (await res.json()) as { closed: number; inGame: boolean; wave: number };
+      // red de seguridad: el DO ya llamó a /remove, pero si estaba reciclado (sin
+      // nadie dentro) su entrada podría seguir en el directorio hasta caducar.
+      const ns = env.DIRECTORY;
+      if (ns) {
+        await ns
+          .get(ns.idFromName('v1'))
+          .fetch('https://do/remove', { method: 'POST', body: JSON.stringify({ code }) })
+          .catch(() => {});
+      }
+      return json({ ok: true, code, ...out });
+    }
+
     // F5 · lista de salas públicas (para la portada). Sin binding → lista vacía.
     if (url.pathname === '/api/rooms') {
       const ns = env.DIRECTORY;

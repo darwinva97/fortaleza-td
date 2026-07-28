@@ -40,7 +40,7 @@ export interface Env {
   ROOM: DurableObjectNamespace;
   DIRECTORY?: DurableObjectNamespace; // directorio de salas públicas (F5)
   SCORES?: KVNamespace;
-  ADMIN_TOKEN?: string; // secreto (wrangler secret) para /api/admin/announce
+  ADMIN_TOKEN?: string; // secreto (wrangler secret) para /api/admin/announce y /api/admin/close
   // Discord Activity (Embedded App): el Client ID es una var pública (wrangler.jsonc
   // vars → /api/discord/config; configurarlo NO exige recompilar el cliente); el
   // Client Secret es un secreto (wrangler secret) y JAMÁS sale al cliente. Ambos
@@ -401,16 +401,19 @@ export class RoomDO {
     this.persist(); // game ya es null/over → buildPersisted escribe base sin partida
   }
 
-  // Borra TODO el estado persistido (sala en cierre definitivo por inactividad):
-  // marca `closing` para que ningún persist tardío la resucite.
-  private clearAllPersisted(): void {
+  // Borra TODO el estado persistido (sala en cierre definitivo: inactividad o
+  // cierre administrativo): marca `closing` para que ningún persist tardío la
+  // resucite. Devuelve la promesa para que el cierre administrativo pueda esperar
+  // al borrado antes de reciclar la RAM; el cierre por inactividad la ignora.
+  private clearAllPersisted(): Promise<void> {
     this.closing = true;
-    void this.state.storage.deleteAll().catch(() => {});
+    return this.state.storage.deleteAll().catch(() => {});
   }
 
-  // SOLO PRUEBAS · deja los campos en memoria como los de una instancia RECIÉN
-  // construida, para que restore() los repueble desde storage igual que el
-  // constructor tras un reciclado. No toca `env`/`state`/`closing`.
+  // Deja los campos en memoria como los de una instancia RECIÉN construida. Lo usan
+  // el gancho de pruebas /__evict (para que restore() los repueble desde storage
+  // igual que el constructor tras un reciclado) y el cierre administrativo /close
+  // (que NO restaura después: la sala desaparece). No toca `env`/`state`/`closing`.
   private resetInMemoryState(): void {
     if (this.loop) clearInterval(this.loop);
     this.loop = null;
@@ -679,6 +682,72 @@ export class RoomDO {
       // el killfeed in-game, y este aviso debe verse también en el chat del LOBBY
       if (delivered > 0) this.broadcast({ type: 'chat', from: '📢 Aviso', color: '#ffb300', text });
       return new Response(JSON.stringify({ delivered }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+
+    // CIERRE administrativo de ESTA sala (el Worker ya validó el ADMIN_TOKEN).
+    // Parte del mismo camino que el cierre por inactividad —hasta ahora el único
+    // que cerraba una sala de verdad—: borra TODO el estado persistido (y marca
+    // `closing`, para que ni un DO reciclado ni un persist tardío la resuciten),
+    // la saca del directorio y corta los sockets con IDLE_CLOSE_CODE; y va un paso
+    // más allá reciclando también la RAM (ver el comentario de abajo).
+    //
+    // Se reutiliza el 4001 a propósito, en vez de estrenar un código: es —con el
+    // 4002 del kick— el único cierre que el cliente YA DESPLEGADO respeta sin
+    // reconectar (net.ts). Un código nuevo obligaría a que la pestaña de la víctima
+    // tuviera el bundle nuevo, y las que están jugando ahora mismo tienen el viejo
+    // en memoria: se reconectarían y el cierre no serviría de nada. Como el texto
+    // que pinta el cliente para el 4001 habla de inactividad, el motivo real va
+    // ANTES por chat, con el mismo formato que los avisos de despliegue.
+    if (url.pathname === '/close' && request.method === 'POST') {
+      let reason = '';
+      try {
+        const body = (await request.json()) as { reason?: string };
+        reason = String(body.reason ?? '').slice(0, 200).trim();
+      } catch {
+        /* sin cuerpo válido → aviso por defecto */
+      }
+      const closed = this.connectedCount();
+      const inGame = this.game !== null && !this.game.over;
+      const wave = inGame ? this.game!.wave : 0;
+      if (closed > 0) {
+        this.broadcast({
+          type: 'chat',
+          from: '📢 Aviso',
+          color: '#ffb300',
+          text: reason || '🔒 Un administrador cerró esta sala.',
+        });
+      }
+      const code = this.code;
+      this.unlistPublic();
+      for (const p of this.players) {
+        try {
+          p.ws?.close(IDLE_CLOSE_CODE, 'admin');
+        } catch {
+          /* nada */
+        }
+      }
+      for (const s of this.spectators) {
+        try {
+          s.ws.close(IDLE_CLOSE_CODE, 'admin');
+        } catch {
+          /* nada */
+        }
+      }
+      // A DIFERENCIA del cierre por inactividad, aquí NO basta con borrar el storage
+      // y cortar los sockets: el cierre es contra la voluntad de quien está dentro, y
+      // la sala seguiría VIVA EN LA RAM del DO — bastaría con teclear el código otra
+      // vez para volver a la misma partida hasta que Cloudflare reciclara el DO. Así
+      // que se espera al borrado y se recicla también la memoria: la sala queda como
+      // una instancia recién construida y ese código responde «No existe la sala».
+      await this.clearAllPersisted();
+      this.resetInMemoryState();
+      // storage vacío y RAM en blanco: ya no hay nada que resucitar, así que se
+      // levanta `closing` para que el código pueda reutilizarse como sala NUEVA
+      // (con su durabilidad intacta) si /reserve vuelve a caer en este DO.
+      this.closing = false;
+      return new Response(JSON.stringify({ ok: true, code, closed, inGame, wave }), {
         headers: { 'content-type': 'application/json' },
       });
     }
@@ -1072,6 +1141,9 @@ export class RoomDO {
   // Solo las públicas con jugadores llevan `listed` y salen en /list.
   private reportPublic(force = false): void {
     if (!this.initialized) return;
+    // sala en cierre definitivo: ni un latido tardío puede devolverla a la lista
+    // después del /remove (si no, reaparecería en la portada hasta caducar).
+    if (this.closing) return;
     if (!force && Date.now() - this.lastDirReport < 10_000) return;
     const stub = this.directoryStub();
     if (!stub) return;
@@ -1715,7 +1787,7 @@ export class RoomDO {
       // y marcar `closing`, para que un DO reciclado NO la resucite (ni la partida ni
       // el lobby). `closing` frena cualquier persist tardío del dropSocket que dispare
       // el cierre de estos sockets.
-      this.clearAllPersisted();
+      void this.clearAllPersisted();
       for (const p of this.players) {
         try {
           p.ws?.close(IDLE_CLOSE_CODE, 'idle');
