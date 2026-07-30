@@ -113,7 +113,15 @@ interface RngState {
 }
 
 // Tipos disponibles según la oleada (sin jefes ni spawns derivados).
-function pool(wave: number): EnemyTypeId[] {
+//
+// ARENA · sin ZAPADORES. El zapador se sube a una torre y la deja apagada mientras
+// siga vivo, y su contrajuego es de EQUIPO: alguien construye al lado, le tira un
+// barril, o vende y replanta mientras el resto aguanta. En arena cada uno defiende
+// SOLO su carril, así que a quien le toca se le apaga la defensa sin que nadie
+// pueda cubrirle — y como el modo clasifica comparando carriles, quién se lleva el
+// zapador (y cuántos) lo decide el reparto del RNG, no construir mejor. Misma
+// familia de exención que las oleadas invisibles (ver isInvisibleWave).
+function pool(wave: number, mode: GameMode = 'endless'): EnemyTypeId[] {
   const all: EnemyTypeId[] = [
     'goblin',
     'runner',
@@ -140,7 +148,10 @@ function pool(wave: number): EnemyTypeId[] {
     'knight',
     'mammoth',
   ];
-  return all.filter((t) => ENEMIES[t].minWave <= wave);
+  // por el FLAG, no por el id: si algún día entra otro zapador al bestiario, queda
+  // fuera de arena solo con declararlo.
+  const usable = mode === 'arena' ? all.filter((t) => !ENEMIES[t].sapper) : all;
+  return usable.filter((t) => ENEMIES[t].minWave <= wave);
 }
 
 // F9a (v19) · especies elegibles como CAMPEÓN en infinito/horda: terrestres, sin
@@ -535,7 +546,7 @@ export function generateWave(
     budget = Math.round(budget * 0.45);
   }
 
-  let candidates = pool(wave);
+  let candidates = pool(wave, mode);
   let flavor = false; // oleada de sabor (aérea/enjambre): sin sesgo hacia lo caro
 
   // En una oleada de jefe VOLADOR (Quimera) la escolta NO lleva Colosos Alados:

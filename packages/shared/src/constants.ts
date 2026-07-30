@@ -438,6 +438,11 @@ export const PLAYER_COLORS = [
 // el control del abuso queda SOLO en el precio ×1.3 de equipo. Campeones 👑 al
 // mordisco con tope y jefes con su asedio clásico — decisión del usuario tras
 // probar el nerf v19 en producción.
+// 21 (Arena): el ZAPADOR queda fuera del generador de oleadas en modo arena — su
+// contrajuego (construir al lado, barril, vender y replantar) es de equipo, y en
+// arena cada uno defiende su carril solo, así que a quien le tocaba se le apagaba
+// la defensa sin remedio y el ranking lo decidía el reparto del RNG. Solo cambia
+// arena; el resto de modos genera EXACTAMENTE lo mismo que en v20.
 // LABERINTO · cada cuántas celdas recorridas el Behemot aturde las torres de su
 // radio. En los mapas de recorrido fijo el disparador es «cruzar una esquina»,
 // pero un laberinto tiene decenas de giros y eso lo volvería devastador sin que
@@ -445,5 +450,5 @@ export const PLAYER_COLORS = [
 // clásico. Solo aplica a mapas maze: los de siempre siguen con sus esquinas.
 export const MAZE_STUN_EVERY_CELLS = 8;
 
-export const BALANCE_VERSION = 20;
+export const BALANCE_VERSION = 21;
 export const PROTOCOL_VERSION = 1;

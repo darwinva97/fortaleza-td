@@ -4364,6 +4364,38 @@ console.log('— ARENA · parcelas, oleada espejo, aislamiento y eliminación �
     assert(st.towers.length === 0, 'y no queda ninguna torre puesta');
   }
 
+  // 5c-bis. SIN ZAPADORES en arena (v21). El Zapador se sube a una torre que dispare
+  //     y la deja APAGADA mientras siga vivo; el contrajuego es de EQUIPO (construir
+  //     a su lado, tirarle un barril, vender y replantar mientras el resto aguanta).
+  //     En arena cada uno defiende SOLO su carril: a quien le cae se le apaga la
+  //     defensa sin que nadie pueda cubrirle, y como el modo clasifica comparando
+  //     carriles, cuántos zapadores te tocan a ti decidiría el ranking por sorteo.
+  //     Se comprueba en el generador (barrido de semillas × oleadas) y en partida.
+  {
+    let zapArena = 0;
+    let zapEndless = 0;
+    for (let seed = 1; seed <= 40; seed++) {
+      for (let w = 1; w <= 40; w++) {
+        const rng = seed * 7919 + w;
+        zapArena += generateWave({ rng }, w, 2, 1, 'arena', [0]).entries.filter((e) => ENEMIES[e.type].sapper).length;
+        zapEndless += generateWave({ rng }, w, 2, 1, 'endless', [0]).entries.filter((e) => ENEMIES[e.type].sapper).length;
+      }
+    }
+    assert(zapArena === 0, `en arena el generador no saca ni un zapador (1600 oleadas, ${zapArena})`);
+    assert(zapEndless > 0, `en infinito el zapador sigue saliendo (${zapEndless} en las mismas 1600)`);
+
+    // y en una partida de verdad: se acumulan TODAS las especies que llegan a nacer
+    const vistos = new Set<string>();
+    const stZ = createGame('arena', 'arena', 'normal', 8181, roster);
+    const scZ = makeSimContext(am, makePlacementContext(am));
+    for (let i = 0; i < TICK_RATE * 60 * 12 && stZ.over === null; i++) {
+      stepGame(stZ, scZ, []);
+      for (const e of stZ.enemies) vistos.add(e.type);
+    }
+    assert(vistos.size > 3, `la partida de control saca variedad de bichos (${vistos.size} especies)`);
+    assert(!vistos.has('sapper'), 'en una partida de arena no nace ni un zapador');
+  }
+
   // 5d. RITMO de las primeras oleadas. Con la oleada estándar llegaban 7 cuerpos
   //     de 32 de vida: el francotirador los borraba de un disparo y había que
   //     acelerar el juego para no aburrirse. Un carril de laberinto da mucho más
