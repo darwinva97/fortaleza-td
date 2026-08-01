@@ -39,6 +39,9 @@ export interface Env {
   ASSETS: Fetcher;
   ROOM: DurableObjectNamespace;
   DIRECTORY?: DurableObjectNamespace; // directorio de salas públicas (F5)
+  // Ladder de arena: identidades, ratings e historial (un único DO con SQLite).
+  // Opcional: sin binding, la arena se juega igual pero no puntúa.
+  LADDER?: DurableObjectNamespace;
   SCORES?: KVNamespace;
   ADMIN_TOKEN?: string; // secreto (wrangler secret) para /api/admin/announce y /api/admin/close
   // Discord Activity (Embedded App): el Client ID es una var pública (wrangler.jsonc
@@ -81,6 +84,12 @@ interface RoomPlayer {
   // GameInit para pintar el estandarte del color del jugador en su spawn. Se
   // libera sola al salir (el RoomPlayer se elimina del lobby) o al cambiar de mapa.
   door?: number;
+  // LADDER · identidad PERSISTENTE del jugador (la del rango), distinta del
+  // `token` de esta sesión. La sala no la valida ni la usa para nada: solo la
+  // transporta hasta el final de la partida, que es cuando el LadderDO comprueba
+  // el ticket y decide si puntúa. Ausentes = juega sin rango.
+  pid?: string;
+  ticket?: string;
 }
 
 // Espectador: entra con la partida en curso. Ve la partida y puede guiar (chat
@@ -804,6 +813,79 @@ export class RoomDO {
     }
     for (const s of this.spectators) {
       if (s.ws.readyState === WebSocket.OPEN) s.ws.send(data);
+    }
+  }
+
+  // LADDER · engancha la identidad persistente al jugador que acaba de entrar. Se
+  // guarda tal cual, SIN validar: quien decide si vale es el LadderDO al terminar
+  // la partida, que es el único que tiene la clave. Un ticket falso aquí no
+  // consigue nada — solo que esa persona no puntúe.
+  private attachLadderId(res: JoinResult, pid?: string, ticket?: string): void {
+    if (res.kind !== 'player' || !pid || !ticket) return;
+    res.player.pid = pid;
+    res.player.ticket = ticket;
+  }
+
+  // LADDER · manda el resultado de una ARENA al ladder y difunde a la sala lo que
+  // le pasó a cada uno. Va aparte del game_over a propósito: puntuar exige ida y
+  // vuelta a otro Durable Object y la pantalla de fin no debe esperar a nadie.
+  // Cualquier fallo aquí es silencioso — que el ladder esté caído no puede
+  // estropear el final de una partida.
+  private async reportLadder(g: GameState, players: RoomPlayer[]): Promise<void> {
+    const ns = this.env.LADDER;
+    if (!ns || g.mode !== 'arena') return;
+    // el id de la partida hace de llave anti-duplicado en el ladder: misma sala +
+    // mismo tick final = el mismo resultado, aunque se reenvíe.
+    const matchId = `${this.code}-${this.replaySeed}-${g.tick}`;
+    const conIdentidad = players.filter((p) => p.pid && p.ticket);
+    if (conIdentidad.length === 0) return;
+    const cuerpo = {
+      matchId,
+      mode: g.mode,
+      mapId: g.mapId,
+      difficulty: g.difficulty,
+      turbo: g.turbo === true,
+      publicRoom: this.settings.public === true,
+      players: conIdentidad.map((p) => {
+        const sim = g.players.find((sp) => sp.id === p.id);
+        return {
+          pid: p.pid!,
+          ticket: p.ticket!,
+          name: p.name,
+          waveReached: sim?.waveReached ?? 0,
+          eliminatedTick: sim?.eliminatedTick ?? 0,
+          eliminated: sim?.eliminated === true,
+        };
+      }),
+    };
+    try {
+      const stub = ns.get(ns.idFromName('v1'));
+      const res = await stub.fetch('https://do/result', { method: 'POST', body: JSON.stringify(cuerpo) });
+      if (!res.ok) return;
+      const out = (await res.json()) as {
+        ranked: boolean;
+        results: { pid: string; delta: number; before: number; after: number; badge: { label: string; tier: number; stars: number; provisional: boolean } }[];
+      };
+      if (!out.ranked) return;
+      // se traduce de pid (identidad global) a playerId (el de ESTA partida): el
+      // cliente solo conoce el suyo, y el pid de los demás no es asunto suyo.
+      const results = out.results.flatMap((r) => {
+        const p = conIdentidad.find((c) => c.pid === r.pid);
+        if (!p) return [];
+        return [{
+          playerId: p.id,
+          delta: r.delta,
+          before: r.before,
+          after: r.after,
+          label: r.badge.label,
+          tier: r.badge.tier,
+          stars: r.badge.stars,
+          provisional: r.badge.provisional,
+        }];
+      });
+      if (results.length > 0) this.broadcast({ type: 'ladder', results });
+    } catch (err) {
+      console.error('[ladder] no se pudo puntuar la partida', err);
     }
   }
 
@@ -1626,6 +1708,9 @@ export class RoomDO {
     // MODO TURBO ⚡: las partidas turbo NO puntúan — su economía comprimida da más
     // oro con el mismo reto, así que compararlas con las normales sería injusto
     // (irían a una tabla aparte; en v1, sencillamente no envían récord).
+    // LADDER de ARENA · en paralelo al game_over (no lo bloquea). El LadderDO
+    // comprueba tickets y condiciones; si algo no cuadra, no puntúa y ya está.
+    if (g.mode === 'arena') void this.reportLadder(g, [...this.players]);
     if (!g.turbo && (g.mode === 'endless' || g.mode === 'horde')) {
       void saveScore(this.env, {
         names: g.players.map((p) => p.name),
@@ -1820,6 +1905,7 @@ export class RoomDO {
       this.initialized = true;
       this.settings = sanitizeSettings(msg.settings);
       const res = this.addPlayer(msg.name, msg.token, ws);
+      this.attachLadderId(res, msg.pid, msg.ticket);
       if (res.kind === 'error') {
         this.sendTo(ws, { type: 'error', msg: res.msg });
         return;
@@ -1845,6 +1931,7 @@ export class RoomDO {
         return;
       }
       const res = this.addPlayer(msg.name, msg.token, ws, msg.prevToken);
+      this.attachLadderId(res, msg.pid, msg.ticket);
       if (res.kind === 'error') {
         this.sendTo(ws, { type: 'error', msg: res.msg });
         return;

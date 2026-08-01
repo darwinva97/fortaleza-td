@@ -9,6 +9,7 @@
     "check": "tsc -b packages/shared apps/client apps/worker",
     "simtest": "tsx tools/simtest.ts",
     "wstest": "tsx tools/wstest.ts",
+    "medals": "tsx tools/medals-preview.ts",
     "cf:dev": "pnpm --filter @td/client build && pnpm --filter @td/worker dev",
     "cf:deploy": "pnpm --filter @td/client build && pnpm --filter @td/worker run deploy"
   },

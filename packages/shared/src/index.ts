@@ -2,6 +2,7 @@ export * from './types.js';
 export * from './constants.js';
 export * from './rng.js';
 export * from './protocol.js';
+export * from './rating.js';
 export * from './balance/towers.js';
 export * from './balance/fusions.js';
 export * from './balance/enemies.js';

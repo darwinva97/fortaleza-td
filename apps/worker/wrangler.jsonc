@@ -22,12 +22,17 @@
   "durable_objects": {
     "bindings": [
       { "name": "ROOM", "class_name": "RoomDO" },
-      { "name": "DIRECTORY", "class_name": "DirectoryDO" }
+      { "name": "DIRECTORY", "class_name": "DirectoryDO" },
+      { "name": "LADDER", "class_name": "LadderDO" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["RoomDO"] },
-    { "tag": "v2", "new_sqlite_classes": ["DirectoryDO"] }
+    { "tag": "v2", "new_sqlite_classes": ["DirectoryDO"] },
+    // El ladder de arena (identidades + ratings + historial) va en UN solo DO con
+    // SQLite: sirve SQL igual que D1 y, al serializar los requests, dos partidas
+    // que acaban a la vez no pueden pisarse el rating del mismo jugador.
+    { "tag": "v3", "new_sqlite_classes": ["LadderDO"] }
   ],
 
   "observability": { "enabled": true },

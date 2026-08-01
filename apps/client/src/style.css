@@ -647,6 +647,35 @@ html, body {
 .scores b { color: var(--h-accent); font-family: var(--h-mono); font-weight: 600; }
 .scores .hint { color: var(--h-muted-2); font-size: 0.76rem; }
 
+/* LADDER de arena · clasificación por rango. Cada fila es puesto · nombre ·
+   medalla · partidas; el puesto va en mono y tabular para que los números no
+   bailen al cambiar de ancho, igual que los récords de arriba. */
+.ladder-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 6px; max-height: min(44vh, 400px); overflow-y: auto; scrollbar-width: thin; }
+.ladder-row { display: grid; grid-template-columns: 1.6rem 1fr auto auto; align-items: center; gap: 8px; font-size: 0.82rem; color: var(--h-muted); }
+.ladder-pos { font-family: var(--h-mono); font-variant-numeric: tabular-nums; color: var(--h-muted-2); text-align: right; }
+.ladder-name { color: var(--h-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ladder-badge { font-size: 0.76rem; font-weight: 600; letter-spacing: 0.01em; white-space: nowrap; }
+/* el color de la medalla sigue al metal del rango (ver medals.ts): el mismo
+   salto de madera a oro que se ve en el escudo, para que tabla e insignia se
+   lean como una sola cosa */
+.ladder-badge.tier-0 { color: #a1887f; }
+.ladder-badge.tier-1 { color: #cd7f32; }
+.ladder-badge.tier-2 { color: #90a4ae; }
+.ladder-badge.tier-3 { color: #e3eaf0; }
+.ladder-badge.tier-4 { color: #4db6ac; }
+.ladder-badge.tier-5 { color: #9575cd; }
+.ladder-badge.tier-6 { color: var(--h-accent); text-shadow: 0 0 12px rgba(255, 179, 0, 0.35); }
+.ladder-row.sb-me .ladder-name { color: var(--h-accent); font-weight: 600; }
+
+/* columna «Rango» del podio de arena: llega DESPUÉS del resto de la tabla (el
+   ladder responde tras el game_over), así que hasta entonces se ve un guion */
+.ladder-result { white-space: nowrap; }
+.ladder-rank { font-weight: 600; }
+.ladder-delta { font-family: var(--h-mono); font-variant-numeric: tabular-nums; font-size: 0.8rem; }
+.ladder-delta.up { color: #66bb6a; }
+.ladder-delta.down { color: #ef5350; }
+.ladder-calib { color: var(--h-muted-2); font-size: 0.8rem; }
+
 /* ---------- lobby ---------- */
 
 /* El lobby debe caber SIN scroll a 1366×768: tarjeta ancha (aprovecha el

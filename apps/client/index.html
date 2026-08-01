@@ -92,6 +92,7 @@
           <button id="side-tab-rooms" class="tab active" type="button" role="tab" aria-selected="true" aria-controls="home-rooms"><span class="live-dot" aria-hidden="true"></span>Salas<span id="side-tab-rooms-count" class="tab-count" hidden>0</span></button>
           <button id="side-tab-scores" class="tab" type="button" role="tab" aria-selected="false" aria-controls="home-scores" tabindex="-1">Récords<span id="side-tab-scores-count" class="tab-count" hidden>0</span></button>
           <button id="side-tab-replays" class="tab" type="button" role="tab" aria-selected="false" aria-controls="home-replays" tabindex="-1">Repeticiones<span id="side-tab-replays-count" class="tab-count" hidden>0</span></button>
+          <button id="side-tab-ladder" class="tab" type="button" role="tab" aria-selected="false" aria-controls="home-ladder" tabindex="-1">Ranking<span id="side-tab-ladder-count" class="tab-count" hidden>0</span></button>
         </div>
 
         <div id="home-rooms" class="rooms home-tabpanel" role="tabpanel" aria-labelledby="side-tab-rooms">
@@ -108,6 +109,14 @@
         <div id="home-replays" class="replays home-tabpanel" role="tabpanel" aria-labelledby="side-tab-replays" hidden>
           <ul id="home-replays-list" class="replay-list"></ul>
           <p id="home-replays-empty" class="hint side-empty">No hay repeticiones guardadas en este dispositivo.</p>
+        </div>
+
+        <!-- LADDER de arena: la clasificación por rango. Solo salen los que ya
+             calibraron (10 partidas); antes de eso el número no significa nada. -->
+        <div id="home-ladder" class="ladder home-tabpanel" role="tabpanel" aria-labelledby="side-tab-ladder" hidden>
+          <p class="side-panel-meta">Arena ⚔️ · por rango</p>
+          <ol id="home-ladder-list" class="ladder-list"></ol>
+          <p id="home-ladder-empty" class="hint side-empty">Todavía no hay nadie clasificado. Se entra tras 10 arenas públicas con al menos tres jugadores.</p>
         </div>
         <!-- acciones secundarias: lado a lado y ancladas abajo para que la
              columna derecha no quede con aire muerto bajo el panel activo -->

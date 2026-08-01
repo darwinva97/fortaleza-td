@@ -1,4 +1,5 @@
 import {
+  arenaPlaces,
   MAPS,
   MULTI_DOOR_MIN,
   type EndStats,
@@ -12,6 +13,7 @@ import {
 import { net, wsPathCreate, wsPathJoin } from './net.js';
 import { roomPrevToken, saveName, store } from './store.js';
 import { ask } from './dialog.js';
+import { ladderBadge, ladderFields } from './identity.js';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -470,13 +472,18 @@ let homeVisibility: 'private' | 'public' | null = null;
 // "hay datos o no" pasa a ser el estado VACÍO propio de cada panel, ya no
 // controla si la sección se ve. Se recuerda la última pestaña elegida.
 
-type SideTab = 'rooms' | 'scores' | 'replays';
-const SIDE_TABS: SideTab[] = ['rooms', 'scores', 'replays'];
-const SIDE_PANEL_ID: Record<SideTab, string> = { rooms: 'home-rooms', scores: 'home-scores', replays: 'home-replays' };
+type SideTab = 'rooms' | 'scores' | 'replays' | 'ladder';
+const SIDE_TABS: SideTab[] = ['rooms', 'scores', 'replays', 'ladder'];
+const SIDE_PANEL_ID: Record<SideTab, string> = {
+  rooms: 'home-rooms',
+  scores: 'home-scores',
+  replays: 'home-replays',
+  ladder: 'home-ladder',
+};
 const SIDE_TAB_STORAGE_KEY = 'td_home_tab';
 
 function isSideTab(v: string | null): v is SideTab {
-  return v === 'rooms' || v === 'scores' || v === 'replays';
+  return v === 'rooms' || v === 'scores' || v === 'replays' || v === 'ladder';
 }
 
 function setSideTab(tab: SideTab): void {
@@ -584,6 +591,7 @@ export function initHome(): void {
       type: 'create_room',
       name,
       token: store.token,
+      ...ladderFields(),
       settings: { ...homeSel, public: homeVisibility === 'public' },
     });
   });
@@ -610,6 +618,7 @@ export function initHome(): void {
   setInterval(() => void loadRooms(), 4000);
 
   void loadHighscores();
+  void loadLadder();
 }
 
 // Une a una sala por código (desde el input o desde la lista de salas públicas).
@@ -624,7 +633,7 @@ function joinByCode(code: string): void {
   }
   saveName(name);
   homeError('');
-  net.connect(wsPathJoin(code), { type: 'join_room', name, token: store.token, code, prevToken: roomPrevToken(code) });
+  net.connect(wsPathJoin(code), { type: 'join_room', name, token: store.token, code, prevToken: roomPrevToken(code), ...ladderFields() });
 }
 
 function joinFromInput(): void {
@@ -716,6 +725,37 @@ function renderHighscores(scores: HighscoreEntry[]): void {
         } · ${MAPS.find((m) => m.id === s.mapId)?.name ?? s.mapId}, ${
           DIFF_LABELS[s.difficulty] ?? s.difficulty
         })</span></li>`,
+    )
+    .join('');
+}
+
+// LADDER · clasificación de arena para la portada. Solo salen los que ya
+// calibraron: el servidor los filtra, aquí solo se pinta. Sin ladder desplegado
+// (503) se deja el estado vacío, que ya explica cómo se entra.
+async function loadLadder(): Promise<void> {
+  try {
+    const res = await fetch('/api/ladder/top?limit=20');
+    if (!res.ok) return;
+    const tabla = (await res.json()) as { rank: number; name: string; games: number; badge: { label: string; tier: number } }[];
+    renderLadder(Array.isArray(tabla) ? tabla : []);
+  } catch {
+    /* transitorio: se conserva lo que hubiera */
+  }
+}
+
+function renderLadder(tabla: { rank: number; name: string; games: number; badge: { label: string; tier: number } }[]): void {
+  $('home-ladder-empty').hidden = tabla.length > 0;
+  setSideTabCount('ladder', tabla.length);
+  const mia = ladderBadge();
+  $('home-ladder-list').innerHTML = tabla
+    .map(
+      (e) =>
+        `<li class="ladder-row${mia && e.name === store.name ? ' sb-me' : ''}">
+          <span class="ladder-pos">${e.rank}</span>
+          <span class="ladder-name">${escapeHtml(e.name || 'Jugador')}</span>
+          <span class="ladder-badge tier-${e.badge.tier}">${escapeHtml(e.badge.label)}</span>
+          <span class="hint">${e.games}</span>
+        </li>`,
     )
     .join('');
 }
@@ -1080,18 +1120,19 @@ export function showEnd(stats: EndStats): void {
     $('end-podium').innerHTML = '';
     $('end-stats').innerHTML = `
     <table>
-      <thead><tr><th>#</th><th>Jugador</th><th>Oleada</th><th>Bajas</th><th>Daño</th><th>Torres</th></tr></thead>
+      <thead><tr><th>#</th><th>Jugador</th><th>Oleada</th><th>Bajas</th><th>Daño</th><th>Torres</th><th>Rango</th></tr></thead>
       <tbody>
         ${ranking
           .map(
             (p, i) => `
-          <tr class="${i === 0 ? 'mvp' : ''}${p.id === store.playerId ? ' sb-me' : ''}">
+          <tr class="${i === 0 ? 'mvp' : ''}${p.id === store.playerId ? ' sb-me' : ''}" data-player="${escapeHtml(p.id)}">
             <td>${i === 0 ? '🏆' : `${i + 1}º`}</td>
             <td><span class="player-dot" style="background:${p.color};color:${p.color};display:inline-block;margin-right:6px"></span>${escapeHtml(p.name)}${p.id === store.playerId ? ' (tú)' : ''}</td>
             <td>${p.eliminated ? `☠ ${p.waveReached ?? 0}` : `❤️ ${p.waveReached ?? stats.wave}`}</td>
             <td>${p.kills}</td>
             <td>${p.damage.toLocaleString()}</td>
             <td>${p.towersBuilt}</td>
+            <td class="ladder-cell hint">—</td>
           </tr>`,
           )
           .join('')}
@@ -1180,14 +1221,39 @@ function dropConfetti(overlay: HTMLElement): void {
 // ARENA · orden final: primero quien llegó más lejos; a igualdad de oleada, quien
 // aguantó más tiempo dentro de ella. El superviviente va siempre el primero — no
 // tiene tick de caída porque no cayó.
+// El orden del podio lo decide arenaPlaces (@td/shared): el MISMO criterio que
+// puntúa en el ladder, para que lo que se pinta aquí y lo que mueve el rating no
+// puedan divergir. Aquí solo se traduce el puesto a una lista ordenada.
 function arenaRanking(stats: EndStats): EndStatsPlayer[] {
-  return [...stats.players].sort((a, b) => {
-    if (!a.eliminated !== !b.eliminated) return a.eliminated ? 1 : -1;
-    const wa = a.waveReached ?? 0;
-    const wb = b.waveReached ?? 0;
-    if (wa !== wb) return wb - wa;
-    return (b.eliminatedTick ?? 0) - (a.eliminatedTick ?? 0);
-  });
+  const places = arenaPlaces(
+    stats.players.map((p) => ({
+      pid: p.id,
+      eliminated: p.eliminated === true,
+      waveReached: p.waveReached ?? 0,
+      eliminatedTick: p.eliminatedTick ?? 0,
+    })),
+  );
+  return [...stats.players].sort((a, b) => (places.get(a.id) ?? 0) - (places.get(b.id) ?? 0));
+}
+
+// LADDER · rellena la columna «Rango» del podio cuando llega la puntuación, que
+// va SIEMPRE después del game_over. Si la partida no puntuó, este mensaje no
+// llega y las celdas se quedan en «—», que es exactamente lo que pasó.
+export function showLadderResults(
+  results: { playerId: string; delta: number; label: string; provisional: boolean }[],
+): void {
+  for (const r of results) {
+    const fila = document.querySelector<HTMLElement>(`#end-stats tr[data-player="${CSS.escape(r.playerId)}"]`);
+    const celda = fila?.querySelector<HTMLElement>('.ladder-cell');
+    if (!celda) continue;
+    const signo = r.delta > 0 ? `+${r.delta}` : `${r.delta}`;
+    celda.classList.remove('hint');
+    celda.classList.add('ladder-result');
+    // durante la calibración no hay medalla que enseñar, solo cuánto falta
+    celda.innerHTML = r.provisional
+      ? `<span class="ladder-calib">${escapeHtml(r.label)}</span>`
+      : `<span class="ladder-rank">${escapeHtml(r.label)}</span> <span class="ladder-delta ${r.delta >= 0 ? 'up' : 'down'}">${signo}</span>`;
+  }
 }
 
 export function hideEnd(): void {

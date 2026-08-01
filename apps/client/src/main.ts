@@ -6,7 +6,7 @@ import { activeTier, addPing, addShake, flashDanger, getQualityMode, initRendere
 import { initInput } from './input.js';
 import { initBestiary } from './bestiary.js';
 import { applySpectatorUI, buildTowerBar, hidePanel, initMarket, initScoreboard, initShop, onTick, toast, addChat, refreshPanel, syncSpeedButton, syncTowerBar, toggleSpectatorTowers } from './hud.js';
-import { hideEnd, homeError, initHome, initLobby, renderLobby, showEnd, switchScreen } from './screens.js';
+import { hideEnd, homeError, initHome, initLobby, renderLobby, showEnd, showLadderResults, switchScreen } from './screens.js';
 import { beam, bulletTrail, burst, clearParticles, floatText, fx, line, ring } from './particles.js';
 import { sfx, setMuted, setSfxVolume, setMusicVolume, unlockAudio } from './audio.js';
 import { startMusic, setMusicState, pauseMusic, resumeMusic, stopMusic, type MusicState } from './music.js';
@@ -14,6 +14,7 @@ import { initReplayHome, saveReplay, setReplayEventSink, startReplay } from './r
 import { downloadSave, initLoadSaveHome, requestSaveGame } from './savegame.js';
 import { ask, showLink } from './dialog.js';
 import type { ReplayData } from '@td/shared';
+import { initIdentity, ladderFields, refreshBadge } from './identity.js';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -419,6 +420,7 @@ function wireNet(): void {
       token: store.token,
       code: msg.code,
       prevToken: roomPrevToken(msg.code),
+      ...ladderFields(),
     });
     if (store.screen === 'home') switchScreen('lobby');
   });
@@ -541,6 +543,15 @@ function wireNet(): void {
     btn.hidden = !replay;
     // 💾 Guardar partida en la pantalla de fin (solo jugadores, no espectadores)
     $('btn-save-end').hidden = store.spectator;
+  });
+
+  // LADDER · llega DESPUÉS del game_over (puntuar exige ida y vuelta a otro
+  // Durable Object). La pantalla de fin ya está pintada: aquí solo se le añade a
+  // cada fila lo que ganó o perdió, y se refresca la medalla propia para que la
+  // portada y el lobby enseñen el rango nuevo sin recargar.
+  net.on('ladder', (msg) => {
+    showLadderResults(msg.results);
+    void refreshBadge();
   });
 
   // 💾 el servidor construyó el guardado: descargarlo como .json
@@ -1028,6 +1039,10 @@ initRenderer(canvas);
 initInput(canvas);
 initHome();
 initLobby();
+// LADDER · identidad de este dispositivo (par de claves en IndexedDB) y ticket.
+// SIN await: nadie espera a esto para jugar. Si falla —navegador viejo, ladder
+// caído, modo privado sin IndexedDB— simplemente se juega sin rango.
+void initIdentity(store.name);
 initBestiary();
 initMarket();
 initScoreboard();
@@ -1061,6 +1076,7 @@ if (new URLSearchParams(location.search).has('frame_id')) {
       token: store.token,
       code: hashCode,
       prevToken: roomPrevToken(hashCode),
+      ...ladderFields(),
     });
   }
 }

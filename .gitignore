@@ -19,3 +19,6 @@ apps/client/assets/sprites/
 
 # worktrees temporales de agentes
 .claude/worktrees/
+
+# hoja de contacto de las medallas: se regenera con `pnpm medals`
+tools/out/

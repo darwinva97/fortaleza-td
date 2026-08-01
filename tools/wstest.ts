@@ -337,7 +337,12 @@ async function main(): Promise<void> {
   //     partida CONTINÚA desde donde estaba, sin enterarse.
   await durabilityScenario();
 
-  // 15. INVENTARIO ADMINISTRATIVO (/api/admin/rooms): ver TODAS las salas vivas,
+  // 15. LADDER de ARENA: identidad de dispositivo (par de claves + reto firmado),
+  //     puntuación de una partida y medallas. Cubre el camino completo salvo jugar
+  //     la arena entera, que son 20 minutos de reloj.
+  await ladderScenario();
+
+  // 16. INVENTARIO ADMINISTRATIVO (/api/admin/rooms): ver TODAS las salas vivas,
   //     también las privadas, que no asoman por el /api/rooms de la portada.
   await adminRoomsScenario();
 
@@ -1237,6 +1242,217 @@ function adminTokenForTests(): string {
     /* sin .dev.vars en esta máquina */
   }
   return '';
+}
+
+// LADDER de ARENA · identidad de dispositivo y puntuación.
+//
+// Emula lo que hará el navegador: genera un par de claves ECDSA P-256, registra la
+// PÚBLICA, firma un reto con la privada y recibe un ticket. Es el mismo WebCrypto
+// que corre en el cliente, así que si esto pasa, el flujo del navegador también.
+//
+// La partida NO se juega: una arena de verdad son ~20 minutos de reloj. El
+// resultado se manda por el gancho de pruebas (/api/ladder/result, gated por
+// TD_TEST_HOOKS), que es exactamente lo que el RoomDO envía al terminar.
+interface Identidad {
+  pid: string;
+  ticket: string;
+  priv: CryptoKey;
+}
+
+const b64u = (b: ArrayBuffer): string =>
+  Buffer.from(b).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+async function nuevaIdentidad(nombre: string): Promise<Identidad | null> {
+  const par = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
+  const jwk = await crypto.subtle.exportKey('jwk', par.publicKey);
+  const reg = await fetch(`${HTTP_BASE}/api/ladder/register`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ publicKey: jwk }),
+  });
+  if (!reg.ok) return null;
+  const { pid } = (await reg.json()) as { pid: string };
+
+  const ch = await fetch(`${HTTP_BASE}/api/ladder/challenge?pid=${pid}`);
+  const { nonce } = (await ch.json()) as { nonce: string };
+  const firma = await crypto.subtle.sign(
+    { name: 'ECDSA', hash: 'SHA-256' },
+    par.privateKey,
+    new TextEncoder().encode(nonce),
+  );
+  const ver = await fetch(`${HTTP_BASE}/api/ladder/verify`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ pid, nonce, signature: b64u(firma), name: nombre }),
+  });
+  if (!ver.ok) return null;
+  const { ticket } = (await ver.json()) as { ticket: string };
+  return { pid, ticket, priv: par.privateKey };
+}
+
+async function mandarResultado(
+  matchId: string,
+  jugadores: { id: Identidad; name: string; wave: number; tick: number; out: boolean }[],
+  extra: { publicRoom?: boolean; turbo?: boolean; mode?: string } = {},
+): Promise<{ ranked: boolean; reason?: string; results: { pid: string; delta: number; after: number; place: number; badge: { label: string; provisional: boolean } }[] }> {
+  const res = await fetch(`${HTTP_BASE}/api/ladder/result`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      matchId,
+      mode: extra.mode ?? 'arena',
+      mapId: 'arena',
+      difficulty: 'normal',
+      turbo: extra.turbo ?? false,
+      publicRoom: extra.publicRoom ?? true,
+      players: jugadores.map((j) => ({
+        pid: j.id.pid,
+        ticket: j.id.ticket,
+        name: j.name,
+        waveReached: j.wave,
+        eliminatedTick: j.tick,
+        eliminated: j.out,
+      })),
+    }),
+  });
+  return (await res.json()) as never;
+}
+
+async function ladderScenario(): Promise<void> {
+  console.log('\n— Ladder de arena: identidad de dispositivo, puntuación y medallas —');
+  // El ladder PERSISTE entre ejecuciones (es un DO con SQLite, no se resetea al
+  // reiniciar el worker), así que los identificadores de partida llevan un prefijo
+  // único: con ids fijos, la segunda pasada del test chocaría contra su propio
+  // antiduplicado y no puntuaría nada.
+  const run = Date.now().toString(36);
+
+  const sinLadder = await fetch(`${HTTP_BASE}/api/ladder/top`);
+  if (!sinLadder.ok) {
+    console.log(`   ⚠️  el ladder no responde (${sinLadder.status}): ¿falta el binding LADDER? Se salta el escenario.`);
+    return;
+  }
+
+  // (a) IDENTIDAD: alta, reto y ticket
+  const ana = await nuevaIdentidad('LadAna');
+  const beto = await nuevaIdentidad('LadBeto');
+  const caro = await nuevaIdentidad('LadCaro');
+  assert(!!ana && !!beto && !!caro, 'se registran tres identidades de dispositivo');
+  if (!ana || !beto || !caro) return;
+  assert(ana.pid !== beto.pid, 'cada dispositivo recibe un pid distinto');
+  assert(ana.ticket.split('.').length === 3, 'el ticket viene firmado (pid.exp.firma)');
+
+  const yo = await (await fetch(`${HTTP_BASE}/api/ladder/me?pid=${ana.pid}`)).json();
+  assert((yo as { rating: number }).rating === 1000, 'se empieza en la media (1000)');
+  assert((yo as { badge: { provisional: boolean } }).badge.provisional, 'y calibrando, sin medalla todavía');
+
+  // una clave que no es ECDSA P-256 se rechaza de entrada
+  const mala = await fetch(`${HTTP_BASE}/api/ladder/register`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ publicKey: { kty: 'oct', k: 'no-soy-una-clave' } }),
+  });
+  assert(mala.status === 400, `una clave inválida no da de alta ninguna identidad (${mala.status})`);
+
+  // firmar con OTRA clave no vale: el reto es para la clave registrada
+  const impostor = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']);
+  const ch = await (await fetch(`${HTTP_BASE}/api/ladder/challenge?pid=${ana.pid}`)).json();
+  const firmaFalsa = await crypto.subtle.sign(
+    { name: 'ECDSA', hash: 'SHA-256' },
+    impostor.privateKey,
+    new TextEncoder().encode((ch as { nonce: string }).nonce),
+  );
+  const suplantacion = await fetch(`${HTTP_BASE}/api/ladder/verify`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ pid: ana.pid, nonce: (ch as { nonce: string }).nonce, signature: b64u(firmaFalsa) }),
+  });
+  assert(suplantacion.status === 401, `firmar con otra clave NO da ticket (${suplantacion.status})`);
+
+  // (b) ELEGIBILIDAD contra el servidor de verdad
+  const dos = await mandarResultado(`${run}-dos`, [
+    { id: ana, name: 'LadAna', wave: 9, tick: 900, out: true },
+    { id: beto, name: 'LadBeto', wave: 5, tick: 400, out: true },
+  ]);
+  assert(!dos.ranked, 'con solo dos identidades la partida NO puntúa');
+  const privada = await mandarResultado(`${run}-priv`, [
+    { id: ana, name: 'LadAna', wave: 9, tick: 900, out: true },
+    { id: beto, name: 'LadBeto', wave: 5, tick: 400, out: true },
+    { id: caro, name: 'LadCaro', wave: 7, tick: 700, out: true },
+  ], { publicRoom: false });
+  assert(!privada.ranked, 'una sala privada tampoco puntúa');
+
+  // ticket falsificado: no cuenta como identidad
+  const falso: Identidad = { ...caro, ticket: `${caro.pid}.${Date.now() + 60000}.firmaInventada` };
+  const conFalso = await mandarResultado(`${run}-falso`, [
+    { id: ana, name: 'LadAna', wave: 9, tick: 900, out: true },
+    { id: beto, name: 'LadBeto', wave: 5, tick: 400, out: true },
+    { id: falso, name: 'LadCaro', wave: 7, tick: 700, out: true },
+  ]);
+  assert(!conFalso.ranked, 'un ticket inventado no rellena el cupo de identidades');
+
+  // (c) PARTIDA VÁLIDA
+  const ok = await mandarResultado(`${run}-buena`, [
+    { id: ana, name: 'LadAna', wave: 12, tick: 0, out: false }, // sigue en pie → 1ª
+    { id: beto, name: 'LadBeto', wave: 9, tick: 4000, out: true }, // 2ª
+    { id: caro, name: 'LadCaro', wave: 5, tick: 900, out: true }, // 3ª
+  ]);
+  assert(ok.ranked, 'una arena pública con tres identidades SÍ puntúa');
+  const rAna = ok.results.find((r) => r.pid === ana.pid)!;
+  const rCaro = ok.results.find((r) => r.pid === caro.pid)!;
+  assert(rAna.place === 1 && rCaro.place === 3, 'el podio sale del resultado de la arena, no del orden de envío');
+  assert(rAna.delta > 0 && rCaro.delta < 0, `la primera sube (${rAna.delta}) y la última baja (${rCaro.delta})`);
+  assert(rAna.badge.provisional, 'con una partida se sigue calibrando');
+
+  // (d) ANTIDUPLICADO: reenviar el mismo resultado no puntúa dos veces
+  const anaAntes = ((await (await fetch(`${HTTP_BASE}/api/ladder/me?pid=${ana.pid}`)).json()) as { rating: number }).rating;
+  const repe = await mandarResultado(`${run}-buena`, [
+    { id: ana, name: 'LadAna', wave: 12, tick: 0, out: false },
+    { id: beto, name: 'LadBeto', wave: 9, tick: 4000, out: true },
+    { id: caro, name: 'LadCaro', wave: 5, tick: 900, out: true },
+  ]);
+  const anaDespues = ((await (await fetch(`${HTTP_BASE}/api/ladder/me?pid=${ana.pid}`)).json()) as { rating: number }).rating;
+  assert(!repe.ranked && anaAntes === anaDespues, 'reenviar el MISMO resultado no vuelve a puntuar');
+
+  // (e) SALIR DE CALIBRACIÓN: a las 10 partidas aparece la medalla y se entra en la tabla
+  for (let i = 1; i < 10; i++) {
+    await mandarResultado(`${run}-cal-${i}`, [
+      { id: ana, name: 'LadAna', wave: 12, tick: 0, out: false },
+      { id: beto, name: 'LadBeto', wave: 9, tick: 4000, out: true },
+      { id: caro, name: 'LadCaro', wave: 5, tick: 900, out: true },
+    ]);
+  }
+  const anaFinal = (await (await fetch(`${HTTP_BASE}/api/ladder/me?pid=${ana.pid}`)).json()) as {
+    rating: number;
+    games: number;
+    badge: { label: string; provisional: boolean };
+  };
+  assert(anaFinal.games === 10, `se cuentan las partidas puntuadas (${anaFinal.games})`);
+  assert(!anaFinal.badge.provisional, `a las 10 partidas ya hay medalla: ${anaFinal.badge.label}`);
+  assert(anaFinal.rating > 1000, `ganar diez arenas seguidas sube el rating (${anaFinal.rating})`);
+
+  const top = (await (await fetch(`${HTTP_BASE}/api/ladder/top`)).json()) as { name: string; badge: { label: string } }[];
+  assert(top.length >= 1 && top[0].name === 'LadAna', `la tabla la encabeza quien más puntos tiene (${top[0]?.name})`);
+  assert(
+    !top.some((t) => t.badge.label.startsWith('Calibrando')),
+    'y en la tabla NO sale nadie que siga calibrando',
+  );
+
+  // (f) la sala TRANSPORTA la identidad: join_room con pid/ticket no rompe nada
+  const host = new TestClient('LadHost', wsUrl({ create: true }));
+  await host.open();
+  host.send({
+    type: 'create_room',
+    name: 'LadAna',
+    token: 'token-ladder-host',
+    pid: ana.pid,
+    ticket: ana.ticket,
+    settings: { mapId: 'arena', mode: 'arena', difficulty: 'normal', public: true },
+  });
+  const rj = await host.waitFor('room_joined');
+  assert(rj.code.length === 4, `se crea una arena con identidad de ladder (${rj.code})`);
+  await host.waitFor('lobby_state');
+  host.ws.close();
+  await sleep(200);
 }
 
 // INVENTARIO administrativo de salas (/api/admin/rooms). El /api/rooms de la portada

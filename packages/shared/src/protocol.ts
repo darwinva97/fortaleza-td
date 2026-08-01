@@ -377,14 +377,19 @@ export interface HighscoreEntry {
 // ---------- Mensajes cliente -> servidor ----------
 
 export type ClientMsg =
-  | { type: 'create_room'; name: string; token: string; settings: RoomSettings }
+  // LADDER · `pid` y `ticket` son la identidad PERSISTENTE (la del ladder de
+  // arena), y no tienen nada que ver con `token`, que identifica esta sesión en
+  // esta sala. Van juntos y son opcionales: quien no los manda juega igual, pero
+  // su partida no puntúa. El ticket lo emite y lo valida el LadderDO; la sala solo
+  // los transporta hasta el final de la partida.
+  | { type: 'create_room'; name: string; token: string; settings: RoomSettings; pid?: string; ticket?: string }
   // `prevToken`: respaldo de identidad. El token vive en sessionStorage (una
   // identidad por pestaña), pero los móviles lo pierden con facilidad (pestaña
   // descartada, reabrir desde el enlace). El cliente guarda en localStorage el
   // token con el que jugó cada sala y lo manda aquí: si el token nuevo no
   // coincide con nadie, el servidor recupera al jugador DESCONECTADO cuyo token
   // era `prevToken` en vez de degradarlo a espectador.
-  | { type: 'join_room'; name: string; token: string; code: string; prevToken?: string }
+  | { type: 'join_room'; name: string; token: string; code: string; prevToken?: string; pid?: string; ticket?: string }
   | { type: 'leave_room' }
   // ABANDONO explícito de la partida (salir a mitad de juego). En el lobby / como
   // espectador se comporta como `leave_room` (cierra el socket). DURANTE la partida
@@ -472,6 +477,23 @@ export type ServerMsg =
   | { type: 'game_started'; init: GameInit }
   | { type: 'tick'; t: number; snap: Snap; events: GameEvent[] }
   | { type: 'game_over'; stats: EndStats; replay?: ReplayData }
+  // LADDER · llega DESPUÉS del game_over, no dentro: puntuar exige ida y vuelta al
+  // LadderDO y la pantalla de fin no va a esperar por eso. Si la partida no
+  // puntúa (o no hay ladder), este mensaje sencillamente no llega y la pantalla se
+  // queda como está. `label` viene ya escrito («Arconte ★★★», «Inmortal 1»).
+  | {
+      type: 'ladder';
+      results: {
+        playerId: string;
+        delta: number;
+        before: number;
+        after: number;
+        label: string;
+        tier: number;
+        stars: number;
+        provisional: boolean;
+      }[];
+    }
   // GUARDAR (issue #12): respuesta a `save_request` con el guardado ya construido
   // (log hasta el tick actual + tokenHash por slot). El cliente lo descarga como .json.
   | { type: 'save_info'; save: SaveData }

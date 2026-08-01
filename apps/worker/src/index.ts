@@ -1,10 +1,11 @@
 import { RoomDO, type Env } from './room-do.js';
 import { DirectoryDO } from './directory-do.js';
+import { LadderDO } from './ladder-do.js';
 import { loadScores } from './scores.js';
 import { validateSaveData } from '@td/shared';
 
 // El runtime necesita ver las clases de los Durable Objects exportadas desde el módulo principal.
-export { RoomDO, DirectoryDO };
+export { RoomDO, DirectoryDO, LadderDO };
 
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; // sin I/O para evitar confusiones
 
@@ -50,6 +51,37 @@ export default {
 
     if (url.pathname === '/api/highscores') return json(await loadScores(env));
     if (url.pathname === '/api/health') return json({ ok: true });
+
+    // ---------- LADDER de arena (identidad de dispositivo + rango) ----------
+    //
+    // Todo esto es un pasamanos al LadderDO, que es quien tiene el esquema, la
+    // clave de los tickets y la última palabra. El Worker no valida identidades:
+    // si lo hiciera, habría dos sitios donde equivocarse.
+    // Sin binding LADDER (despliegues viejos) el ladder simplemente no existe: se
+    // responde 503 y el cliente sigue jugando sin rango.
+    if (url.pathname.startsWith('/api/ladder')) {
+      const ns = env.LADDER;
+      if (!ns) return json({ error: 'ladder no disponible' }, 503);
+      const stub = ns.get(ns.idFromName('v1'));
+      const ruta = url.pathname.slice('/api/ladder'.length) || '/top';
+      // solo se exponen estas: /result es interna (la llama el RoomDO) y dejarla
+      // abierta permitiría inventarse partidas. SOLO EN PRUEBAS (TD_TEST_HOOKS, que
+      // vive en apps/worker/.dev.vars y no existe en producción) se abre también
+      // /result: sin eso, probar el ladder exigiría jugar una arena entera —veinte
+      // minutos de reloj— y el gate se quedaría sin cubrir la parte que más duele
+      // si se rompe (tickets, elegibilidad y cálculo del rating).
+      const permitidas = new Set(['/register', '/challenge', '/verify', '/top', '/me']);
+      if (env.TD_TEST_HOOKS === '1') permitidas.add('/result');
+      if (!permitidas.has(ruta)) return json({ error: 'no existe' }, 404);
+      const destino = new URL(`https://do${ruta}`);
+      destino.search = url.search;
+      const res = await stub.fetch(destino.toString(), {
+        method: request.method,
+        body: request.method === 'POST' ? await request.text() : undefined,
+        headers: { 'content-type': 'application/json' },
+      });
+      return new Response(res.body, { status: res.status, headers: { 'content-type': 'application/json' } });
+    }
 
     // ---------- Discord Activity (Embedded App) ----------
 

@@ -14,6 +14,7 @@ import { validateSaveData, type SaveData } from '@td/shared';
 import { net, wsPathJoin } from './net.js';
 import { homeError } from './screens.js';
 import { roomPrevToken, store } from './store.js';
+import { ladderFields } from './identity.js';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -89,6 +90,7 @@ async function loadSaveFile(file: File): Promise<void> {
     token: store.token,
     code,
     prevToken: roomPrevToken(code),
+    ...ladderFields(),
   });
 }
 
