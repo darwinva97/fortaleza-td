@@ -50,6 +50,12 @@ export interface Env {
   // opcionales: sin ellos la integración de Discord queda apagada.
   DISCORD_CLIENT_ID?: string;
   DISCORD_CLIENT_SECRET?: string;
+  // Turnstile (captcha de Cloudflare) para CREAR salas. La sitekey es pública
+  // (va en wrangler.jsonc vars → /api/turnstile); el secreto es un `wrangler
+  // secret` y jamás sale al cliente. Sin secreto la comprobación se salta, así
+  // que apagar el captcha nunca deja el juego inservible.
+  TURNSTILE_SITEKEY?: string;
+  TURNSTILE_SECRET?: string;
   // Solo pruebas (nunca en producción): habilita el gancho de simulación de
   // reciclado del DO para el test de DURABILIDAD de wstest. Se activa por
   // apps/worker/.dev.vars (gitignoreado); ausente en el wrangler.jsonc, así que en

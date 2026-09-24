@@ -3,6 +3,7 @@ import { DirectoryDO } from './directory-do.js';
 import { LadderDO } from './ladder-do.js';
 import { loadScores } from './scores.js';
 import { validateSaveData } from '@td/shared';
+import { verificarTurnstile } from './turnstile.js';
 
 // El runtime necesita ver las clases de los Durable Objects exportadas desde el módulo principal.
 export { RoomDO, DirectoryDO, LadderDO };
@@ -45,12 +46,36 @@ function forwardWs(stub: DurableObjectStub, request: Request, code: string): Pro
   return stub.fetch(new Request(url.toString(), request));
 }
 
+// Reserva una sala libre probando códigos hasta dar con uno sin usar.
+// Devuelve null si el espacio de códigos está saturado.
+async function reservarSala(env: Env): Promise<string | null> {
+  for (let i = 0; i < 15; i++) {
+    const code = genCode();
+    const stub = env.ROOM.get(env.ROOM.idFromName(code));
+    const res = await stub.fetch(`https://do/reserve?code=${code}`, { method: 'POST' });
+    if (res.ok) return code; // 409 = código ya en uso: probar otro
+  }
+  return null;
+}
+
+// Puerta única para CREAR salas: sin captcha resuelto, no se abre ningún
+// Durable Object nuevo. Unirse a una sala existente no pasa por aquí.
+async function pasaCaptcha(request: Request, env: Env, token: string | null): Promise<Response | null> {
+  const r = await verificarTurnstile(token, env.TURNSTILE_SECRET, request.headers.get('CF-Connecting-IP'));
+  if (r.ok) return null;
+  console.warn('[turnstile] creación de sala rechazada:', r.motivo);
+  return json({ error: 'Verificación anti-bots no superada. Recarga la página e inténtalo otra vez.' }, 403);
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
     if (url.pathname === '/api/highscores') return json(await loadScores(env));
     if (url.pathname === '/api/health') return json({ ok: true });
+    // La sitekey es PÚBLICA y se sirve aparte para no tener que recompilar el
+    // cliente si cambia. Sin sitekey, el cliente no pinta el widget.
+    if (url.pathname === '/api/turnstile') return json({ sitekey: env.TURNSTILE_SITEKEY ?? '' });
 
     // ---------- LADDER de arena (identidad de dispositivo + rango) ----------
     //
@@ -260,9 +285,32 @@ export default {
       return new Response(res.body, { headers: { 'content-type': 'application/json' } });
     }
 
+    // Crear sala en DOS pasos: aquí se valida el captcha y se reserva el código,
+    // y el cliente se une luego por WS con ?code= mandando create_room como primer
+    // mensaje (el mismo camino que ya usaba Discord). Se hace así, y no metiendo el
+    // token en la URL del WebSocket, porque el cliente reconecta solo y un token de
+    // Turnstile es de un solo uso: el segundo intento moriría siempre.
+    if (url.pathname === '/api/rooms/new' && request.method === 'POST') {
+      let token: string | null = null;
+      try {
+        token = ((await request.json()) as { token?: string })?.token ?? null;
+      } catch {
+        // cuerpo vacío o ilegible: lo tratará como falta de token
+      }
+      const no = await pasaCaptcha(request, env, token);
+      if (no) return no;
+
+      const code = await reservarSala(env);
+      if (!code) return json({ error: 'No hay códigos de sala libres, intenta de nuevo.' }, 503);
+      return json({ code });
+    }
+
     // issue #12 · CARGAR partida guardada: valida el SaveData en el borde, reserva
     // una sala libre y le entrega el guardado. Devuelve el código para unirse por WS.
     if (url.pathname === '/api/rooms/from-save' && request.method === 'POST') {
+      // El cuerpo es el guardado, así que el token del captcha viaja en cabecera.
+      const no = await pasaCaptcha(request, env, request.headers.get('X-Turnstile-Token'));
+      if (no) return no;
       let save: unknown;
       try {
         save = await request.json();
@@ -301,15 +349,16 @@ export default {
         return new Response('expected websocket', { status: 426 });
       }
 
-      // crear sala: buscar un código libre y reservar su Durable Object
+      // Camino antiguo de creación. El cliente web ya no lo usa (ahora pide el
+      // código a /api/rooms/new), pero sigue abierto para clientes cacheados —
+      // con captcha, porque era justo la puerta por la que un bot abría salas
+      // en bucle sin pasar por ninguna pantalla.
       if (url.searchParams.get('create') === '1') {
-        for (let i = 0; i < 15; i++) {
-          const code = genCode();
-          const stub = env.ROOM.get(env.ROOM.idFromName(code));
-          const res = await stub.fetch(`https://do/reserve?code=${code}`, { method: 'POST' });
-          if (res.ok) return forwardWs(stub, request, code);
-        }
-        return new Response('no free code', { status: 503 });
+        const no = await pasaCaptcha(request, env, url.searchParams.get('cf'));
+        if (no) return no;
+        const code = await reservarSala(env);
+        if (!code) return new Response('no free code', { status: 503 });
+        return forwardWs(env.ROOM.get(env.ROOM.idFromName(code)), request, code);
       }
 
       // unirse: enrutar al Durable Object determinista del código

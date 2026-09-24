@@ -33,6 +33,10 @@
     // SQLite: sirve SQL igual que D1 y, al serializar los requests, dos partidas
     // que acaban a la vez no pueden pisarse el rating del mismo jugador.
     { "tag": "v3", "new_sqlite_classes": ["LadderDO"] }
+    // Purgar las salas (deleted_classes en RoomDO) NO se puede hacer aquí sin
+    // más: Cloudflare rechaza borrar una clase mientras un binding la
+    // referencia, así que exige DOS despliegues, y en el primero el juego se
+    // queda sin salas. Ver README → «Purgar las salas».
   ],
 
   "observability": { "enabled": true },
@@ -42,7 +46,12 @@
   // Client Secret NO va aquí jamás — se guarda como secreto (ya configurado en el
   // dashboard de Cloudflare; en dev local, apps/worker/.dev.vars, gitignoreado).
   // Vacío = integración apagada.
-  "vars": { "DISCORD_CLIENT_ID": "1527507899075526666" },
+  // TURNSTILE_SITEKEY es pública (se sirve por /api/turnstile, así que cambiarla
+  // NO exige recompilar el cliente). El secreto va como `wrangler secret`.
+  "vars": {
+    "DISCORD_CLIENT_ID": "1527507899075526666",
+    "TURNSTILE_SITEKEY": "0x4AAAAAAFCcUVRl7P-94m1O"
+  },
 
   // Récords (leaderboard) en KV.
   "kv_namespaces": [{ "binding": "SCORES", "id": "2d8014cf2bfd49ab8a8372c69985ac86" }]

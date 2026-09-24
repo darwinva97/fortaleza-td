@@ -10,7 +10,8 @@ import {
   type RoomSettings,
   type SavedLobbyInfo,
 } from '@td/shared';
-import { net, wsPathCreate, wsPathJoin } from './net.js';
+import { net, wsPathJoin } from './net.js';
+import { tokenParaCrearSala } from './turnstile.js';
 import { roomPrevToken, saveName, store } from './store.js';
 import { ask } from './dialog.js';
 import { ladderBadge, ladderFields } from './identity.js';
@@ -583,17 +584,48 @@ export function initHome(): void {
   updateCreateState();
 
   createBtn.addEventListener('click', () => {
-    const name = requireName();
-    if (!name || homeVisibility === null) return;
-    // conecta a una sala nueva (el backend asigna un código libre) y crea al abrir;
-    // la visibilidad elegida viaja en los settings del create_room
-    net.connect(wsPathCreate(), {
-      type: 'create_room',
-      name,
-      token: store.token,
-      ...ladderFields(),
-      settings: { ...homeSel, public: homeVisibility === 'public' },
-    });
+    void (async () => {
+      const name = requireName();
+      if (!name || homeVisibility === null) return;
+
+      // Crear sala va en dos pasos desde que hay captcha: primero se pide el
+      // código por HTTP (que es donde se comprueba el token y donde un error se
+      // puede contar bien), y luego se entra por WS con ?code= mandando
+      // create_room como primer mensaje — igual que hace el flujo de Discord.
+      // Meter el token en la URL del WebSocket no valdría: el cliente reconecta
+      // solo y un token de Turnstile es de un solo uso.
+      const etiqueta = createBtn.textContent;
+      createBtn.disabled = true;
+      createBtn.textContent = 'Comprobando…';
+      homeError('');
+      try {
+        const cf = await tokenParaCrearSala();
+        const res = await fetch('/api/rooms/new', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ token: cf }),
+        });
+        if (!res.ok) {
+          const { error } = (await res.json().catch(() => ({}))) as { error?: string };
+          homeError(error ?? 'No se pudo crear la sala. Inténtalo de nuevo.');
+          return;
+        }
+        const { code } = (await res.json()) as { code: string };
+        net.connect(wsPathJoin(code), {
+          type: 'create_room',
+          name,
+          token: store.token,
+          ...ladderFields(),
+          settings: { ...homeSel, public: homeVisibility === 'public' },
+        });
+      } catch {
+        homeError('No se pudo contactar con el servidor. Inténtalo de nuevo.');
+      } finally {
+        createBtn.disabled = false;
+        createBtn.textContent = etiqueta;
+        updateCreateState();
+      }
+    })();
   });
 
   $('btn-join').addEventListener('click', () => joinFromInput());

@@ -122,3 +122,48 @@ Entrada nueva en `packages/shared/src/balance/maps.ts`: grilla, rutas por waypoi
 horizontales/verticales; multi-ruta soportado — los tramos compartidos deben ser celda-idénticos)
 y decoración `blocked`. Con ≥4 rutas se activan solas las puertas (reclamo por color y cierre del anfitrión).
 Aparece automáticamente en los selectores; `pnpm simtest` valida la estructura.
+
+## Anti-bots al crear sala (Turnstile)
+
+Cada sala es un Durable Object que sigue vivo hasta media hora después de la
+última acción humana (`IDLE_CLOSE_MS` en `room-do.ts`), con el bucle de
+simulación a 15 Hz. Crear salas en masa agota la cuota diaria de duración de
+Durable Objects de toda la cuenta de Cloudflare: el 2026-09-24 se abrieron 246
+salas, la mayoría con un solo mensaje, y el juego se quedó sin cuota.
+
+Por eso **crear** sala exige resolver un captcha de Cloudflare (Turnstile).
+Unirse a una sala existente no: el coste está en abrir objetos nuevos.
+
+Las tres puertas que abren salas están cerradas con el mismo control
+(`pasaCaptcha` en `apps/worker/src/index.ts`):
+
+| Ruta | Dónde viaja el token |
+|---|---|
+| `POST /api/rooms/new` | en el cuerpo (`{ token }`) |
+| `POST /api/rooms/from-save` | en la cabecera `X-Turnstile-Token` |
+| `GET /ws?create=1` | en el parámetro `cf` (camino antiguo) |
+
+El cliente web ya no usa `/ws?create=1`: pide el código a `/api/rooms/new` y
+luego entra por WebSocket con `?code=` mandando `create_room` como primer
+mensaje, igual que el flujo de Discord. Se hace así porque `net` reconecta solo
+y un token de Turnstile es de **un solo uso**: si el token fuese en la URL del
+WebSocket, el primer reintento fallaría siempre.
+
+- `TURNSTILE_SITEKEY` es pública y va en `wrangler.jsonc` → `/api/turnstile`,
+  así que cambiarla no obliga a recompilar el cliente.
+- `TURNSTILE_SECRET` es un `wrangler secret`. **Sin secreto la comprobación se
+  salta**, a propósito: apagar el captcha no puede dejar el juego inservible.
+  Lo mismo si la API de Cloudflare no responde.
+
+Para probar en local, `apps/worker/.dev.vars` admite las claves de prueba de
+Cloudflare: `1x0000000000000000000000000000000AA` acepta siempre y
+`2x0000000000000000000000000000000AA` rechaza siempre.
+
+### Purgar las salas
+
+Borrar las salas guardadas **no se puede hacer por API ni en un despliegue**:
+Cloudflare rechaza `deleted_classes` sobre `RoomDO` mientras el binding `ROOM`
+la referencie (`code: 10061`). Hacen falta dos despliegues seguidos —uno
+quitando binding y referencias, otro devolviéndolas—, y entre ambos el juego se
+queda sin salas. No compensa salvo que haya una razón de peso: el gasto que
+agota la cuota es tiempo en memoria, no almacenamiento.

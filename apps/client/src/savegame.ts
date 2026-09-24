@@ -11,6 +11,7 @@
 // devuelto, entrando al lobby de reanudación.
 
 import { validateSaveData, type SaveData } from '@td/shared';
+import { tokenParaCrearSala } from './turnstile.js';
 import { net, wsPathJoin } from './net.js';
 import { homeError } from './screens.js';
 import { roomPrevToken, store } from './store.js';
@@ -69,9 +70,15 @@ async function loadSaveFile(file: File): Promise<void> {
   homeError('');
   let code: string;
   try {
+    // También abre una sala nueva, así que pasa por el mismo captcha. El cuerpo
+    // es el guardado, de modo que el token viaja en cabecera.
+    const cf = await tokenParaCrearSala();
     const res = await fetch('/api/rooms/from-save', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        ...(cf ? { 'X-Turnstile-Token': cf } : {}),
+      },
       body: JSON.stringify(v.save),
     });
     if (!res.ok) {
