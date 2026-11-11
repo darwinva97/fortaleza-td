@@ -1,0 +1,22 @@
+{
+  "tower:archer": 11899, "tower:cannon": 241, "tower:frost": 2354, "tower:poison": 32222,
+  "tower:tesla": 5206, "tower:sniper": 4819, "tower:mortar": 34363, "tower:bank": 17507,
+  "tower:banner": 16124, "tower:trap": 25988, "tower:alchemist": 9008, "tower:boom": 463969,
+  "tower:sentry": 27409, "tower:flak": 12040,
+  "atk:fisico": 6505, "atk:perforante": 1873, "atk:asedio": 8402, "atk:magico": 22393,
+  "armor:ligera": 15872, "armor:media": 2980, "armor:blindada": 4588, "armor:colosal": 457936,
+  "affix:swift": 33501, "affix:armored": 8749, "affix:regen": 36875, "affix:vampiric": 1405,
+  "affix:elusive": 14468, "affix:frostward": 444775, "affix:explosive": 1330,
+  "affix:adaptive": 10157, "affix:chillaura": 36459,
+  "fusion:glacialplague": 438601, "fusion:railstorm": 14462, "fusion:bigbertha": 865,
+  "fusion:warlord": 7156, "fusion:philostone": 2814, "fusion:winterheart": 9952,
+  "fusion:toxicstorm": 41516, "fusion:shredder": 4510, "fusion:siegeeye": 3730,
+  "fusion:alchemyvault": 24777, "fusion:icelance": 12388,
+  "enemy:goblin": 436918, "enemy:runner": 437425, "enemy:brute": 436111, "enemy:bat": 2527,
+  "enemy:armored": 450777, "enemy:shaman": 435410, "enemy:larva": 5012, "enemy:troll": 436287,
+  "enemy:slime": 8341, "enemy:slimelet": 25641, "enemy:ghost": 15769, "enemy:golem": 26926,
+  "enemy:sapper": 434740, "enemy:thief": 445489, "enemy:berserker": 434707, "enemy:skywhale": 13422,
+  "enemy:wraith": 1624, "enemy:chimera": 9440, "enemy:behemoth": 5102, "enemy:gargoyle": 741,
+  "enemy:harpy": 441710, "enemy:stalker": 439381, "enemy:runebrat": 447938, "enemy:bannerman": 434989,
+  "enemy:knight": 426738, "enemy:mammoth": 748
+}

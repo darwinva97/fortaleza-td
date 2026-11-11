@@ -39,7 +39,8 @@ import {
 } from '@td/shared';
 import type { EnemyDef, EnemyTypeId, TowerDef, TowerLevelDef, TowerTypeId } from '@td/shared';
 import { armorLabel, ARMOR_ORDER, ATTACK_ORDER, attackMatchup, syncHotkeyLabels } from './hud.js';
-import { ENEMY_ICONS, TOWER_ICONS } from './renderer.js';
+import { TOWER_ICONS } from './renderer.js';
+import { affixIcon, armorIcon, attackIcon, enemyIcon, fusionIcon, towerIcon } from './px-icons.js';
 import { ask } from './dialog.js';
 import {
   CONTROL_ACTIONS,
@@ -148,12 +149,12 @@ function buildEnemies(): void {
       // icono + nombre de ARMOR_TYPE_INFO, con su identidad como subtítulo y tooltip.
       const ar = ARMOR_TYPE_INFO[def.armorType];
       const armorType = `<div class="earmor" title="${escapeHtml(ar.desc)}">
-          <span class="earmor-badge armor-${def.armorType}">${ar.icon} ${ar.name}</span>
+          <span class="earmor-badge armor-${def.armorType}">${armorIcon(def.armorType)} ${ar.name}</span>
           <span class="earmor-id">${ar.desc}</span>
         </div>`;
       return `<div class="enemy-card${def.boss ? ' boss' : ''}">
         <div class="ecard-head">
-          <span class="eicon">${ENEMY_ICONS[type]}</span>
+          <span class="eicon">${enemyIcon(type)}</span>
           <span class="ename">${def.name}</span>
         </div>
         ${armorType}
@@ -180,8 +181,8 @@ function buildCalendar(): void {
     if (isInvisibleWave(w, 'classic')) tags.push('👁');
     if (!cal.boss && !cal.champion && ENEMIES[cal.type].flying) tags.push('🦅');
     const species = cal.boss
-      ? `${ENEMY_ICONS[cal.boss]} <b>${ENEMIES[cal.boss].name}</b> + ${ENEMY_ICONS[cal.type]} ${ENEMIES[cal.type].name} de escolta`
-      : `${ENEMY_ICONS[cal.type]} <b>${ENEMIES[cal.type].name}</b> ×${cal.count}${cal.champion ? ' 👑' : ''}`;
+      ? `${enemyIcon(cal.boss)} <b>${ENEMIES[cal.boss].name}</b> + ${enemyIcon(cal.type)} ${ENEMIES[cal.type].name} de escolta`
+      : `${enemyIcon(cal.type)} <b>${ENEMIES[cal.type].name}</b> ×${cal.count}${cal.champion ? ' 👑' : ''}`;
     const special = cal.boss || cal.champion || isImmuneWave(w) || isInvisibleWave(w, 'classic');
     return `<tr class="${special ? 'cal-special' : ''}">
       <td class="cal-w">${w}</td>
@@ -234,7 +235,7 @@ function buildElites(): void {
       ? ' <span class="etrait boss">☠ solo jefes</span>'
       : '';
     return `<div class="enemy-card">
-      <div class="ecard-head"><span class="eicon">${a.icon}</span><span class="ename" style="color:${a.color}">${a.name}</span>${bossOnly}</div>
+      <div class="ecard-head"><span class="eicon">${affixIcon(id)}</span><span class="ename" style="color:${a.color}">${a.name}</span>${bossOnly}</div>
       <p class="edesc">${a.desc}.</p>
     </div>`;
   }).join('');
@@ -345,11 +346,11 @@ function buildFusions(): void {
     const [a, b] = f.ingredients;
     return `<div class="fusion-card" style="border-color:${f.color}55">
       <div class="fusion-recipe">
-        <span class="fpart">${TOWER_ICONS[a]} ${TOWERS[a].name}</span>
+        <span class="fpart">${towerIcon(a)} ${TOWERS[a].name}</span>
         <span class="fplus">+</span>
-        <span class="fpart">${TOWER_ICONS[b]} ${TOWERS[b].name}</span>
+        <span class="fpart">${towerIcon(b)} ${TOWERS[b].name}</span>
         <span class="fplus">=</span>
-        <span class="fresult" style="color:${f.color}">${f.icon} ${f.name}</span>
+        <span class="fresult" style="color:${f.color}">${fusionIcon(f)} ${f.name}</span>
       </div>
       <p class="edesc">${f.desc}</p>
     </div>`;
@@ -401,7 +402,7 @@ function keyRow(id: KeymapAction, icon: string, label: string): string {
 }
 
 function shortcutsHtml(): string {
-  const towerRows = TOWER_ORDER.map((t) => keyRow(`tower:${t}`, TOWER_ICONS[t], TOWERS[t].name)).join('');
+  const towerRows = TOWER_ORDER.map((t) => keyRow(`tower:${t}`, towerIcon(t), TOWERS[t].name)).join('');
   const controlRows = CONTROL_ACTIONS.map((a) => keyRow(a.id, a.icon, a.label)).join('');
   const marketRows = MARKET_ACTIONS.map((a) => keyRow(a.id, a.icon, a.label)).join('');
   const infoRows = INFO_ROWS.map(
@@ -548,7 +549,7 @@ function fmtMult(m: number): string {
 function matrixTableHtml(): string {
   const headCells = ARMOR_ORDER.map((a) => {
     const i = ARMOR_TYPE_INFO[a];
-    return `<th title="${escapeHtml(i.desc)}"><span class="m-ico">${i.icon}</span><span class="m-lbl">${i.name}</span></th>`;
+    return `<th title="${escapeHtml(i.desc)}"><span class="m-ico">${armorIcon(a)}</span><span class="m-lbl">${i.name}</span></th>`;
   }).join('');
   const rows = ATTACK_ORDER.map((atk) => {
     const ai = ATTACK_TYPE_INFO[atk];
@@ -557,7 +558,7 @@ function matrixTableHtml(): string {
       const cls = m >= 1.25 ? 'm-strong' : m <= 0.8 ? 'm-weak' : 'm-neutral';
       return `<td class="${cls}">×${fmtMult(m)}</td>`;
     }).join('');
-    return `<tr><th class="m-row" title="${escapeHtml(ai.desc)}"><span class="m-ico">${ai.icon}</span><span class="m-lbl">${ai.name}</span></th>${cells}</tr>`;
+    return `<tr><th class="m-row" title="${escapeHtml(ai.desc)}"><span class="m-ico">${attackIcon(atk)}</span><span class="m-lbl">${ai.name}</span></th>${cells}</tr>`;
   }).join('');
   return `
     <div class="guide-intro">
@@ -628,7 +629,7 @@ function buildTowers(): void {
         ? `<div class="tfuse">⚗ <b>Fusiona con:</b> ${recipes
             .map((f) => {
               const other = f.ingredients[0] === type ? f.ingredients[1] : f.ingredients[0];
-              return `${TOWER_ICONS[other]} ${TOWERS[other].name} → <b style="color:${f.color}">${f.icon} ${f.name}</b>`;
+              return `${towerIcon(other)} ${TOWERS[other].name} → <b style="color:${f.color}">${fusionIcon(f)} ${f.name}</b>`;
             })
             .join(' · ')}</div>`
         : `<div class="tfuse tdim">⚗ No se fusiona.</div>`;
@@ -645,7 +646,7 @@ function buildTowers(): void {
       if (weak.length) bits.push(`Débil vs ${weak.map(armorLabel).join(', ')}`);
       const vs = bits.length > 0 ? bits.join(' · ') : 'Daño parejo contra todas las armaduras';
       matchHtml = `<div class="tmatch" title="${escapeHtml(info.desc)}">
-          <span class="etrait atk">${info.icon} ${info.name}</span>
+          <span class="etrait atk">${attackIcon(def.attackType)} ${info.name}</span>
           <span class="tmatch-vs">${vs}</span>
         </div>`;
     }
@@ -659,7 +660,7 @@ function buildTowers(): void {
     // icono: sprite real si existe, con FALLBACK al emoji (igual que la barra de torres)
     return `<div class="enemy-card tower-card">
       <div class="ecard-head">
-        <span class="ticon-wrap"><img class="tsprite2" alt="" src="/sprites/tower_${type}_l1.png" /><span class="eicon">${TOWER_ICONS[type]}</span></span>
+        <span class="ticon-wrap"><img class="tsprite2" alt="" src="/sprites/tower_${type}_l1.png" /><span class="eicon">${towerIcon(type)}</span></span>
         <span class="ename">${def.name}</span>
       </div>
       <div class="etraits">${chips}</div>

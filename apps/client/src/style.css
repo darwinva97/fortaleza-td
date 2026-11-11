@@ -2831,3 +2831,17 @@ body.q-lite *::after {
   .dialog-actions .btn { width: 100%; }
   .dialog-linkrow { flex-direction: column; }
 }
+
+/* ICONOS PIXEL de la interfaz (px-icons.ts): un sprite 16x16 del atlas
+   /icons/px-atlas.png (rejilla 16x5). Mide en `em` para heredar el tamaño del
+   texto que acompaña, igual que hacía el emoji al que sustituye. */
+.px {
+  display: inline-block;
+  width: 1.25em;
+  height: 1.25em;
+  vertical-align: -0.28em;
+  background-image: url('/icons/px-atlas.png');
+  background-repeat: no-repeat;
+  background-size: 1600% 500%;
+  image-rendering: pixelated;
+}

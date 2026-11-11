@@ -28,6 +28,7 @@ import {
 import { store, type GameStore, type SnapFrame } from './store.js';
 import { drawParticles, floatText, updateParticles, fx } from './particles.js';
 import { getTowerSprite, getProjSprite, getBossSprite } from './sprites.js';
+import { drawPxIcon } from './px-icons.js';
 
 // ancho del sprite de torre en celdas (la base ≈ este valor; la estructura sube).
 const SPRITE_W = 1.15;
@@ -4054,7 +4055,9 @@ function drawEnemies(interp: InterpResult, now: number): void {
       g.textBaseline = 'middle';
       const total = affixes.length;
       affixes.forEach((a, i) => {
-        g.fillText(AFFIXES[a].icon, x + (i - (total - 1) / 2) * s * 0.32, iconY);
+        const ix = x + (i - (total - 1) / 2) * s * 0.32;
+        // icono pixel del atlas; el emoji solo mientras carga
+        if (!drawPxIcon(g, `affix:${a}`, ix, iconY, Math.max(10, s * 0.3))) g.fillText(AFFIXES[a].icon, ix, iconY);
       });
     }
 

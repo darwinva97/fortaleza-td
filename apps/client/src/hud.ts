@@ -51,7 +51,8 @@ import {
 } from '@td/shared';
 import { net } from './net.js';
 import { myGold, myWood, store, type GameStore, type Premove } from './store.js';
-import { computeBannerAuras, countBannerTargets, ENEMY_ICONS, getPlacementCtx, TOWER_ICONS, type ClientAura } from './renderer.js';
+import { computeBannerAuras, countBannerTargets, getPlacementCtx, type ClientAura } from './renderer.js';
+import { affixIcon, armorIcon, attackIcon, enemyIcon, fusionIcon, towerIcon } from './px-icons.js';
 import { clearSelection, setPlacing } from './input.js';
 import { keyLabel } from './keymap.js';
 
@@ -91,7 +92,7 @@ export function attackMatchup(attack: AttackTypeId): { strong: ArmorTypeId[]; we
 
 // etiqueta compacta de una armadura (icono + nombre) para las líneas "fuerte/débil vs …"
 export function armorLabel(a: ArmorTypeId): string {
-  return `${ARMOR_TYPE_INFO[a].icon} ${ARMOR_TYPE_INFO[a].name}`;
+  return `${armorIcon(a)} ${ARMOR_TYPE_INFO[a].name}`;
 }
 
 // Línea compacta del panel: «⚔ Perforante · fuerte vs 🏰 Colosal · débil vs 🦾 Blindada».
@@ -306,13 +307,13 @@ export function buildTowerBar(): void {
     // (pointer-events:none) ni rompe el layout móvil (emoji diminuto en la esquina).
     const at = attackTypeOf({ type, fusion: -1 });
     const badge = towerDealsDamage(def)
-      ? `<span class="tbadge" title="Ataque ${ATTACK_TYPE_INFO[at].name}">${ATTACK_TYPE_INFO[at].icon}</span>`
+      ? `<span class="tbadge" title="Ataque ${ATTACK_TYPE_INFO[at].name}">${attackIcon(at)}</span>`
       : '';
     card.innerHTML = `
       ${badge}
       <span class="thk">${keyLabel(`tower:${type}`)}</span>
       <img class="tsprite" alt="" src="/sprites/tower_${type}_l1.png" />
-      <span class="ticon">${TOWER_ICONS[type]}</span>
+      <span class="ticon">${towerIcon(type)}</span>
       <span class="tname">${def.name}</span>
       <span class="tcost">🪙${def.levels[0].cost}</span>
     `;
@@ -385,7 +386,7 @@ function syncPlacingInfo(): void {
   const lvl = def.levels[0];
   // F9a (v19) · el Barril muestra su precio EFECTIVO de equipo (snap.boomCost)
   const placeCost = def.detonates ? (gs.latest ? myPrices(gs.latest).boomCost : lvl.cost) : lvl.cost;
-  const parts: string[] = [`${TOWER_ICONS[type]} <b>${def.name}</b> 🪙${placeCost}`];
+  const parts: string[] = [`${towerIcon(type)} <b>${def.name}</b> 🪙${placeCost}`];
   const isAura = lvl.auraDamage !== undefined || lvl.auraHaste !== undefined || lvl.auraBounty !== undefined;
   if (lvl.damage > 0 && !def.onPathOnly) parts.push(`Daño <b>${lvl.damage}</b>`);
   if (def.onPathOnly) parts.push(def.detonates ? `💥 Detona al pisarlo: <b>borra la morralla</b> terrestre del área (con tope — tanques/élites gordos sobreviven; jefes: ${lvl.damage} de daño)` : `Daño por golpe <b>${lvl.damage}</b>`);
@@ -921,10 +922,10 @@ function buildGroupPanel(
   const canAct = !store.spectator && !store.replay && gs.init.players[head[5]]?.id === store.playerId;
 
   const name = fusion
-    ? `${fusion.icon} ${fusion.name}`
+    ? `${fusionIcon(fusion)} ${fusion.name}`
     : spec >= 0
-      ? `${TOWER_ICONS[type]} ${def.specs[spec].name}`
-      : `${TOWER_ICONS[type]} ${def.name}`;
+      ? `${towerIcon(type)} ${def.specs[spec].name}`
+      : `${towerIcon(type)} ${def.name}`;
   const levelTag =
     level >= 5
       ? !fusion && hasRank3(type, spec)
@@ -1149,7 +1150,7 @@ function buildTowerPanel(gs: GameStore, selectedId: number): { html: string; liv
       const partners = recipes
         .map((f) => {
           const other = f.ingredients[0] === type ? f.ingredients[1] : f.ingredients[0];
-          return `${TOWER_ICONS[other]} ${TOWERS[other].name} → <b>${f.icon} ${f.name}</b>`;
+          return `${towerIcon(other)} ${TOWERS[other].name} → <b>${fusionIcon(f)} ${f.name}</b>`;
         })
         .join(' · ');
       statLines.push(`⚗ Se fusiona con: ${partners} <span class="fuse-req">(ambas ★ especializadas y pegadas)</span>`);
@@ -1159,10 +1160,10 @@ function buildTowerPanel(gs: GameStore, selectedId: number): { html: string; liv
 
   // cabecera: nombre (fusión > especialización > tipo) y nivel/estrella
   const title = fusion
-    ? `${fusion.icon} ${fusion.name}`
+    ? `${fusionIcon(fusion)} ${fusion.name}`
     : specialized
-      ? `${TOWER_ICONS[type]} ${def.specs[spec].name}`
-      : `${TOWER_ICONS[type]} ${def.name}`;
+      ? `${towerIcon(type)} ${def.specs[spec].name}`
+      : `${towerIcon(type)} ${def.name}`;
   // F9a (v19) · nivel 5+ = VETERANÍA (post-élite): la etiqueta muestra el nivel real.
   // Excepción: una spec con rank3 en nivel 5 es su cúspide «★★★ Rango III».
   const levelTag =
@@ -1197,7 +1198,7 @@ function buildTowerPanel(gs: GameStore, selectedId: number): { html: string; liv
       seen.add(recipe.id);
       btns.push(`
         <button class="spec-btn fuse-btn" data-other="${other[0]}">
-          <span class="spec-name">⚗ Fusionar → ${recipe.icon} ${recipe.name}</span>
+          <span class="spec-name">⚗ Fusionar → ${fusionIcon(recipe)} ${recipe.name}</span>
           <span class="spec-desc">${recipe.desc} Consume ambas torres; la fusión se queda AQUÍ.</span>
         </button>`);
     }
@@ -1214,7 +1215,7 @@ function buildTowerPanel(gs: GameStore, selectedId: number): { html: string; liv
     let focusLine = '';
     if (focusId > 0) {
       const fe = snap.enemies.find((e) => e[0] === focusId);
-      const ficon = fe ? ENEMY_ICONS[ENEMY_ORDER[fe[1]]] : '';
+      const ficon = fe ? enemyIcon(ENEMY_ORDER[fe[1]]) : '';
       const fname = fe ? ENEMIES[ENEMY_ORDER[fe[1]]].name : 'objetivo fuera de vista';
       focusLine = `<div class="focus-line">🎯 Atacando: ${ficon} ${fname} <button id="panel-unfocus" class="btn small ghost">✕ automático</button></div>`;
     }
@@ -1512,7 +1513,7 @@ export function onTick(snap: Snap): void {
       // F9a (v19) · afijo del jefe telegrafiado: "☠ Gólem · Adaptativo 🧬"
       const affix = snap.nextBossAffix >= 0 ? AFFIXES[AFFIX_ORDER[snap.nextBossAffix]] : null;
       const bossName = ENEMIES[bossType]?.name ?? 'jefe';
-      const label = affix ? `${bossName} · ${affix.name} ${affix.icon}` : bossName;
+      const label = affix ? `${bossName} · ${affix.name} ${affixIcon(affix.id)}` : bossName;
       const title = affix ? `${bossName} — ${affix.name}: ${affix.desc}` : bossName;
       tags.push(`<span class="wave-tag boss" title="${title}">${bossFlying ? '🦅' : '☠'} ${label}</span>`);
     } else if (snap.nextFlying) {
@@ -1529,7 +1530,7 @@ export function onTick(snap: Snap): void {
     const listHtml = snap.nextWave
       .map(([typeIdx, count]) => {
         const type = ENEMY_ORDER[typeIdx];
-        return `<span class="preview-chip" title="${ENEMIES[type].name}">${ENEMY_ICONS[type]}×${count}</span>`;
+        return `<span class="preview-chip" title="${ENEMIES[type].name}">${enemyIcon(type)}×${count}</span>`;
       })
       .join('');
     if (listEl.dataset.h !== listHtml) {
@@ -1723,7 +1724,7 @@ export function renderShop(): void {
       items.map((it) => {
         const cost = TOWERS[it.towerType].levels[0].cost;
         return `<button class="shop-item" data-item="${it.towerType}">
-        <span class="shop-icon">${it.icon}</span>
+        <span class="shop-icon">${towerIcon(it.towerType)}</span>
         <span class="shop-info"><b>${it.name}</b><span class="shop-desc">${it.desc}</span></span>
         <span class="shop-cost">🪙${cost}</span>
       </button>`;
