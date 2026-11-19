@@ -99,7 +99,17 @@ let nightLevel = 0;
 // posiciones que se pintan (suavizadas) y predicción local del propio personaje:
 // al pinchar, el personaje arranca YA hacia allí sin esperar al servidor
 const disp = new Map<number, { x: number; y: number }>();
-let predict: { tx: number; ty: number; t0: number; from: { x: number; y: number }; serverAt: [number, number] } | null = null; // 0 día · 1 noche, suavizado para que el cambio no sea un corte
+let predict: {
+  tx: number;
+  ty: number;
+  t0: number;
+  from: { x: number; y: number };
+  serverAt: [number, number];
+  offset: { x: number; y: number } | null; // adelanto que queda por absorber cuando el servidor ya obedece
+  prevDest: string; // destino que tenía el servidor ANTES del clic
+  blendT0: number;
+} | null = null;
+const PREDICT_BLEND_MS = 500; // 0 día · 1 noche, suavizado para que el cambio no sea un corte
 interface Mote {
   x: number;
   y: number;
@@ -500,7 +510,7 @@ function moveTo(x: number, y: number): void {
   const u = myUnit();
   if (u) {
     const d = disp.get(u[0]) ?? { x: u[3], y: u[4] };
-    predict = { tx: x, ty: y, t0: performance.now(), from: { ...d }, serverAt: [u[3], u[4]] };
+    predict = { tx: x, ty: y, t0: performance.now(), from: { ...d }, serverAt: [u[3], u[4]], offset: null, blendT0: 0, prevDest: String(cur?.snap.me?.dest ?? '') };
   }
 }
 
@@ -1165,48 +1175,71 @@ function syncChoose(): void {
 }
 
 // ---------- dibujo ----------
-// Posición que se pinta de cada unidad. En vez de ir un tick por detrás
-// (interpolar entre los dos últimos snapshots), se EXTRAPOLA desde el último con
-// la velocidad que trae, y se suaviza para que no dé saltos. El personaje propio,
-// justo después de un clic, avanza ya hacia el destino (predicción) hasta que el
-// servidor confirma el movimiento.
+// Posición que se pinta de cada unidad: se INTERPOLA entre los dos últimos
+// snapshots (un tick por detrás, como hacen el Dota o el WC3), así nada da
+// saltos hacia atrás. Tu propio personaje, además, arranca al instante tras el
+// clic (predicción). Cuando el servidor confirma el movimiento, el adelanto que
+// llevaba se absorbe poco a poco frenando un pelo, nunca retrocediendo.
 function lerpUnits(now: number): Map<number, { x: number; y: number }> {
   const out = new Map<number, { x: number; y: number }>();
   if (!cur) return out;
-  const span = prev ? Math.max(30, cur.at - prev.at) : 66;
-  const t = Math.min(1, Math.max(0, (now - cur.at) / span));
+  const t = prev ? Math.min(1, Math.max(0, (now - cur.at) / Math.max(30, cur.at - prev.at))) : 1;
   const old = new Map(prev ? prev.snap.units.map((u) => [u[0], u] as const) : []);
   const mine = myUnit();
   for (const u of cur.snap.units) {
     const o = old.get(u[0]);
-    let tx = u[3];
-    let ty = u[4];
+    let x = u[3];
+    let y = u[4];
     if (o && Math.hypot(o[3] - u[3], o[4] - u[4]) < 2) {
-      tx = u[3] + (u[3] - o[3]) * t;
-      ty = u[4] + (u[4] - o[4]) * t;
+      x = o[3] + (u[3] - o[3]) * t;
+      y = o[4] + (u[4] - o[4]) * t;
     }
-    // predicción local del propio personaje
     if (predict && mine && u[0] === mine[0]) {
+      const last = disp.get(u[0]) ?? { x, y };
+      const dx = predict.tx - predict.from.x;
+      const dy = predict.ty - predict.from.y;
+      const dist = Math.hypot(dx, dy) || 1;
+      const ux = dx / dist;
+      const uy = dy / dist;
+      // ¿ya obedece el servidor ESTE clic? Lo sabemos porque su destino actual
+      // es la casilla pinchada (o porque ya ha llegado). Moverse no basta: si
+      // ya andaba, durante la latencia sigue con la orden anterior.
+      const md = cur.snap.me?.dest;
+      const tcx = Math.floor(predict.tx);
+      const tcy = Math.floor(predict.ty);
+      const obeys =
+        (md && Math.abs(md[0] - tcx) <= 1 && Math.abs(md[1] - tcy) <= 1) ||
+        (md && String(md) !== predict.prevDest) || // pinchó en algo bloqueado: va a la casilla libre más cercana
+        Math.hypot(u[3] - predict.tx, u[4] - predict.ty) < 0.3;
       const age = (now - predict.t0) / 1000;
-      const serverMoved = Math.hypot(u[3] - predict.serverAt[0], u[4] - predict.serverAt[1]) > 0.05;
-      if (!serverMoved && age < 0.45) {
-        const dx = predict.tx - predict.from.x;
-        const dy = predict.ty - predict.from.y;
-        const dist = Math.hypot(dx, dy);
+      if (!predict.offset && !obeys && age < 1.2) {
+        // aún sin respuesta: avanzar en línea recta hacia el destino
         const step = Math.min(dist, mySpeed() * age);
-        if (dist > 0.01) {
-          tx = predict.from.x + (dx / dist) * step;
-          ty = predict.from.y + (dy / dist) * step;
+        x = predict.from.x + ux * step;
+        y = predict.from.y + uy * step;
+      } else {
+        if (!predict.offset) {
+          predict.offset = { x: last.x - x, y: last.y - y };
+          predict.blendT0 = now;
         }
-      } else predict = null;
+        const k = Math.max(0, 1 - (now - predict.blendT0) / PREDICT_BLEND_MS);
+        x += predict.offset.x * k;
+        y += predict.offset.y * k;
+        // nunca hacia atrás respecto a la marcha (salvo que el camino real dé la
+        // vuelta para rodear un muro: entonces manda el servidor)
+        const vx = o ? u[3] - o[3] : 0;
+        const vy = o ? u[4] - o[4] : 0;
+        const vlen = Math.hypot(vx, vy);
+        const sameWay = vlen < 0.001 || (vx * ux + vy * uy) / vlen > 0.5;
+        if (sameWay && (x - last.x) * ux + (y - last.y) * uy < 0) {
+          x = last.x;
+          y = last.y;
+        }
+        if (k === 0) predict = null;
+      }
     }
-    const d = disp.get(u[0]);
-    if (!d || Math.hypot(d.x - tx, d.y - ty) > 2.5) disp.set(u[0], { x: tx, y: ty });
-    else {
-      d.x += (tx - d.x) * 0.45;
-      d.y += (ty - d.y) * 0.45;
-    }
-    out.set(u[0], { ...disp.get(u[0])! });
+    disp.set(u[0], { x, y });
+    out.set(u[0], { x, y });
   }
   return out;
 }
@@ -1796,6 +1829,16 @@ function drawMini(pos: Map<number, { x: number; y: number }>, x0: number, y0: nu
   select: (id: number) => (selected = id),
   shop: () => (shopOpen = true),
   book: () => openBook(),
+  // prueba de movimiento: registra fotograma a fotograma dónde se pinta tu personaje
+  pos: () => {
+    const u = myUnit();
+    return u ? (disp.get(u[0]) ?? null) : null;
+  },
+  rclick: (x: number, y: number) => onWorldClick(x, y, true),
+  me: () => {
+    const u = myUnit();
+    return u ? { x: u[3], y: u[4], form: me()?.form } : null;
+  },
   zoom: (z: number) => (zoom = z),
   mine: () => myBuildings().map((b) => ({ id: b[0], type: BUILDING_ORDER[b[1]], level: b[5] })),
 };
