@@ -95,7 +95,11 @@ interface Fx {
   life: number;
 }
 let fx: Fx[] = [];
-let nightLevel = 0; // 0 día · 1 noche, suavizado para que el cambio no sea un corte
+let nightLevel = 0;
+// posiciones que se pintan (suavizadas) y predicción local del propio personaje:
+// al pinchar, el personaje arranca YA hacia allí sin esperar al servidor
+const disp = new Map<number, { x: number; y: number }>();
+let predict: { tx: number; ty: number; t0: number; from: { x: number; y: number }; serverAt: [number, number] } | null = null; // 0 día · 1 noche, suavizado para que el cambio no sea un corte
 interface Mote {
   x: number;
   y: number;
@@ -399,8 +403,30 @@ function onWorldClick(x: number, y: number, right: boolean): void {
       return;
     }
     follow = true;
-    send({ k: 'move', x, y });
-    ring(x, y, '#9be28a');
+    // clic derecho «inteligente», como en el Dota: sobre algo de los tuyos que
+    // esté dañado, ir a repararlo; sobre un enemigo, atacarlo; si no, moverse
+    const bAt = cur.snap.buildings.find((o) => cx >= o[3] && cx < o[3] + bSize(o) && cy >= o[4] && cy < o[4] + bSize(o));
+    const allyB = bAt && (m.side === 'elf' ? init!.players[bAt[2]] && cur.snap.players[bAt[2]] && ['elf', 'angel', 'choosing', 'dead'].includes(cur.snap.players[bAt[2]].form) : false);
+    if (m.side === 'elf' && (m.form === 'elf' || m.form === 'angel') && bAt && allyB) {
+      send({ k: 'repair', target: bAt[0] });
+      ring(bAt[3] + bSize(bAt) / 2, bAt[4] + bSize(bAt) / 2, '#ffe9a8', 1);
+      if (bAt[6] >= bAt[7]) toast('Ese edificio ya está entero');
+      return;
+    }
+    if (m.side === 'hunter') {
+      const enemy = cur.snap.units.find((u) => isEnemyUnit(u) && Math.hypot(u[3] - x, u[4] - y) < 0.8);
+      if (enemy) {
+        send({ k: 'attack', target: enemy[0] });
+        ring(enemy[3], enemy[4], '#ff5a4e');
+        return;
+      }
+      if (bAt) {
+        send({ k: 'attack', target: bAt[0] });
+        ring(bAt[3] + bSize(bAt) / 2, bAt[4] + bSize(bAt) / 2, '#ff5a4e');
+        return;
+      }
+    }
+    moveTo(x, y);
     return;
   }
   if (useSlot >= 0) {
@@ -465,8 +491,26 @@ function onWorldClick(x: number, y: number, right: boolean): void {
   }
   selected = 0;
   follow = true;
+  moveTo(x, y);
+}
+
+function moveTo(x: number, y: number): void {
   send({ k: 'move', x, y });
   ring(x, y, '#9be28a');
+  const u = myUnit();
+  if (u) {
+    const d = disp.get(u[0]) ?? { x: u[3], y: u[4] };
+    predict = { tx: x, ty: y, t0: performance.now(), from: { ...d }, serverAt: [u[3], u[4]] };
+  }
+}
+
+// velocidad propia aproximada (casillas/s) para la predicción
+function mySpeed(): number {
+  const m = me();
+  if (!m) return 2;
+  if (m.form === 'hunter' || m.form === 'wolf') return m.stats.speed;
+  if (m.form === 'angel') return 280 / 128;
+  return (cur?.snap.releaseIn ?? 0) > 0 ? 522 / 128 : 250 / 128;
 }
 const bSize = (b: HuntSnapBuilding): number => BUILDINGS[BUILDING_ORDER[b[1]]].size;
 // los edificios 2×2 se centran en el cursor
@@ -1121,15 +1165,48 @@ function syncChoose(): void {
 }
 
 // ---------- dibujo ----------
+// Posición que se pinta de cada unidad. En vez de ir un tick por detrás
+// (interpolar entre los dos últimos snapshots), se EXTRAPOLA desde el último con
+// la velocidad que trae, y se suaviza para que no dé saltos. El personaje propio,
+// justo después de un clic, avanza ya hacia el destino (predicción) hasta que el
+// servidor confirma el movimiento.
 function lerpUnits(now: number): Map<number, { x: number; y: number }> {
   const out = new Map<number, { x: number; y: number }>();
   if (!cur) return out;
-  const t = prev ? Math.min(1, (now - cur.at) / Math.max(30, cur.at - prev.at)) : 1;
+  const span = prev ? Math.max(30, cur.at - prev.at) : 66;
+  const t = Math.min(1, Math.max(0, (now - cur.at) / span));
   const old = new Map(prev ? prev.snap.units.map((u) => [u[0], u] as const) : []);
+  const mine = myUnit();
   for (const u of cur.snap.units) {
     const o = old.get(u[0]);
-    if (o && Math.hypot(o[3] - u[3], o[4] - u[4]) < 2) out.set(u[0], { x: o[3] + (u[3] - o[3]) * t, y: o[4] + (u[4] - o[4]) * t });
-    else out.set(u[0], { x: u[3], y: u[4] });
+    let tx = u[3];
+    let ty = u[4];
+    if (o && Math.hypot(o[3] - u[3], o[4] - u[4]) < 2) {
+      tx = u[3] + (u[3] - o[3]) * t;
+      ty = u[4] + (u[4] - o[4]) * t;
+    }
+    // predicción local del propio personaje
+    if (predict && mine && u[0] === mine[0]) {
+      const age = (now - predict.t0) / 1000;
+      const serverMoved = Math.hypot(u[3] - predict.serverAt[0], u[4] - predict.serverAt[1]) > 0.05;
+      if (!serverMoved && age < 0.45) {
+        const dx = predict.tx - predict.from.x;
+        const dy = predict.ty - predict.from.y;
+        const dist = Math.hypot(dx, dy);
+        const step = Math.min(dist, mySpeed() * age);
+        if (dist > 0.01) {
+          tx = predict.from.x + (dx / dist) * step;
+          ty = predict.from.y + (dy / dist) * step;
+        }
+      } else predict = null;
+    }
+    const d = disp.get(u[0]);
+    if (!d || Math.hypot(d.x - tx, d.y - ty) > 2.5) disp.set(u[0], { x: tx, y: ty });
+    else {
+      d.x += (tx - d.x) * 0.45;
+      d.y += (ty - d.y) * 0.45;
+    }
+    out.set(u[0], { ...disp.get(u[0])! });
   }
   return out;
 }

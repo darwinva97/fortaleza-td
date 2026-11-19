@@ -119,6 +119,7 @@ export interface HuntUnit {
   maxHp: number;
   path: [number, number][];
   goal: { x: number; y: number; w: number; h: number; near: boolean } | null;
+  dest: { x: number; y: number } | null; // punto exacto donde pararse (orden de mover)
   order: Order;
   atkCd: number;
   alive: boolean;
@@ -297,6 +298,7 @@ function newUnit(st: HuntState, owner: string, kind: UnitKind, x: number, y: num
     maxHp: hp,
     path: [],
     goal: null,
+    dest: null,
     order: { k: 'idle' },
     atkCd: 0,
     alive: true,
@@ -547,10 +549,50 @@ export function huntFindPath(
   return { path, reached: found !== -1 || (goal.near ? isGoal(sx, sy) : sx === goal.x && sy === goal.y) };
 }
 
-function routeTo(st: HuntState, map: HuntMap, g: Uint8Array, u: HuntUnit, goal: NonNullable<HuntUnit['goal']>): boolean {
+// ¿Se puede ir en línea recta de A a B sin rozar nada? Muestrea el segmento con un
+// pequeño margen a los lados (el «cuerpo» de la unidad) para no cortar esquinas.
+function clearLine(g: Uint8Array, w: number, h: number, ax: number, ay: number, bx: number, by: number): boolean {
+  const d = Math.hypot(bx - ax, by - ay);
+  const steps = Math.max(1, Math.ceil(d / 0.2));
+  const R = 0.3;
+  for (let i = 1; i <= steps; i++) {
+    const x = ax + ((bx - ax) * i) / steps;
+    const y = ay + ((by - ay) * i) / steps;
+    for (const [ox, oy] of [[0, 0], [R, R], [R, -R], [-R, R], [-R, -R]] as const) {
+      const cx = Math.floor(x + ox);
+      const cy = Math.floor(y + oy);
+      if (cx < 0 || cy < 0 || cx >= w || cy >= h || g[cy * w + cx]) return false;
+    }
+  }
+  return true;
+}
+
+// Alisa el camino de casillas: se salta las intermedias mientras haya línea
+// recta, así la unidad camina en diagonales limpias y no en zigzag.
+function smoothPath(g: Uint8Array, w: number, h: number, sx: number, sy: number, path: [number, number][]): [number, number][] {
+  if (path.length <= 1) return path;
+  const out: [number, number][] = [];
+  let fx = sx;
+  let fy = sy;
+  let i = 0;
+  while (i < path.length) {
+    let j = path.length - 1;
+    while (j > i && !clearLine(g, w, h, fx, fy, path[j][0] + 0.5, path[j][1] + 0.5)) j--;
+    out.push(path[j]);
+    fx = path[j][0] + 0.5;
+    fy = path[j][1] + 0.5;
+    i = j + 1;
+  }
+  return out;
+}
+
+function routeTo(st: HuntState, map: HuntMap, g: Uint8Array, u: HuntUnit, goal: NonNullable<HuntUnit['goal']>, dest: { x: number; y: number } | null = null): boolean {
   u.goal = goal;
+  u.dest = dest;
   const res = huntFindPath(g, map.w, map.h, cell(u.x), cell(u.y), goal);
-  u.path = res.path;
+  u.path = smoothPath(g, map.w, map.h, u.x, u.y, res.path);
+  // destino en la misma casilla: ir directo al punto pinchado
+  if (dest && u.path.length === 0 && res.reached) u.path = [[cell(dest.x), cell(dest.y)]];
   u.repathAt = st.tick + T(1);
   return res.reached;
 }
@@ -1207,10 +1249,11 @@ function applyCommand(st: HuntState, map: HuntMap, playerId: string, cmd: HuntCo
       if (held) return reject(ev, playerId, 'Aún estás retenido en la guarida');
       u.channelEnd = 0;
       u.order = { k: 'move' };
-      routeTo(st, map, g, u, pointGoal(cmd.x, cmd.y));
+      routeTo(st, map, g, u, pointGoal(cmd.x, cmd.y), { x: cmd.x, y: cmd.y });
       return;
     }
     case 'stop':
+      u.dest = null;
       u.path = [];
       u.goal = null;
       u.order = { k: 'idle' };
@@ -1568,16 +1611,20 @@ function moveUnit(st: HuntState, map: HuntMap, g: Uint8Array, u: HuntUnit): void
     const [cx, cy] = u.path[0];
     if (g[cy * map.w + cx]) {
       // alguien construyó en el camino: recalcular
-      if (u.goal && st.tick >= u.repathAt) routeTo(st, map, g, u, u.goal);
+      if (u.goal && st.tick >= u.repathAt) routeTo(st, map, g, u, u.goal, u.dest);
       else u.path = [];
       return;
     }
-    const dx = cx + 0.5 - u.x;
-    const dy = cy + 0.5 - u.y;
+    // el último tramo de una orden de mover termina en el punto exacto pinchado
+    const last = u.path.length === 1 && u.dest && cell(u.dest.x) === cx && cell(u.dest.y) === cy;
+    const px = last ? u.dest!.x : cx + 0.5;
+    const py = last ? u.dest!.y : cy + 0.5;
+    const dx = px - u.x;
+    const dy = py - u.y;
     const d = Math.hypot(dx, dy);
     if (d <= budget) {
-      u.x = cx + 0.5;
-      u.y = cy + 0.5;
+      u.x = px;
+      u.y = py;
       budget -= d;
       u.path.shift();
     } else {
