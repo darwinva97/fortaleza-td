@@ -154,16 +154,34 @@
 .hk-mini canvas { width: 100%; height: 100%; image-rendering: pixelated; border-radius: 7px; cursor: pointer; display: block; }
 
 /* ---------- tarjeta de mando ---------- */
-.hk-card-wrap {
+/* Consola única abajo: la barra de mando y, PEGADOS a ella, el panel de lo
+   seleccionado (edificio o unidad) y la tienda. Si no caben al lado, suben a
+   una fila justo encima (wrap-reverse), nunca a una esquina lejana. */
+.hk-dock {
   position: absolute;
-  left: 50%;
+  left: 224px;
+  right: 12px;
   bottom: 12px;
-  transform: translateX(-50%);
+  display: flex;
+  flex-wrap: wrap-reverse;
+  align-items: flex-end;
+  justify-content: center;
+  pointer-events: none;
+}
+.hk-dock-in { position: relative; display: flex; align-items: flex-end; gap: 8px; max-width: 100%; pointer-events: none; }
+.hk-dock-in > * { pointer-events: auto; }
+.hk-side { display: flex; align-items: flex-end; gap: 8px; }
+.hk-side > [hidden] { display: none; }
+.hk-side:not(:has(> :not([hidden]))) { display: none; }
+/* no cabe al lado: encima del extremo derecho de la barra */
+.hk-dock-in.stack .hk-side { position: absolute; right: 0; bottom: calc(100% + 8px); }
+.hk-card-wrap {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  max-width: calc(100vw - 460px);
+  max-width: 100%;
+  min-width: 0;
 }
 .hk-unitbar:empty, .hk-card:empty { display: none; }
 .hk-unitbar { display: flex; flex-direction: column; align-items: center; gap: 4px; }
@@ -209,7 +227,7 @@
 .hk-group { display: flex; flex-direction: column; gap: 4px; }
 .hk-group + .hk-group { border-left: 1px solid var(--hk-border); padding-left: 10px; }
 .hk-label { font-size: 0.62rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--hk-muted); font-weight: 700; }
-.hk-row { display: flex; gap: 5px; }
+.hk-row { display: flex; gap: 4px; }
 .hk-hint { font-size: 0.75rem; color: var(--hk-muted); max-width: 220px; align-self: center; }
 
 .hk-btn {
@@ -219,8 +237,8 @@
   align-items: center;
   justify-content: center;
   gap: 1px;
-  min-width: 56px;
-  height: 62px;
+  min-width: 49px;
+  height: 58px;
   padding: 4px 6px;
   border-radius: 11px;
   border: 1px solid var(--hk-border-2);
@@ -314,11 +332,9 @@
 
 /* ---------- panel del edificio ---------- */
 .hk-panel, .hk-shop {
-  position: absolute;
-  right: 12px;
-  bottom: 12px;
-  width: 300px;
-  max-height: calc(100vh - 140px);
+  position: relative;
+  width: 290px;
+  max-height: calc(100vh - 170px);
   overflow-y: auto;
   background: var(--hk-glass-2);
   border: 1px solid var(--hk-border-2);
@@ -330,7 +346,7 @@
   flex-direction: column;
   gap: 8px;
 }
-.hk-shop { width: 430px; }
+.hk-shop { width: 400px; }
 .hk-panel-head { display: flex; align-items: center; gap: 10px; }
 .hk-panel-head .ic.big { font-size: 2.4rem; display: inline-flex; }
 .hk-panel-head b { display: block; font-size: 1rem; }
@@ -532,5 +548,6 @@
 }
 .hk-team .tm .give .px { font-size: 0.85rem; }
 .hk-team { pointer-events: none; }
-/* la tienda no tapa el inventario de la tarjeta de mando */
-.hk-shop { bottom: 118px; max-height: calc(100vh - 250px); }
+.bar.hp.foe i { background: linear-gradient(90deg, #b3261e, #ff6b5e); }
+.hk-panel .hk-row.inv { flex-wrap: wrap; }
+.hk-dock-in .hk-card-wrap { flex-shrink: 0; max-width: calc(100vw - 248px); }

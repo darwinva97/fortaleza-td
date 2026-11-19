@@ -49,6 +49,7 @@ import {
   type HuntSnap,
   type HuntSnapBuilding,
   type HuntSnapUnit,
+  type HuntSnapMe,
   type ItemLine,
   type LevelDef,
   type Req,
@@ -78,6 +79,7 @@ let placing: BuildingType | null = null;
 let targeting: Ability | null = null;
 let useSlot = -1; // consumible que se usa sobre un punto
 let selected = 0; // edificio propio seleccionado
+let inspect = 0; // unidad que estás mirando (clic sobre ella): vida, equipo...
 let shopOpen = false;
 let zoom = 1;
 let follow = true;
@@ -329,12 +331,16 @@ function build(): void {
     <div class="hk-banner" id="hk-banner" hidden></div>
     <div class="hk-toasts"></div>
     <div class="hk-mini"><canvas id="hk-mini"></canvas></div>
-    <div class="hk-card-wrap">
-      <div class="hk-unitbar" id="hk-unitbar"></div>
-      <div class="hk-card" id="hk-card"></div>
-    </div>
-    <div class="hk-panel" id="hk-panel" hidden></div>
-    <div class="hk-shop" id="hk-shop" hidden></div>
+    <div class="hk-dock"><div class="hk-dock-in" id="hk-dock-in">
+      <div class="hk-card-wrap">
+        <div class="hk-unitbar" id="hk-unitbar"></div>
+        <div class="hk-card" id="hk-card"></div>
+      </div>
+      <div class="hk-side">
+        <div class="hk-panel" id="hk-panel" hidden></div>
+        <div class="hk-shop" id="hk-shop" hidden></div>
+      </div>
+    </div></div>
     <div class="hk-modal" id="hk-modal" hidden></div>
     <div class="hk-tip" id="hk-tip" hidden></div>
     <div class="hk-end" id="hk-end" hidden></div>`;
@@ -462,11 +468,30 @@ function onWorldClick(x: number, y: number, right: boolean): void {
   }
   // ¿clic sobre un edificio propio? → seleccionar
   const own = myBuildings().find((o) => cx >= o[3] && cx < o[3] + bSize(o) && cy >= o[4] && cy < o[4] + bSize(o));
+  // ¿clic sobre una unidad? → inspeccionarla (vida, nivel, objetos del cazador...)
+  let best: HuntSnapUnit | undefined;
+  let bestD = 0.75;
+  for (const u of cur.snap.units) {
+    const p = disp.get(u[0]) ?? { x: u[3], y: u[4] };
+    // el dibujo está por encima de los pies: se acepta pinchar en el cuerpo
+    const d = Math.min(Math.hypot(p.x - x, p.y - y), Math.hypot(p.x - x, p.y - 0.5 - y));
+    if (d < bestD) {
+      bestD = d;
+      best = u;
+    }
+  }
+  if (best) {
+    inspect = best[0];
+    selected = 0;
+    return;
+  }
   if (own && m.side === 'elf') {
     selected = own[0];
+    inspect = 0;
     return;
   }
   selected = 0;
+  inspect = 0;
 }
 
 // una orden que no es WASD: el servidor suelta la dirección; hasta que cambien
@@ -604,6 +629,7 @@ function onKey(e: KeyboardEvent): void {
     targeting = null;
     useSlot = -1;
     selected = 0;
+    inspect = 0;
     shopOpen = false;
     return;
   }
@@ -737,7 +763,10 @@ function onUiClick(e: Event): void {
       send({ k: 'sell', slot: n });
       break;
     case 'close':
-      if (v === 'panel') selected = 0;
+      if (v === 'panel') {
+        selected = 0;
+        inspect = 0;
+      }
       if (v === 'shop') shopOpen = false;
       if (v === 'modal') root.querySelector<HTMLElement>('#hk-modal')!.hidden = true;
       break;
@@ -1030,6 +1059,7 @@ function syncHud(): void {
   syncCard();
   syncPanel();
   syncShop();
+  layoutDock();
   syncChoose();
 }
 
@@ -1039,6 +1069,70 @@ function abilityButton(a: Ability): string {
   const tip = `<b>${def.name}</b> <kbd>${def.key}</kbd><br>${esc(def.desc)}<br><small>Recarga ${def.cd} s</small>`;
   return `<button class="hk-btn ab${targeting === a ? ' on' : ''}" data-act="ability" data-v="${a}" data-tip="${esc(tip)}">
     <span class="ic">${icon(def.icon, def.emoji)}</span><kbd>${def.key}</kbd>${cd > 0 ? `<span class="cd">${cd}</span>` : ''}</button>`;
+}
+
+// huecos del inventario. `own`: los tuyos (se usan con clic y llevan su tecla);
+// si no, solo se miran (el equipo del cazador visto por un colono)
+function invHtml(inv: HuntSnapMe['inv'], own: boolean): string {
+  const act = (i: number) => (own ? ` data-act="slot" data-n="${i}"` : '');
+  const key = (i: number) => (own ? `<kbd>${i + 1}</kbd>` : '');
+  return inv
+    .map((it, i) => {
+      if (!it) return `<button class="hk-slot empty"${act(i)}>${key(i)}</button>`;
+      if (it.kind === 'cons') {
+        const c = CONSUMABLES[it.c];
+        return `<button class="hk-slot"${act(i)} data-tip="${esc(`<b>${c.name}</b><br>${c.desc}${own && it.c !== 'ankh' ? '<br><small>Clic para usar</small>' : ''}`)}"><span class="ic">${icon(c.icon)}</span>${key(i)}</button>`;
+      }
+      if (it.kind === 'trinket') {
+        const t = TRINKETS[it.t];
+        return `<button class="hk-slot t2"${act(i)} data-tip="${esc(`<b>${t.name}</b><br>${t.desc}${own ? '<br><small>Mayús+clic en la guarida: vender por la mitad</small>' : ''}`)}"><span class="ic">${icon(t.icon)}</span></button>`;
+      }
+      const tier = ITEMS[it.line].tiers[it.tier];
+      const stat = it.line === 'gloves' ? `+${Math.round(tier.value * 100)} %` : `+${fmt(tier.value)}`;
+      return `<button class="hk-slot t${Math.min(4, Math.floor(it.tier / 3))}"${act(i)} data-tip="${esc(`<b>${tier.name}</b><br>${stat} ${ITEMS[it.line].stat}${own ? '<br><small>Mayús+clic en la guarida: vender por la mitad</small>' : ''}`)}"><span class="ic">${icon(tier.icon)}</span><span class="lv">${it.tier + 1}</span></button>`;
+    })
+    .join('');
+}
+function bootsHtml(level: number, own: boolean): string {
+  const boots = level >= 0 ? ITEMS.boots.tiers[level] : null;
+  const tip = boots ? `<b>${boots.name}</b><br>+${Math.round(boots.value * 128)} de velocidad${own ? '<br><small>Hueco propio de las botas</small>' : ''}` : own ? 'Hueco para botas (cómpralas en la tienda)' : 'Sin botas';
+  return `<button class="hk-slot boots${boots ? ' t1' : ' empty'}" data-tip="${esc(tip)}"><span class="ic">${icon('hk:item-boots')}</span></button>`;
+}
+
+const KIND_NAME: Record<UnitKind, string> = {
+  hunter: 'Cazador',
+  elf: 'Colono',
+  angel: 'Ángel',
+  wolf: 'Lobo',
+  repairer: 'Reparador',
+  lumberjack: 'Leñador',
+  beast: 'Bestia del cazador',
+  mage: 'Mago élfico',
+};
+
+// ficha de la unidad que inspeccionas: vida, nivel y, si es el cazador o un
+// lobo, sus estadísticas y sus objetos
+function inspectHtml(u: HuntSnapUnit): string {
+  const kind = UNIT_KIND_ORDER[u[1]];
+  const owner = init?.players[u[2]];
+  const sp = cur?.snap.players[u[2]];
+  const main = kind === 'hunter' || kind === 'wolf' || kind === 'elf' || kind === 'angel';
+  const gear = main && (kind === 'hunter' || kind === 'wolf') ? sp?.gear : undefined;
+  const sub = kind === 'hunter' || kind === 'wolf' ? `${KIND_NAME[kind]} · nivel ${u[8]}` : kind === 'repairer' || kind === 'lumberjack' ? `${KIND_NAME[kind]} de ${esc(owner?.name ?? '')}` : KIND_NAME[kind];
+  const title = main ? esc(owner?.name ?? KIND_NAME[kind]) : KIND_NAME[kind];
+  const frac = Math.max(0, u[5] / Math.max(1, u[6]));
+  const lines: string[] = [];
+  lines.push(`<div class="bar hp${kind === 'hunter' || kind === 'wolf' ? ' foe' : ''}"><i style="width:${frac * 100}%"></i><span>${fmt(u[5])} / ${fmt(u[6])}</span></div>`);
+  if (gear) {
+    const st = (k: string, v: string) => `<span class="st"><em>${k}</em>${v}</span>`;
+    lines.push(
+      `<div class="hk-stats-grid">${st('daño', fmt(gear.stats.dmg))}${st('armadura', fmt(gear.stats.armor))}${st('golpe cada', `${gear.stats.attackSec}s`)}${st('velocidad', String(gear.stats.speed))}${st('regen', `${fmt(gear.stats.regen)}/s`)}</div>`,
+    );
+    lines.push(`<div class="hk-label">Objetos</div><div class="hk-row inv">${invHtml(gear.inv, false)}<span class="hk-sep"></span>${bootsHtml(gear.boots, false)}</div>`);
+  } else if (kind === 'hunter' || kind === 'wolf') {
+    lines.push(`<div class="hk-hint">No ves su equipo ahora mismo.</div>`);
+  }
+  return `<div class="hk-panel-head"><span class="ic big">${icon(UNIT_ICON[kind])}</span><div><b>${title}</b><small>${sub}</small></div><button data-act="close" data-v="panel">✕</button></div>${lines.join('')}`;
 }
 
 function syncCard(): void {
@@ -1093,24 +1187,8 @@ function syncCard(): void {
       <div class="hk-group"><div class="hk-label">Habilidades</div><div class="hk-row">${abilities}${book}${mage}</div></div>
       <div class="hk-group"><div class="hk-label">Mercado</div>${market}</div>`;
   } else if (m.side === 'hunter') {
-    const inv = m.inv
-      .map((it, i) => {
-        if (!it) return `<button class="hk-slot empty" data-act="slot" data-n="${i}"><kbd>${i + 1}</kbd></button>`;
-        if (it.kind === 'cons') {
-          const c = CONSUMABLES[it.c];
-          return `<button class="hk-slot" data-act="slot" data-n="${i}" data-tip="${esc(`<b>${c.name}</b><br>${c.desc}${it.c !== 'ankh' ? '<br><small>Clic para usar</small>' : ''}`)}"><span class="ic">${icon(c.icon)}</span><kbd>${i + 1}</kbd></button>`;
-        }
-        if (it.kind === 'trinket') {
-          const t = TRINKETS[it.t];
-          return `<button class="hk-slot t2" data-act="slot" data-n="${i}" data-tip="${esc(`<b>${t.name}</b><br>${t.desc}<br><small>Mayús+clic en la guarida: vender por la mitad</small>`)}"><span class="ic">${icon(t.icon)}</span></button>`;
-        }
-        const tier = ITEMS[it.line].tiers[it.tier];
-        const stat = it.line === 'gloves' ? `+${Math.round(tier.value * 100)} %` : `+${fmt(tier.value)}`;
-        return `<button class="hk-slot t${Math.min(4, Math.floor(it.tier / 3))}" data-act="slot" data-n="${i}" data-tip="${esc(`<b>${tier.name}</b><br>${stat} ${ITEMS[it.line].stat}<br><small>Mayús+clic en la guarida: vender por la mitad</small>`)}"><span class="ic">${icon(tier.icon)}</span><span class="lv">${it.tier + 1}</span></button>`;
-      })
-      .join('');
-    const boots = m.boots >= 0 ? ITEMS.boots.tiers[m.boots] : null;
-    const bootsSlot = `<button class="hk-slot boots${boots ? ' t1' : ' empty'}" data-tip="${esc(boots ? `<b>${boots.name}</b><br>+${Math.round(boots.value * 128)} de velocidad<br><small>Hueco propio de las botas</small>` : 'Hueco para botas (cómpralas en la tienda)')}"><span class="ic">${icon('hk:item-boots')}</span></button>`;
+    const inv = invHtml(m.inv, true);
+    const bootsSlot = bootsHtml(m.boots, true);
     card = `<div class="hk-group"><div class="hk-label">Habilidades</div><div class="hk-row">${abilities}</div></div>
       <div class="hk-group"><div class="hk-label">Inventario</div><div class="hk-row inv">${inv}<span class="hk-sep"></span>${bootsSlot}</div></div>
       <div class="hk-group"><div class="hk-label">Guarida</div><div class="hk-row"><button class="hk-btn ab shopbtn${shopOpen ? ' on' : ''}" data-act="shop" data-tip="Tienda de la guarida (G). Solo se compra estando cerca."><span class="ic">${icon('hk:shop')}</span><kbd>G</kbd>${m.nearShop ? '<span class="dot"></span>' : ''}</button></div></div>`;
@@ -1128,6 +1206,13 @@ function syncPanel(): void {
   const m = me();
   if (!b || !m || cur!.snap.over || m.form !== 'elf') {
     if (selected && !b) selected = 0;
+    const iu = inspect && cur && !cur.snap.over ? cur.snap.units.find((o) => o[0] === inspect) : undefined;
+    if (inspect && !iu) inspect = 0;
+    if (iu) {
+      setHtml('hk-panel', inspectHtml(iu));
+      panel.hidden = false;
+      return;
+    }
     if (!panel.hidden) panel.hidden = true;
     hashes['hk-panel'] = '';
     return;
@@ -1204,6 +1289,24 @@ function syncPanel(): void {
     <button class="hk-btn sm danger" data-act="demolish" data-tip="Derribar (Supr). Solo con la vida casi entera y sin el cazador cerca. No devuelve nada.">${icon('hk:demolish')} Derribar</button>`;
   setHtml('hk-panel', html);
   panel.hidden = false;
+}
+
+// el panel y la tienda van AL LADO de la barra de mando si caben; si no, flotan
+// justo encima de su extremo derecho (cerca de la mano, sin tapar el centro)
+function layoutDock(): void {
+  const dock = root.querySelector<HTMLElement>('.hk-dock');
+  const inner = root.querySelector<HTMLElement>('#hk-dock-in');
+  const side = root.querySelector<HTMLElement>('.hk-side');
+  const card = root.querySelector<HTMLElement>('.hk-card-wrap');
+  if (!dock || !inner || !side || !card) return;
+  const open = [...side.children].some((c) => !(c as HTMLElement).hidden);
+  if (!open) {
+    inner.classList.remove('stack');
+    return;
+  }
+  const sideW = Math.max(...[...side.children].map((c) => ((c as HTMLElement).hidden ? 0 : (c as HTMLElement).offsetWidth)));
+  const fits = card.offsetWidth + 8 + sideW <= dock.clientWidth;
+  inner.classList.toggle('stack', !fits);
 }
 
 function syncShop(): void {
@@ -1607,6 +1710,15 @@ function drawUnit(u: HuntSnapUnit, x: number, y: number, now: number, moving: bo
   const topY = sheet ? footY - (SPRITE_TILES[kind] ?? 1.3) * s * 0.92 : y - size * 0.55;
   const invis = (u[7] & 1) !== 0;
   g.save();
+  if (u[0] === inspect) {
+    g.strokeStyle = '#ffcd45';
+    g.lineWidth = 2;
+    g.setLineDash([5, 4]);
+    g.beginPath();
+    g.ellipse(x, footY, size * 0.48, size * 0.17, 0, 0, Math.PI * 2);
+    g.stroke();
+    g.setLineDash([]);
+  }
   if (invis) g.globalAlpha = 0.45;
   // sombra y aro del dueño
   g.fillStyle = 'rgba(0,0,0,0.38)';
@@ -2161,6 +2273,14 @@ function drawMini(pos: Map<number, { x: number; y: number }>, x0: number, y0: nu
 // ganchos para la prueba visual (tools/huntvisual.ts): abrir paneles sin clicar el canvas
 (window as unknown as { __hunt?: unknown }).__hunt = {
   select: (id: number) => (selected = id),
+  inspectKind: (kind: UnitKind) => {
+    const u = cur?.snap.units.find((o) => UNIT_KIND_ORDER[o[1]] === kind);
+    if (u) {
+      inspect = u[0];
+      selected = 0;
+    }
+    return !!u;
+  },
   shop: () => (shopOpen = true),
   book: () => openBook(),
   // prueba de movimiento: registra fotograma a fotograma dónde se pinta tu personaje

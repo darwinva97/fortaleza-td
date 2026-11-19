@@ -209,6 +209,7 @@ async function partida(view: 'colonist' | 'hunter'): Promise<void> {
       `(() => { const b = window.__hunt.mine().find((x) => x.type === 'wall') || window.__hunt.mine()[0]; if (b) window.__hunt.select(b.id); })()`);
     await shot(`http://localhost:${PORT}/?n=${who.name}#${code}`, join(OUT, 'colono-3-libro.png'), 4000, 'window.__hunt.book()');
     await shot(`http://localhost:${PORT}/?n=${who.name}#${code}`, join(OUT, 'colono-4-lenadores.png'), 9000, 'window.__hunt.zoom(1.5)');
+    await shot(`http://localhost:${PORT}/?n=${who.name}#${code}`, join(OUT, 'colono-5-ver-cazador.png'), 5000, "window.__hunt.inspectKind('hunter')");
   } else {
     await sleep(46000);
     who.ws.close();

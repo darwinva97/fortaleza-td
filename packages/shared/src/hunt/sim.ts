@@ -2243,6 +2243,9 @@ export interface HuntSnapPlayer {
   connected: boolean;
   gold: number; // −1: oculto (otro bando)
   level: number;
+  // equipo del cazador o de un lobo, visible si su bando o tú lo veis (como al
+  // seleccionar al troll en el original)
+  gear?: { inv: (InvSlot | null)[]; boots: number; stats: { dmg: number; armor: number; attackSec: number; speed: number; regen: number }; hp: number; maxHp: number };
 }
 
 export interface HuntSnapMe {
@@ -2442,14 +2445,30 @@ export function buildHuntSnap(st: HuntState, viewerId: string | null): HuntSnap 
     night: isNightAt(st),
     minute: huntMinute(st),
     market: st.market,
-    players: st.players.map((p) => ({
-      id: p.id,
-      form: p.form,
-      alive: p.alive,
-      connected: p.connected,
-      gold: !viewer || v.all || p.side === viewer.side ? Math.floor(p.gold) : -1,
-      level: p.level,
-    })),
+    players: st.players.map((p) => {
+      const out: HuntSnapPlayer = {
+        id: p.id,
+        form: p.form,
+        alive: p.alive,
+        connected: p.connected,
+        gold: !viewer || v.all || p.side === viewer.side ? Math.floor(p.gold) : -1,
+        level: p.level,
+      };
+      if (p.form === 'hunter' || p.form === 'wolf') {
+        const pu = mainUnit(st, p.id);
+        if (pu && pu.alive && units.some((x) => x[0] === pu.id)) {
+          const fs = fighterStats(st, p, pu);
+          out.gear = {
+            inv: p.inv,
+            boots: p.boots,
+            stats: { dmg: Math.round(fs.dmg), armor: Math.round(fs.armor), attackSec: r2(fs.attackSec), speed: r2(fs.speed), regen: r2(fs.regen) },
+            hp: Math.ceil(pu.hp),
+            maxHp: Math.round(pu.maxHp),
+          };
+        }
+      }
+      return out;
+    }),
     me,
     units,
     buildings,
