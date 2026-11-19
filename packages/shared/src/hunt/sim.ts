@@ -121,6 +121,12 @@ export interface HuntUnit {
   path: [number, number][];
   goal: { x: number; y: number; w: number; h: number; near: boolean } | null;
   dest: { x: number; y: number } | null; // punto exacto donde pararse (orden de mover)
+  sx: number; // dirección de WASD (-1, 0, 1); 0,0 = sin teclas
+  sy: number;
+  claimAt: number; // último tick en que el cliente corrigió su posición (WASD)
+  actUntil: number; // golpeando o reparando hasta este tick (para la animación)
+  actX: number; // hacia dónde (centro del objetivo)
+  actY: number;
   order: Order;
   atkCd: number;
   alive: boolean;
@@ -231,6 +237,7 @@ export interface HuntState {
 
 export type HuntCommand =
   | { k: 'move'; x: number; y: number }
+  | { k: 'steer'; dx: number; dy: number; x?: number; y?: number }
   | { k: 'attack'; target: number }
   | { k: 'repair'; target: number }
   | { k: 'stop' }
@@ -287,6 +294,15 @@ export const huntMinute = (st: HuntState): number => Math.max(0, Math.floor((st.
 
 // ---------- creación ----------
 
+// dirección de la acción en curso (golpe o reparación) para la animación
+function actDir(st: HuntState, u: HuntUnit): number {
+  if (u.actUntil <= st.tick) return 0;
+  const dx = u.actX - u.x;
+  const dy = u.actY - u.y;
+  if (Math.abs(dx) > Math.abs(dy)) return dx < 0 ? 2 : 3;
+  return dy < 0 ? 4 : 1;
+}
+
 function newUnit(st: HuntState, owner: string, kind: UnitKind, x: number, y: number, hp: number, tier = 0): HuntUnit {
   const u: HuntUnit = {
     id: st.nextId++,
@@ -298,6 +314,12 @@ function newUnit(st: HuntState, owner: string, kind: UnitKind, x: number, y: num
     hp,
     maxHp: hp,
     path: [],
+    sx: 0,
+    sy: 0,
+    claimAt: 0,
+    actUntil: 0,
+    actX: 0,
+    actY: 0,
     goal: null,
     dest: null,
     order: { k: 'idle' },
@@ -913,6 +935,14 @@ function strike(st: HuntState, att: HuntUnit, p: HuntPlayer, target: { b?: HuntB
   const map = getHuntMap();
   void map;
   att.invisUntil = 0; // atacar descubre
+  att.actUntil = st.tick + T(0.6);
+  if (target.b) {
+    att.actX = target.b.cx + target.b.size / 2;
+    att.actY = target.b.cy + target.b.size / 2;
+  } else if (target.u) {
+    att.actX = target.u.x;
+    att.actY = target.u.y;
+  }
   if (st.tick < att.focusUntil || att.focus === 0) att.focus = Math.min(HUNTER.focusMax, att.focus + 1);
   att.focusUntil = st.tick + T(HUNTER.focusSec);
   // el hielo cercano congela la cadencia
@@ -1246,6 +1276,40 @@ function applyCommand(st: HuntState, map: HuntMap, playerId: string, cmd: HuntCo
   }
 
   if (cmd.k === 'ability') return castAbility(st, map, g, p, u, cmd, ev);
+
+  // WASD: mientras haya una tecla pulsada manda la dirección y anula la orden
+  if (cmd.k === 'steer') {
+    const dx = Math.sign(Number(cmd.dx) || 0);
+    const dy = Math.sign(Number(cmd.dy) || 0);
+    // el cliente dice dónde estaba al cambiar de tecla. La red no tarda lo mismo
+    // en llevar «pulsé» y «solté», así que sin esto al soltar el personaje
+    // retrocede o da un tirón. Se acepta solo un ajuste pequeño, sin atravesar
+    // nada y limitado por el tiempo (no sirve para correr más que nadie).
+    if (num(cmd.x) && num(cmd.y) && !held && canAct(st, u) && u.rootUntil <= st.tick && u.channelEnd === 0 && (u.sx || u.sy)) {
+      const d = Math.hypot(cmd.x - u.x, cmd.y - u.y);
+      const budget = Math.min(0.9, (unitSpeed(st, u) / TICK_RATE) * (st.tick - u.claimAt) * 0.6);
+      if (d > 0 && d <= budget && freeAt(map, g, cmd.x, cmd.y) && clearLine(g, map.w, map.h, u.x, u.y, cmd.x, cmd.y)) {
+        u.x = cmd.x;
+        u.y = cmd.y;
+      }
+      u.claimAt = st.tick;
+    }
+    u.sx = dx;
+    u.sy = dy;
+    if (dx || dy) {
+      u.path = [];
+      u.goal = null;
+      u.dest = null;
+      u.channelEnd = 0;
+      if (u.order.k !== 'idle') u.order = { k: 'idle' };
+    }
+    return;
+  }
+  // cualquier otra orden de movimiento suelta el WASD
+  if (cmd.k === 'move' || cmd.k === 'stop' || cmd.k === 'attack' || cmd.k === 'repair' || cmd.k === 'build') {
+    u.sx = 0;
+    u.sy = 0;
+  }
 
   // a partir de aquí, órdenes de movimiento
   if (!canAct(st, u)) return;
@@ -1610,9 +1674,45 @@ function castAbility(
 
 // ---------- un tick ----------
 
+// ¿cabe una unidad (radio STEER_R) en (x, y)?
+const STEER_R = 0.3;
+function freeAt(map: HuntMap, g: Uint8Array, x: number, y: number): boolean {
+  for (const [ox, oy] of [[-STEER_R, -STEER_R], [STEER_R, -STEER_R], [-STEER_R, STEER_R], [STEER_R, STEER_R]]) {
+    const cx = cell(x + ox);
+    const cy = cell(y + oy);
+    if (cx < 0 || cy < 0 || cx >= map.w || cy >= map.h || g[cy * map.w + cx]) return false;
+  }
+  return true;
+}
+
+// movimiento directo con WASD: avanza en la dirección y se desliza por las paredes
+export function steerStep(map: HuntMap, g: Uint8Array, x: number, y: number, sx: number, sy: number, dist: number): { x: number; y: number } {
+  const k = sx && sy ? Math.SQRT1_2 : 1;
+  const nx = x + sx * k * dist;
+  const ny = y + sy * k * dist;
+  // si ya estaba metido en un bloqueado (p. ej. construyeron encima), dejarle salir
+  const stuck = !freeAt(map, g, x, y);
+  if (stuck || freeAt(map, g, nx, ny)) return { x: nx, y: ny };
+  if (sx && freeAt(map, g, nx, y)) return { x: nx, y };
+  if (sy && freeAt(map, g, x, ny)) return { x, y: ny };
+  // pegado a la pared: acercarse lo que quepa
+  for (let f = 0.75; f > 0.05; f -= 0.25) {
+    const fx = x + sx * k * dist * f;
+    const fy = y + sy * k * dist * f;
+    if (freeAt(map, g, fx, fy)) return { x: fx, y: fy };
+  }
+  return { x, y };
+}
+
 function moveUnit(st: HuntState, map: HuntMap, g: Uint8Array, u: HuntUnit): void {
   if (u.rootUntil > st.tick || u.stunUntil > st.tick || u.channelEnd > 0) return;
   let budget = unitSpeed(st, u) / TICK_RATE;
+  if ((u.sx || u.sy) && u.path.length === 0) {
+    const p = steerStep(map, g, u.x, u.y, u.sx, u.sy, budget);
+    u.x = p.x;
+    u.y = p.y;
+    return;
+  }
   while (budget > 0 && u.path.length > 0) {
     const [cx, cy] = u.path[0];
     if (g[cy * map.w + cx]) {
@@ -1938,6 +2038,9 @@ export function stepHunt(st: HuntState, cmds: HuntPlayerCommand[]): HuntEvent[] 
           if (buildingDef(b).repairBonus) rate *= 1 + (buildingDef(b).repairBonus ?? 0);
           if (owner?.spec === 'repairex') rate *= 1.25;
           b.hp = Math.min(b.maxHp, b.hp + rate / TICK_RATE);
+          u.actUntil = st.tick + 2;
+          u.actX = b.cx + b.size / 2;
+          u.actY = b.cy + b.size / 2;
         }
       }
       moveUnit(st, map, g, u);
@@ -2161,6 +2264,8 @@ export interface HuntSnapMe {
   choose: number; // segundos para elegir papel (0 = no toca)
   respawn: number;
   dest: [number, number] | null;
+  speed: number; // casillas/s reales de tu unidad (para predecir el WASD)
+  steer: [number, number]; // dirección de WASD que el servidor ya aplicó
   channel: number;
   hutLevel: number;
   hutNext: number; // coste de la siguiente mejora (0 = máx)
@@ -2171,7 +2276,8 @@ export interface HuntSnapMe {
 }
 
 // [id, tipo, jugador, x, y, vida, vida máx, flags, nivel/tier]
-export type HuntSnapUnit = [number, number, number, number, number, number, number, number, number];
+export type HuntSnapUnit = [number, number, number, number, number, number, number, number, number, number];
+// [id, tipo, jugador, x, y, vida, vida máx, flags, nivel/rango, acción]  acción: 0 nada · 1 abajo · 2 izq · 3 der · 4 arriba
 // [id, tipo, jugador, cx, cy, nivel, vida, vida máx, rama, flags, remodelaciones, armadura de la suerte, sorteo en (s)]
 export type HuntSnapBuilding = [number, number, number, number, number, number, number, number, number, number, number, number, number];
 
@@ -2254,6 +2360,8 @@ export function buildHuntSnap(st: HuntState, viewerId: string | null): HuntSnap 
       choose: viewer.form === 'choosing' ? secsLeft(viewer.chooseUntil - st.tick) : 0,
       respawn: viewer.respawnAt > 0 ? secsLeft(viewer.respawnAt - st.tick) : 0,
       dest: u && u.path.length > 0 ? u.path[u.path.length - 1] : null,
+      speed: u ? Math.round(unitSpeed(st, u) * 1000) / 1000 : 0,
+      steer: u ? [u.sx, u.sy] : [0, 0],
       channel: u && u.channelEnd > 0 ? secsLeft(u.channelEnd - st.tick) : 0,
       hutLevel: st.hutLevel,
       hutNext: HUT_LEVELS[st.hutLevel]?.cost ?? 0,
@@ -2301,7 +2409,7 @@ export function buildHuntSnap(st: HuntState, viewerId: string | null): HuntSnap 
     // el cazador invisible solo lo ve el bando de colonos si una Atalaya lo detecta
     if (!ownSide && (FIGHTER_KINDS.includes(u.kind) || u.kind === 'elf') && !detected(st, u)) visible = false;
     if (!visible) continue;
-    units.push([u.id, UNIT_KIND_ORDER.indexOf(u.kind), idx.get(u.owner) ?? 0, r2(u.x), r2(u.y), Math.ceil(u.hp), Math.round(u.maxHp), flagsOf(u), u.kind === 'hunter' || u.kind === 'wolf' ? (playerOf(st, u.owner)?.level ?? 1) : u.tier]);
+    units.push([u.id, UNIT_KIND_ORDER.indexOf(u.kind), idx.get(u.owner) ?? 0, r2(u.x), r2(u.y), Math.ceil(u.hp), Math.round(u.maxHp), flagsOf(u), u.kind === 'hunter' || u.kind === 'wolf' ? (playerOf(st, u.owner)?.level ?? 1) : u.tier, actDir(st, u)]);
   }
   const buildings: HuntSnapBuilding[] = [];
   for (const b of st.buildings) {

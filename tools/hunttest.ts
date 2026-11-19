@@ -316,6 +316,60 @@ console.log('reglas completas del original');
   void view;
 }
 
+console.log('WASD (steer)');
+{
+  const st = createHunt(2, roster, 'p1');
+  const elf = mainUnit(st, 'p2')!;
+  elf.x = inner.x + 0.5;
+  elf.y = inner.y + 0.5;
+  const x0 = elf.x;
+  run(st, sec(1), [{ playerId: 'p2', cmd: { k: 'steer', dx: 1, dy: 0 } }]);
+  assert(elf.x > x0 + 1, `el colono anda hacia la derecha con D (${(elf.x - x0).toFixed(2)} casillas en 1 s)`);
+  // contra la pared: no la atraviesa
+  run(st, sec(20));
+  const solid = (u: { x: number; y: number }) => map.tiles[Math.floor(u.y) * map.w + Math.floor(u.x)] !== 0;
+  assert(!solid(elf) && map.plotOf[Math.floor(elf.y) * map.w + Math.floor(elf.x)] === plot.id, 'contra la pared se para sin atravesarla');
+  // diagonal: se desliza por la pared
+  const y1 = elf.y;
+  run(st, sec(1), [{ playerId: 'p2', cmd: { k: 'steer', dx: 1, dy: 1 } }]);
+  assert(Math.abs(elf.y - y1) > 0.3 || solid({ x: elf.x, y: elf.y + 0.5 }), 'en diagonal contra la pared se desliza');
+  // soltar: se queda quieto
+  run(st, 1, [{ playerId: 'p2', cmd: { k: 'steer', dx: 0, dy: 0 } }]);
+  const sx = elf.x;
+  const sy = elf.y;
+  run(st, sec(2));
+  assert(elf.x === sx && elf.y === sy, 'al soltar las teclas se queda quieto');
+  // una orden (construir) suelta el WASD
+  run(st, 1, [{ playerId: 'p2', cmd: { k: 'steer', dx: -1, dy: 0 } }]);
+  run(st, 1, [{ playerId: 'p2', cmd: { k: 'build', type: 'wall', cx: door.x, cy: door.y } }]);
+  assert(elf.sx === 0 && elf.sy === 0, 'una orden de construir suelta la dirección');
+  // el cazador con WASD golpea lo que tiene pegado
+  const st2 = createHunt(3, roster, 'p1');
+  run(st2, sec(PHASE.headStart) + 2);
+  const ana = mainUnit(st2, 'p2')!;
+  ana.x = inner.x + 0.5;
+  ana.y = inner.y + 0.5;
+  run(st2, sec(30), [{ playerId: 'p2', cmd: { k: 'build', type: 'wall', cx: door.x, cy: door.y } }]);
+  const wall = st2.buildings.find((b) => b.type === 'wall');
+  const hunter = huntHunterUnit(st2)!;
+  // fuera de la puerta, mirando hacia la muralla
+  const outs = [[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dx, dy]) => ({ dx, dy, x: door.x + dx, y: door.y + dy })).filter((o) => map.tiles[o.y * map.w + o.x] === 0 && map.plotOf[o.y * map.w + o.x] !== plot.id);
+  if (wall && outs.length) {
+    const o = outs[0];
+    hunter.x = o.x + 0.5 + o.dx * 0.6;
+    hunter.y = o.y + 0.5 + o.dy * 0.6;
+    const hp0 = wall.hp;
+    run(st2, sec(4), [{ playerId: 'p1', cmd: { k: 'steer', dx: -o.dx, dy: -o.dy } }]);
+    assert(wall.hp < hp0, `el cazador empuja con WASD contra la muralla y la golpea (${hp0} → ${wall.hp.toFixed(0)})`);
+    let acting = 0;
+    for (let i = 0; i < sec(3); i++) {
+      run(st2, 1);
+      acting = Math.max(acting, buildHuntSnap(st2, 'p1').units.find((u) => u[0] === hunter.id)?.[9] ?? 0);
+    }
+    assert(acting > 0, `el snapshot marca hacia dónde golpea (para la animación): ${acting}`);
+  } else assert(false, 'no se pudo preparar la prueba del cazador contra la muralla');
+}
+
 console.log('bot y rendimiento');
 {
   const big = [

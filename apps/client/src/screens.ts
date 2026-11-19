@@ -1328,7 +1328,7 @@ function renderHuntInfo(): void {
   const card = (ic: string, title: string, text: string, cls = '') =>
     `<div class="hi-card ${cls}"><span class="hi-ic">${pxIcon(ic)}</span><div><b>${title}</b><p>${text}</p></div></div>`;
   box.innerHTML = `
-    <div class="hi-map"><canvas id="lobby-hunt-map" width="200" height="200"></canvas><span><b style="color:var(--h-fg)">Un laberinto de 26 parcelas</b><br>amuralladas y forradas de árboles. En el centro, en rojo, la guarida del cazador. Cada colono elige la suya.</span></div>
+    <div class="hi-map"><canvas id="lobby-hunt-map" width="200" height="200"></canvas><span><b style="color:var(--h-fg)">Un laberinto de 26 parcelas</b><br>amuralladas y forradas de árboles. En el centro, en rojo, la guarida del cazador. Cada colono elige la suya.<br><b style="color:var(--h-fg)">Controles:</b> <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> para moverte · <kbd>R</kbd> sobre una torre o muralla para repararla (el cazador, para atacar).</span></div>
     <div class="hi-cards">
       ${card('hk:elf', 'Colonos', 'Tenéis 30 s para meteros en una parcela, cerrar sus puertas con murallas y montar casa, taller y torres. Morís en dos golpes.', 'elf')}
       ${card('hk:troll', 'Cazador', 'Cobra en oro cada punto de daño, sube de nivel y se equipa en su guarida. Va rotando; si juegas solo, lo lleva un bot.', 'hunter')}

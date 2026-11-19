@@ -56,10 +56,13 @@ import {
   type UnitKind,
   type WallBranch,
   RESOURCE_MULT,
+  TILE_FLOOR,
+  steerStep,
 } from '@td/shared';
 import { net } from './net.js';
 import { sfx, unlockAudio } from './audio.js';
 import { drawPxIcon, pxIcon } from './px-icons.js';
+import { UNIT_SHEETS, type Dir, type UnitSheet } from './hunt-sprites.gen.js';
 
 const map = getHuntMap();
 const TILE = 24; // px por casilla del suelo prerrenderizado
@@ -97,20 +100,30 @@ interface Fx {
 }
 let fx: Fx[] = [];
 let nightLevel = 0;
-// posiciones que se pintan (suavizadas) y predicción local del propio personaje:
-// al pinchar, el personaje arranca YA hacia allí sin esperar al servidor
+// posiciones que se pintan (suavizadas)
 const disp = new Map<number, { x: number; y: number }>();
-let predict: {
-  tx: number;
-  ty: number;
-  t0: number;
-  from: { x: number; y: number };
-  serverAt: [number, number];
-  offset: { x: number; y: number } | null; // adelanto que queda por absorber cuando el servidor ya obedece
-  prevDest: string; // destino que tenía el servidor ANTES del clic
-  blendT0: number;
-} | null = null;
-const PREDICT_BLEND_MS = 500; // 0 día · 1 noche, suavizado para que el cambio no sea un corte
+// ---------- WASD ----------
+// Las teclas mandan una dirección al servidor (orden 'steer'). Tu personaje se
+// mueve YA en pantalla con la misma regla de choques que el servidor
+// (steerStep) y se corrige suavemente si el servidor no está de acuerdo.
+const codes = new Set<string>(); // teclas físicas pulsadas (e.code)
+let steerSent: [number, number] = [0, 0]; // última dirección enviada
+let steerActive: [number, number] = [0, 0]; // la que creemos que aplica el servidor
+const local = { on: false, x: 0, y: 0 };
+let lastLerp = 0;
+let gridKey = '';
+let gridCache: Uint8Array | null = null;
+// ---------- sprites animados ----------
+const unitAtlas = new Image();
+let unitAtlasOk = false;
+unitAtlas.onload = () => (unitAtlasOk = true);
+unitAtlas.src = '/sprites/hunt-units.png';
+const tintCache = new Map<string, HTMLCanvasElement>(); // elfo pintado del color de cada jugador
+const anim = new Map<number, { dir: Dir; walk: number; x: number; y: number; movedAt: number }>();
+const corpses: { kind: string; x: number; y: number; born: number }[] = [];
+// altura dibujada (en casillas) de cada personaje con hoja de sprites
+const SPRITE_TILES: Record<string, number> = { elf: 1.3, hunter: 2.05, wolf: 1.2, angel: 1.3 };
+const STRIDE: Record<string, number> = { elf: 0.3, hunter: 0.42, wolf: 0.36, angel: 0.34 }; // casillas por paso
 interface Mote {
   x: number;
   y: number;
@@ -356,16 +369,20 @@ function build(): void {
     const r = mini.getBoundingClientRect();
     const x = ((e.clientX - r.left) / r.width) * map.w;
     const y = ((e.clientY - r.top) / r.height) * map.h;
-    if (e.button === 2 && cur && form() !== 'spectator') send({ k: 'move', x, y });
-    else {
-      follow = false;
-      cam.x = x;
-      cam.y = y;
-    }
+    follow = false;
+    cam.x = x;
+    cam.y = y;
   });
   mini.addEventListener('contextmenu', (e) => e.preventDefault());
   window.addEventListener('keydown', onKey);
-  window.addEventListener('keyup', (e) => keys.delete(e.key));
+  window.addEventListener('keyup', (e) => {
+    keys.delete(e.key);
+    codes.delete(e.code);
+  });
+  window.addEventListener('blur', () => {
+    keys.clear();
+    codes.clear();
+  });
   root.addEventListener('click', onUiClick);
   root.addEventListener('pointerover', onUiHover);
   root.addEventListener('pointerout', (e) => {
@@ -413,31 +430,7 @@ function onWorldClick(x: number, y: number, right: boolean): void {
       useSlot = -1;
       return;
     }
-    follow = true;
-    // clic derecho «inteligente», como en el Dota: sobre algo de los tuyos que
-    // esté dañado, ir a repararlo; sobre un enemigo, atacarlo; si no, moverse
-    const bAt = cur.snap.buildings.find((o) => cx >= o[3] && cx < o[3] + bSize(o) && cy >= o[4] && cy < o[4] + bSize(o));
-    const allyB = bAt && (m.side === 'elf' ? init!.players[bAt[2]] && cur.snap.players[bAt[2]] && ['elf', 'angel', 'choosing', 'dead'].includes(cur.snap.players[bAt[2]].form) : false);
-    if (m.side === 'elf' && (m.form === 'elf' || m.form === 'angel') && bAt && allyB) {
-      send({ k: 'repair', target: bAt[0] });
-      ring(bAt[3] + bSize(bAt) / 2, bAt[4] + bSize(bAt) / 2, '#ffe9a8', 1);
-      if (bAt[6] >= bAt[7]) toast('Ese edificio ya está entero');
-      return;
-    }
-    if (m.side === 'hunter') {
-      const enemy = cur.snap.units.find((u) => isEnemyUnit(u) && Math.hypot(u[3] - x, u[4] - y) < 0.8);
-      if (enemy) {
-        send({ k: 'attack', target: enemy[0] });
-        ring(enemy[3], enemy[4], '#ff5a4e');
-        return;
-      }
-      if (bAt) {
-        send({ k: 'attack', target: bAt[0] });
-        ring(bAt[3] + bSize(bAt) / 2, bAt[4] + bSize(bAt) / 2, '#ff5a4e');
-        return;
-      }
-    }
-    moveTo(x, y);
+    // el clic ya no mueve: te mueves con WASD y actúas con R
     return;
   }
   if (useSlot >= 0) {
@@ -460,6 +453,7 @@ function onWorldClick(x: number, y: number, right: boolean): void {
   }
   if (placing) {
     send({ k: 'build', type: placing, cx: placeCell(x, placing).x, cy: placeCell(y, placing).y });
+    orderSent();
     ring(cx + 0.5, cy + 0.5, '#ffcd45');
     if (!keys.has('Shift')) placing = null;
     return;
@@ -467,61 +461,100 @@ function onWorldClick(x: number, y: number, right: boolean): void {
   // ¿clic sobre un edificio propio? → seleccionar
   const own = myBuildings().find((o) => cx >= o[3] && cx < o[3] + bSize(o) && cy >= o[4] && cy < o[4] + bSize(o));
   if (own && m.side === 'elf') {
-    // Mayús+clic (o el ángel): ir a repararlo
-    if (m.form === 'angel' || (keys.has('Shift') && own[6] < own[7])) {
-      send({ k: 'repair', target: own[0] });
-      ring(own[3] + bSize(own) / 2, own[4] + bSize(own) / 2, '#ffe9a8');
-      if (m.form === 'angel') return;
-    }
     selected = own[0];
     return;
   }
-  if (m.side === 'elf' && m.form === 'angel') {
-    const ally = cur.snap.buildings.find((o) => cx >= o[3] && cx < o[3] + bSize(o) && cy >= o[4] && cy < o[4] + bSize(o));
-    if (ally) {
-      send({ k: 'repair', target: ally[0] });
-      ring(ally[3] + bSize(ally) / 2, ally[4] + bSize(ally) / 2, '#ffe9a8');
-      return;
-    }
-  }
-  if (m.side === 'hunter') {
-    const enemy = cur.snap.units.find((u) => isEnemyUnit(u) && Math.hypot(u[3] - x, u[4] - y) < 0.8);
-    if (enemy) {
-      send({ k: 'attack', target: enemy[0] });
-      ring(enemy[3], enemy[4], '#ff5a4e');
-      follow = true;
-      return;
-    }
-    const b = cur.snap.buildings.find((o) => cx >= o[3] && cx < o[3] + bSize(o) && cy >= o[4] && cy < o[4] + bSize(o));
-    if (b) {
-      send({ k: 'attack', target: b[0] });
-      ring(b[3] + bSize(b) / 2, b[4] + bSize(b) / 2, '#ff5a4e');
-      follow = true;
-      return;
-    }
-  }
   selected = 0;
-  follow = true;
-  moveTo(x, y);
 }
 
-function moveTo(x: number, y: number): void {
-  send({ k: 'move', x, y });
-  ring(x, y, '#9be28a');
-  const u = myUnit();
-  if (u) {
-    const d = disp.get(u[0]) ?? { x: u[3], y: u[4] };
-    predict = { tx: x, ty: y, t0: performance.now(), from: { ...d }, serverAt: [u[3], u[4]], offset: null, blendT0: 0, prevDest: String(cur?.snap.me?.dest ?? '') };
-  }
+// una orden que no es WASD: el servidor suelta la dirección; hasta que cambien
+// las teclas no la volvemos a mandar
+function orderSent(): void {
+  steerActive = [0, 0];
+  steerSent = steerFromKeys();
 }
 
-// velocidad propia aproximada (casillas/s) para la predicción
-function mySpeed(): number {
+function steerFromKeys(): [number, number] {
+  const dx = (codes.has('KeyD') ? 1 : 0) - (codes.has('KeyA') ? 1 : 0);
+  const dy = (codes.has('KeyS') ? 1 : 0) - (codes.has('KeyW') ? 1 : 0);
+  return [dx, dy];
+}
+
+function syncSteer(): void {
   const m = me();
-  if (!m) return 2;
-  if (m.form === 'hunter' || m.form === 'wolf') return m.stats.speed;
-  if (m.form === 'angel') return 280 / 128;
-  return (cur?.snap.releaseIn ?? 0) > 0 ? 522 / 128 : 250 / 128;
+  const can = !!m && !cur?.snap.over && m.form !== 'choosing' && m.form !== 'dead';
+  const want: [number, number] = can ? steerFromKeys() : [0, 0];
+  if (want[0] === steerSent[0] && want[1] === steerSent[1]) return;
+  const wasMoving = steerActive[0] !== 0 || steerActive[1] !== 0;
+  steerSent = want;
+  steerActive = want;
+  // al cambiar o soltar, decimos dónde nos ve el jugador (el servidor lo acepta si es razonable)
+  const at = wasMoving && local.on ? { x: Math.round(local.x * 1000) / 1000, y: Math.round(local.y * 1000) / 1000 } : {};
+  send({ k: 'steer', dx: want[0], dy: want[1], ...at });
+  if (want[0] || want[1]) follow = true;
+}
+
+// R: actuar sobre lo que señala el ratón (reparar si eres colono o ángel,
+// atacar si eres del bando del cazador)
+function actOnCursor(): void {
+  const m = me();
+  if (!cur || !m || !mouse.in) return;
+  const x = mouse.x;
+  const y = mouse.y;
+  const near = (o: HuntSnapBuilding): number => {
+    const sz = bSize(o);
+    return Math.hypot(Math.max(o[3] - x, 0, x - (o[3] + sz)), Math.max(o[4] - y, 0, y - (o[4] + sz)));
+  };
+  const bAt = cur.snap.buildings.filter((o) => near(o) < 0.35).sort((a, b) => near(a) - near(b))[0];
+  if (m.side === 'elf') {
+    if (m.form !== 'elf' && m.form !== 'angel') return;
+    if (!bAt) {
+      toast('Señala una torre o una muralla y pulsa R para repararla', true);
+      return;
+    }
+    if (bAt[6] >= bAt[7]) {
+      toast('Ese edificio ya está entero');
+      return;
+    }
+    send({ k: 'repair', target: bAt[0] });
+    orderSent();
+    ring(bAt[3] + bSize(bAt) / 2, bAt[4] + bSize(bAt) / 2, '#ffe9a8', 1);
+    return;
+  }
+  const enemy = cur.snap.units.find((u) => isEnemyUnit(u) && Math.hypot(u[3] - x, u[4] - y) < 0.8);
+  if (enemy) {
+    send({ k: 'attack', target: enemy[0] });
+    orderSent();
+    ring(enemy[3], enemy[4], '#ff5a4e');
+    return;
+  }
+  if (bAt) {
+    send({ k: 'attack', target: bAt[0] });
+    orderSent();
+    ring(bAt[3] + bSize(bAt) / 2, bAt[4] + bSize(bAt) / 2, '#ff5a4e');
+    return;
+  }
+  toast('Señala un enemigo o un edificio y pulsa R para atacarlo', true);
+}
+
+// rejilla de casillas bloqueadas vista desde el cliente (para predecir el WASD)
+function clientGrid(): Uint8Array {
+  const snap = cur!.snap;
+  const key = `${snap.tick}`;
+  if (gridCache && key === gridKey) return gridCache;
+  const g2 = new Uint8Array(map.w * map.h);
+  for (let i = 0; i < g2.length; i++) g2[i] = map.tiles[i] === TILE_FLOOR ? 0 : 1;
+  for (const i of snap.deadTrees) g2[i] = 0;
+  g2[map.camp.y * map.w + map.camp.x] = 1;
+  const blockB = (b: HuntSnapBuilding): void => {
+    const sz = bSize(b);
+    for (let j = 0; j < sz; j++) for (let i = 0; i < sz; i++) g2[(b[4] + j) * map.w + b[3] + i] = 1;
+  };
+  for (const b of snap.buildings) blockB(b);
+  for (const b of ghosts.values()) blockB(b);
+  gridKey = key;
+  gridCache = g2;
+  return g2;
 }
 const bSize = (b: HuntSnapBuilding): number => BUILDINGS[BUILDING_ORDER[b[1]]].size;
 // los edificios 2×2 se centran en el cursor
@@ -559,6 +592,11 @@ function onKey(e: KeyboardEvent): void {
   keys.add(e.key);
   const k = e.key.toLowerCase();
   const m = me();
+  if (e.code === 'KeyW' || e.code === 'KeyA' || e.code === 'KeyS' || e.code === 'KeyD') {
+    codes.add(e.code);
+    e.preventDefault();
+    return;
+  }
   if (k === 'escape') {
     placing = null;
     targeting = null;
@@ -573,6 +611,10 @@ function onKey(e: KeyboardEvent): void {
     return;
   }
   if (!m || cur.snap.over) return;
+  if (k === 'r' && !e.repeat) {
+    actOnCursor();
+    return;
+  }
   // atajos de habilidades (por su tecla)
   for (const a of abilitiesOfMe()) {
     if (ABILITIES[a].key.toLowerCase() === k) {
@@ -595,7 +637,10 @@ function onKey(e: KeyboardEvent): void {
     if (n >= 1 && n <= INVENTORY_SLOTS) useItem(n - 1);
     if (k === 'g') shopOpen = !shopOpen;
   }
-  if (k === 's') send({ k: 'stop' });
+  if (k === 'h') {
+    send({ k: 'stop' });
+    orderSent();
+  }
 }
 
 function useItem(slot: number): void {
@@ -805,6 +850,7 @@ function onEvents(events: HuntEvent[]): void {
         break;
       case 'unitdeath':
         fx.push({ kind: 'burst', x: ev.x, y: ev.y, color: '#ffb4ad', born: now, life: 400 });
+        if (UNIT_SHEETS[ev.kind]) corpses.push({ kind: ev.kind, x: ev.x, y: ev.y, born: now });
         break;
       case 'fx': {
         const color = FX_COLOR[ev.a] ?? '#fff';
@@ -916,7 +962,7 @@ function syncHud(): void {
   if (m && m.form === 'hunter' && s.releaseIn > 0)
     bh = `<b>${s.releaseIn}</b><span>Estás retenido en tu guarida. Los colonos se esconden. Ve comprando en la tienda (G).</span>`;
   else if (m && m.form === 'elf' && s.releaseIn > 0)
-    bh = `<b>${s.releaseIn}</b><span>¡Corre! Elige una parcela, cierra sus puertas con murallas y construye tu casa.</span>`;
+    bh = `<b>${s.releaseIn}</b><span>¡Corre (WASD)! Elige una parcela, cierra sus puertas con murallas y construye tu casa.</span>`;
   else if (m && m.channel > 0) bh = `<b class="calm">Volviendo a la guarida… ${m.channel}</b>`;
   else if (m && m.respawn > 0) bh = `<b class="calm">Vuelves en ${m.respawn}</b>`;
   if (bh !== hashes.banner) {
@@ -1014,7 +1060,7 @@ function syncCard(): void {
       <div class="hk-group"><div class="hk-label">Guarida</div><div class="hk-row"><button class="hk-btn ab shopbtn${shopOpen ? ' on' : ''}" data-act="shop" data-tip="Tienda de la guarida (G). Solo se compra estando cerca."><span class="ic">${icon('hk:shop')}</span><kbd>G</kbd>${m.nearShop ? '<span class="dot"></span>' : ''}</button></div></div>`;
   } else if (m.form === 'angel') {
     card = `<div class="hk-group"><div class="hk-label">Ángel · ayuda a los colonos</div><div class="hk-row">${abilities}</div></div>
-      <div class="hk-hint">Clic en un edificio de los colonos para repararlo. Roba oro junto a la guarida del cazador.</div>`;
+      <div class="hk-hint">Señala un edificio de los colonos y pulsa R para repararlo. Roba oro junto a la guarida del cazador.</div>`;
   }
   setHtml('hk-unitbar', unitbar);
   setHtml('hk-card', card);
@@ -1178,15 +1224,19 @@ function syncChoose(): void {
 // ---------- dibujo ----------
 // Posición que se pinta de cada unidad: se INTERPOLA entre los dos últimos
 // snapshots (un tick por detrás, como hacen el Dota o el WC3), así nada da
-// saltos hacia atrás. Tu propio personaje, además, arranca al instante tras el
-// clic (predicción). Cuando el servidor confirma el movimiento, el adelanto que
-// llevaba se absorbe poco a poco frenando un pelo, nunca retrocediendo.
+// saltos hacia atrás. Tu propio personaje, mientras pulsas WASD, se mueve en
+// local con la misma regla de choques que el servidor (sin esperar la red) y se
+// corrige con suavidad: lo lateral siempre; lo que vas por delante en la marcha
+// (la latencia) solo si se dispara; al soltar, converge donde paró el servidor.
 function lerpUnits(now: number): Map<number, { x: number; y: number }> {
   const out = new Map<number, { x: number; y: number }>();
   if (!cur) return out;
   const t = prev ? Math.min(1, Math.max(0, (now - cur.at) / Math.max(30, cur.at - prev.at))) : 1;
   const old = new Map(prev ? prev.snap.units.map((u) => [u[0], u] as const) : []);
   const mine = myUnit();
+  const dt = Math.min(0.1, Math.max(0, (now - (lastLerp || now)) / 1000));
+  lastLerp = now;
+  if (!mine) local.on = false;
   for (const u of cur.snap.units) {
     const o = old.get(u[0]);
     let x = u[3];
@@ -1195,48 +1245,55 @@ function lerpUnits(now: number): Map<number, { x: number; y: number }> {
       x = o[3] + (u[3] - o[3]) * t;
       y = o[4] + (u[4] - o[4]) * t;
     }
-    if (predict && mine && u[0] === mine[0]) {
-      const last = disp.get(u[0]) ?? { x, y };
-      const dx = predict.tx - predict.from.x;
-      const dy = predict.ty - predict.from.y;
-      const dist = Math.hypot(dx, dy) || 1;
-      const ux = dx / dist;
-      const uy = dy / dist;
-      // ¿ya obedece el servidor ESTE clic? Lo sabemos porque su destino actual
-      // es la casilla pinchada (o porque ya ha llegado). Moverse no basta: si
-      // ya andaba, durante la latencia sigue con la orden anterior.
-      const md = cur.snap.me?.dest;
-      const tcx = Math.floor(predict.tx);
-      const tcy = Math.floor(predict.ty);
-      const obeys =
-        (md && Math.abs(md[0] - tcx) <= 1 && Math.abs(md[1] - tcy) <= 1) ||
-        (md && String(md) !== predict.prevDest) || // pinchó en algo bloqueado: va a la casilla libre más cercana
-        Math.hypot(u[3] - predict.tx, u[4] - predict.ty) < 0.3;
-      const age = (now - predict.t0) / 1000;
-      if (!predict.offset && !obeys && age < 1.2) {
-        // aún sin respuesta: avanzar en línea recta hacia el destino
-        const step = Math.min(dist, mySpeed() * age);
-        x = predict.from.x + ux * step;
-        y = predict.from.y + uy * step;
-      } else {
-        if (!predict.offset) {
-          predict.offset = { x: last.x - x, y: last.y - y };
-          predict.blendT0 = now;
+    if (mine && u[0] === mine[0]) {
+      const m = cur.snap.me;
+      const [sx, sy] = steerActive;
+      const held = (u[7] & 6) !== 0 || (m?.form === 'hunter' && cur.snap.releaseIn > 0);
+      const spd = m?.speed ?? 0;
+      if ((sx || sy) && !held && spd > 0) {
+        if (!local.on) {
+          const d0 = disp.get(u[0]) ?? { x, y };
+          local.on = true;
+          local.x = d0.x;
+          local.y = d0.y;
         }
-        const k = Math.max(0, 1 - (now - predict.blendT0) / PREDICT_BLEND_MS);
-        x += predict.offset.x * k;
-        y += predict.offset.y * k;
-        // nunca hacia atrás respecto a la marcha (salvo que el camino real dé la
-        // vuelta para rodear un muro: entonces manda el servidor)
-        const vx = o ? u[3] - o[3] : 0;
-        const vy = o ? u[4] - o[4] : 0;
-        const vlen = Math.hypot(vx, vy);
-        const sameWay = vlen < 0.001 || (vx * ux + vy * uy) / vlen > 0.5;
-        if (sameWay && (x - last.x) * ux + (y - last.y) * uy < 0) {
-          x = last.x;
-          y = last.y;
+        const nx = steerStep(map, clientGrid(), local.x, local.y, sx, sy, spd * dt);
+        local.x = nx.x;
+        local.y = nx.y;
+        const k = sx && sy ? Math.SQRT1_2 : 1;
+        const ux = sx * k;
+        const uy = sy * k;
+        const ex = u[3] - local.x;
+        const ey = u[4] - local.y;
+        const along = ex * ux + ey * uy;
+        const pull = Math.min(1, dt * 5);
+        // lateral: siempre hacia el servidor
+        local.x += (ex - along * ux) * pull;
+        local.y += (ey - along * uy) * pull;
+        // en la marcha: si el servidor va por delante, alcanzarle; si nos hemos
+        // adelantado demasiado (p. ej. allí estabas bloqueado), volver
+        if (along > 0.05) {
+          local.x += ux * along * pull;
+          local.y += uy * along * pull;
+        } else if (along < -2) {
+          local.x += ux * (along + 2) * pull;
+          local.y += uy * (along + 2) * pull;
         }
-        if (k === 0) predict = null;
+      } else if (local.on) {
+        // soltaste: en cuanto el servidor también pare, converger a su posición
+        const ack = m?.steer;
+        // (hacia su ÚLTIMA posición, no la interpolada, que aún viene por detrás)
+        if (!ack || (!ack[0] && !ack[1]) || held) {
+          const k = Math.min(1, dt * 9);
+          local.x += (u[3] - local.x) * k;
+          local.y += (u[4] - local.y) * k;
+          // se suelta cuando la interpolada también ha llegado (si no, daría un tirón atrás)
+          if (Math.hypot(u[3] - local.x, u[4] - local.y) < 0.03 && Math.hypot(u[3] - x, u[4] - y) < 0.03) local.on = false;
+        }
+      }
+      if (local.on) {
+        x = local.x;
+        y = local.y;
       }
     }
     disp.set(u[0], { x, y });
@@ -1358,26 +1415,111 @@ function drawBuilding(b: HuntSnapBuilding, X: (v: number) => number, Y: (v: numb
   g.restore();
 }
 
+// ---------- sprites ----------
+function hexHsl(hex: string): [number, number, number] {
+  const n = parseInt(hex.replace('#', '').padEnd(6, '0').slice(0, 6), 16);
+  return rgbHsl((n >> 16) & 255, (n >> 8) & 255, n & 255);
+}
+function rgbHsl(r: number, g2: number, b: number): [number, number, number] {
+  r /= 255;
+  g2 /= 255;
+  b /= 255;
+  const mx = Math.max(r, g2, b);
+  const mn = Math.min(r, g2, b);
+  const l = (mx + mn) / 2;
+  if (mx === mn) return [0, 0, l];
+  const d = mx - mn;
+  const s2 = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+  let h = mx === r ? (g2 - b) / d + (g2 < b ? 6 : 0) : mx === g2 ? (b - r) / d + 2 : (r - g2) / d + 4;
+  h *= 60;
+  return [h, s2, l];
+}
+function hslRgb(h: number, s2: number, l: number): [number, number, number] {
+  const c = (1 - Math.abs(2 * l - 1)) * s2;
+  const hp = (((h % 360) + 360) % 360) / 60;
+  const xx = c * (1 - Math.abs((hp % 2) - 1));
+  const [r1, g1, b1] = hp < 1 ? [c, xx, 0] : hp < 2 ? [xx, c, 0] : hp < 3 ? [0, c, xx] : hp < 4 ? [0, xx, c] : hp < 5 ? [xx, 0, c] : [c, 0, xx];
+  const m0 = l - c / 2;
+  return [Math.round((r1 + m0) * 255), Math.round((g1 + m0) * 255), Math.round((b1 + m0) * 255)];
+}
+
+// la túnica verde del elfo se pinta del color del jugador (una vez por color)
+function sheetImage(kind: string, color: string): CanvasImageSource {
+  if (kind !== 'elf') return unitAtlas;
+  const hit = tintCache.get(color);
+  if (hit) return hit;
+  const sh = UNIT_SHEETS.elf;
+  const h = Math.max(...sh.frames.map((f) => f[1])) + sh.h;
+  const c = document.createElement('canvas');
+  c.width = unitAtlas.width;
+  c.height = h;
+  const cx = c.getContext('2d', { willReadFrequently: true })!;
+  cx.drawImage(unitAtlas, 0, 0);
+  const img = cx.getImageData(0, 0, c.width, h);
+  const d = img.data;
+  const [th, ts] = hexHsl(color);
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] === 0) continue;
+    const [hh, ss, ll] = rgbHsl(d[i], d[i + 1], d[i + 2]);
+    if (hh < 75 || hh > 170 || ss < 0.22 || ll < 0.1) continue;
+    const [r, g1, b] = hslRgb(th, Math.min(1, ss * 0.45 + ts * 0.6), ll);
+    d[i] = r;
+    d[i + 1] = g1;
+    d[i + 2] = b;
+  }
+  cx.putImageData(img, 0, 0);
+  tintCache.set(color, c);
+  return c;
+}
+
+// dibuja un cuadro con los pies en (x, footY)
+function drawSprite(kind: string, sheet: UnitSheet, fi: number, x: number, footY: number, s: number, color: string): void {
+  const [fx0, fy0] = sheet.frames[fi];
+  const k = ((SPRITE_TILES[kind] ?? 1.3) * s) / sheet.ref;
+  const dw = sheet.w * k;
+  const dh = sheet.h * k;
+  g.imageSmoothingEnabled = true;
+  g.imageSmoothingQuality = 'high';
+  g.drawImage(sheetImage(kind, color), fx0, fy0, sheet.w, sheet.h, x - dw / 2, footY - dh + k, dw, dh);
+}
+
+function drawCorpse(c: { kind: string; x: number; y: number; born: number }, x: number, y: number, now: number): void {
+  const sheet = UNIT_SHEETS[c.kind];
+  if (!sheet || !unitAtlasOk) return;
+  const age = now - c.born;
+  const fr = sheet.anims.death;
+  const fi = fr[Math.min(fr.length - 1, Math.floor(age / 170))];
+  g.save();
+  g.globalAlpha = age > 2200 ? Math.max(0, 1 - (age - 2200) / 800) : 1;
+  drawSprite(c.kind, sheet, fi, x, y + cellPx() * 0.32, cellPx(), '#3fa34d');
+  g.restore();
+}
+
+const ACT_DIRS: Dir[] = ['down', 'left', 'right', 'up'];
+
 function drawUnit(u: HuntSnapUnit, x: number, y: number, now: number, moving: boolean, faceLeft: boolean): void {
   const s = cellPx();
   const kind = UNIT_KIND_ORDER[u[1]];
   const color = playerColor(u[2]);
   const big = kind === 'hunter' || kind === 'wolf';
   const worker = kind === 'repairer' || kind === 'lumberjack';
-  const size = kind === 'hunter' ? s * 2 : kind === 'wolf' ? s * 1.45 : worker ? s * 0.85 : s * 1.2;
+  const sheet = unitAtlasOk ? UNIT_SHEETS[kind] : undefined;
+  const size = sheet ? (SPRITE_TILES[kind] ?? 1.3) * s * 0.8 : kind === 'hunter' ? s * 2 : kind === 'wolf' ? s * 1.45 : worker ? s * 0.85 : s * 1.2;
+  const footY = sheet ? y + s * 0.32 : y + size * 0.36;
+  const topY = sheet ? footY - (SPRITE_TILES[kind] ?? 1.3) * s * 0.92 : y - size * 0.55;
   const invis = (u[7] & 1) !== 0;
   g.save();
   if (invis) g.globalAlpha = 0.45;
   // sombra y aro del dueño
   g.fillStyle = 'rgba(0,0,0,0.38)';
   g.beginPath();
-  g.ellipse(x, y + size * 0.36, size * 0.36, size * 0.12, 0, 0, Math.PI * 2);
+  g.ellipse(x, footY, size * 0.36, size * 0.12, 0, 0, Math.PI * 2);
   g.fill();
   if (!worker) {
     g.strokeStyle = color;
     g.lineWidth = Math.max(1.5, s * 0.05);
     g.beginPath();
-    g.ellipse(x, y + size * 0.36, size * 0.38, size * 0.13, 0, 0, Math.PI * 2);
+    g.ellipse(x, footY, size * 0.38, size * 0.13, 0, 0, Math.PI * 2);
     g.stroke();
   }
   if (kind === 'hunter') {
@@ -1389,20 +1531,39 @@ function drawUnit(u: HuntSnapUnit, x: number, y: number, now: number, moving: bo
     g.fillRect(x - size, y - size, size * 2, size * 2);
   }
   if (kind === 'angel') {
-    const grd = g.createRadialGradient(x, y, 0, x, y, size * 0.8);
+    const grd = g.createRadialGradient(x, y - s * 0.3, 0, x, y - s * 0.3, size * 0.8);
     grd.addColorStop(0, 'rgba(255, 250, 220, 0.4)');
     grd.addColorStop(1, 'rgba(255, 250, 220, 0)');
     g.fillStyle = grd;
-    g.fillRect(x - size, y - size, size * 2, size * 2);
+    g.fillRect(x - size, y - size - s * 0.3, size * 2, size * 2);
   }
-  const bob = moving ? Math.sin(now / (big ? 120 : 90)) * size * 0.04 : 0;
-  g.translate(x, y - size * 0.1 + bob);
-  if (faceLeft) g.scale(-1, 1);
-  if (!drawPxIcon(g, UNIT_ICON[kind], 0, 0, size)) {
-    g.fillStyle = color;
-    g.beginPath();
-    g.arc(0, 0, size * 0.35, 0, Math.PI * 2);
-    g.fill();
+  if (sheet) {
+    const a = anim.get(u[0]);
+    let dir: Dir = a?.dir ?? 'down';
+    let fi: number;
+    const act = u[9] ?? 0;
+    if (act >= 1 && act <= 4) {
+      dir = ACT_DIRS[act - 1];
+      if (a) a.dir = dir;
+      const fr = sheet.anims.act[dir];
+      fi = fr[Math.floor(now / 115) % fr.length];
+    } else if (moving) {
+      const fr = sheet.anims.walk[dir];
+      fi = fr[Math.floor((a?.walk ?? 0) / (STRIDE[kind] ?? 0.3)) % fr.length];
+    } else fi = sheet.anims.idle[dir];
+    // el ángel flota
+    const lift = kind === 'angel' ? Math.sin(now / 380) * s * 0.05 : 0;
+    drawSprite(kind, sheet, fi, x, footY + lift, s, color);
+  } else {
+    const bob = moving ? Math.sin(now / (big ? 120 : 90)) * size * 0.04 : 0;
+    g.translate(x, y - size * 0.1 + bob);
+    if (faceLeft) g.scale(-1, 1);
+    if (!drawPxIcon(g, UNIT_ICON[kind], 0, 0, size)) {
+      g.fillStyle = color;
+      g.beginPath();
+      g.arc(0, 0, size * 0.35, 0, Math.PI * 2);
+      g.fill();
+    }
   }
   g.restore();
   g.save();
@@ -1421,7 +1582,7 @@ function drawUnit(u: HuntSnapUnit, x: number, y: number, now: number, moving: bo
   if (st.length) {
     g.font = `${Math.round(s * 0.36)}px system-ui`;
     g.textAlign = 'center';
-    g.fillText(st.join(''), x, y - size * 0.75);
+    g.fillText(st.join(''), x, topY - s * 0.45);
   }
   if (!worker) {
     const name = init?.players[u[2]]?.name ?? '';
@@ -1431,18 +1592,19 @@ function drawUnit(u: HuntSnapUnit, x: number, y: number, now: number, moving: bo
     g.lineWidth = 3;
     g.strokeStyle = 'rgba(0,0,0,0.8)';
     const label = big ? `${name} · ${u[8]}` : name;
-    const ly = y - size * 0.55;
+    const ly = topY;
     g.strokeText(label, x, ly);
     g.fillStyle = big ? '#ffb4ad' : '#fff';
     g.fillText(label, x, ly);
   }
-  if (u[5] < u[6] || big) bar(x, y - size * 0.52, big ? 1.4 : worker ? 0.6 : 0.8, u[5] / u[6], big ? '#ff5a4e' : '#7bd88f');
+  if (u[5] < u[6] || big) bar(x, topY + s * 0.03, big ? 1.4 : worker ? 0.6 : 0.8, u[5] / u[6], big ? '#ff5a4e' : '#7bd88f');
   g.restore();
 }
 
 function frame(now: number): void {
   requestAnimationFrame(frame);
   if (!active || !cur || !init) return;
+  syncSteer();
   const dpr = window.devicePixelRatio || 1;
   const cw = Math.round(canvas.clientWidth * dpr);
   const ch = Math.round(canvas.clientHeight * dpr);
@@ -1568,10 +1730,39 @@ function frame(now: number): void {
   // unidades
   for (const u of snap.units) {
     const p = pos.get(u[0])!;
-    const old = prev?.snap.units.find((o) => o[0] === u[0]);
-    const moving = !!old && Math.hypot(old[3] - u[3], old[4] - u[4]) > 0.01;
-    const left = !!old && u[3] < old[3] - 0.001;
+    // dirección y paso de la animación según lo que se mueve EN PANTALLA
+    let a = anim.get(u[0]);
+    if (!a) {
+      a = { dir: 'down', walk: 0, x: p.x, y: p.y, movedAt: -1e9 };
+      anim.set(u[0], a);
+    }
+    const ddx = p.x - a.x;
+    const ddy = p.y - a.y;
+    const dist = Math.hypot(ddx, ddy);
+    if (dist > 0.0015 && dist < 1.5) {
+      a.walk += dist;
+      a.movedAt = now;
+      // en diagonal pura se queda con la que tenía (no parpadea)
+      if (Math.abs(ddx) > Math.abs(ddy) * 1.15) a.dir = ddx < 0 ? 'left' : 'right';
+      else if (Math.abs(ddy) > Math.abs(ddx) * 1.15) a.dir = ddy < 0 ? 'up' : 'down';
+    }
+    a.x = p.x;
+    a.y = p.y;
+    const moving = now - a.movedAt < 140;
+    const left = a.dir === 'left';
     drawables.push({ y: p.y + 0.2, draw: () => drawUnit(u, X(p.x), Y(p.y), now, moving, left) });
+  }
+  if (anim.size > snap.units.length * 2 + 20) {
+    const alive = new Set(snap.units.map((u) => u[0]));
+    for (const id of anim.keys()) if (!alive.has(id)) anim.delete(id);
+  }
+  for (let i = corpses.length - 1; i >= 0; i--) {
+    const c = corpses[i];
+    if (now - c.born > 3000) {
+      corpses.splice(i, 1);
+      continue;
+    }
+    drawables.push({ y: c.y, draw: () => drawCorpse(c, X(c.x), Y(c.y), now) });
   }
   drawables.sort((a, b) => a.y - b.y);
   for (const d of drawables) d.draw();

@@ -2897,3 +2897,15 @@ body.q-lite *::after {
 .hunt-info .hi-map { flex-direction: row; align-items: center; gap: 12px; }
 .hunt-info .hi-map canvas { width: 132px; height: 132px; }
 .hunt-info .hi-map span { font-size: 0.78rem; color: var(--h-muted); line-height: 1.45; }
+.hunt-info .hi-map kbd {
+  display: inline-block;
+  min-width: 1.35em;
+  padding: 0 0.3em;
+  margin: 0 1px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.08);
+  font: 700 0.72rem/1.35 system-ui, sans-serif;
+  text-align: center;
+  color: var(--h-fg);
+}
