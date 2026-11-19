@@ -11,7 +11,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { getHuntMap, type HuntInit, type HuntSnap } from '@td/shared';
+import { BUILDING_ORDER, getHuntMap, type HuntInit, type HuntSnap } from '@td/shared';
 void 0;
 
 const PORT = process.env.PORT ?? '8787';
@@ -160,6 +160,9 @@ async function partida(view: 'colonist' | 'hunter'): Promise<void> {
     c.cmd({ k: 'build', type: 'wall', cx: d.x, cy: d.y });
     setTimeout(() => c.cmd({ k: 'build', type: 'house', cx: pick(1)[0], cy: pick(1)[1] }), 13000);
     setTimeout(() => c.cmd({ k: 'build', type: 'workshop', cx: pick(3)[0], cy: pick(3)[1] }), 17000);
+    // oro de prueba (solo en local, TD_TEST_HOOKS) para que se vean leñadores y minas
+    if (i === 0) setTimeout(() => void fetch(`http://localhost:${PORT}/api/__huntgold?code=${code}&gold=3000`), 18000);
+    if (i === 0) setTimeout(() => c.cmd({ k: 'build', type: 'elftree', cx: pick(2)[0], cy: pick(2)[1] }), 18500);
     const inside = (dx: number, dy: number): [number, number] => {
       const x = d.x + dx;
       const y = d.y + dy;
@@ -178,6 +181,8 @@ async function partida(view: 'colonist' | 'hunter'): Promise<void> {
       for (const o of c.snap?.buildings.filter((b) => b[2] === idx) ?? []) c.cmd({ k: 'upgrade', id: o[0], branch: 'elf' });
       const shop = c.snap?.buildings.find((b) => b[2] === idx && b[1] === 3);
       if (shop) c.cmd({ k: 'train', id: shop[0], unit: 'repairer', tier: 0 });
+      const etree = c.snap?.buildings.find((b) => b[2] === idx && b[1] === BUILDING_ORDER.indexOf('elftree'));
+      if (etree) c.cmd({ k: 'train', id: etree[0], unit: 'lumberjack', tier: 0 });
     }, 3000);
   });
   // el cazador compra al salir y va a por la muralla del primer colono
@@ -203,6 +208,7 @@ async function partida(view: 'colonist' | 'hunter'): Promise<void> {
     await shot(`http://localhost:${PORT}/?n=${who.name}#${code}`, join(OUT, 'colono-2-asedio.png'), 5000,
       `(() => { const b = window.__hunt.mine().find((x) => x.type === 'wall') || window.__hunt.mine()[0]; if (b) window.__hunt.select(b.id); })()`);
     await shot(`http://localhost:${PORT}/?n=${who.name}#${code}`, join(OUT, 'colono-3-libro.png'), 4000, 'window.__hunt.book()');
+    await shot(`http://localhost:${PORT}/?n=${who.name}#${code}`, join(OUT, 'colono-4-lenadores.png'), 9000, 'window.__hunt.zoom(1.5)');
   } else {
     await sleep(46000);
     who.ws.close();

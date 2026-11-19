@@ -57,6 +57,7 @@ import {
   type WallBranch,
   RESOURCE_MULT,
   TILE_FLOOR,
+  TILE_TREE,
   steerStep,
 } from '@td/shared';
 import { net } from './net.js';
@@ -88,6 +89,7 @@ const hashes: Record<string, string> = {};
 
 interface Fx {
   kind: 'shot' | 'text' | 'ring' | 'slash' | 'beam' | 'burst';
+  small?: boolean;
   x: number;
   y: number;
   tx?: number;
@@ -776,8 +778,25 @@ function openBook(): void {
 function ring(x: number, y: number, color: string, r = 0.6): void {
   fx.push({ kind: 'ring', x, y, r, color, born: performance.now(), life: 450 });
 }
-function floatText(x: number, y: number, text: string, color: string): void {
-  fx.push({ kind: 'text', x, y, text, color, born: performance.now(), life: 1000 });
+function floatText(x: number, y: number, text: string, color: string, small = false): void {
+  fx.push({ kind: 'text', x, y, text, color, born: performance.now(), life: small ? 900 : 1000, small });
+}
+let incomeSec = -1;
+// cada segundo, «+oro» pequeño sobre tus casas y minas (lo que te acaban de pagar)
+function incomeFloats(): void {
+  const snap = cur?.snap;
+  if (!snap || snap.over || snap.sec === incomeSec) return;
+  const first = incomeSec < 0;
+  incomeSec = snap.sec;
+  if (first) return;
+  const i = meIdx();
+  for (const b of snap.buildings) {
+    if (b[2] !== i) continue;
+    const { def } = buildingInfo(b);
+    if (!def.income) continue;
+    const sz = bSize(b);
+    floatText(b[3] + sz / 2, b[4] + sz / 2 - (sz === 2 ? 0.95 : 0.6), `+${fmt(def.income * RESOURCE_MULT)}`, '#ffd85e', true);
+  }
 }
 const FX_COLOR: Partial<Record<string, string>> = {
   blind: '#6b6f80',
@@ -1376,30 +1395,44 @@ function drawBuilding(b: HuntSnapBuilding, X: (v: number) => number, Y: (v: numb
   const type = BUILDING_ORDER[b[1]];
   g.save();
   if (ghost) g.globalAlpha = 0.38;
-  // losa del color del dueño
-  g.fillStyle = 'rgba(0,0,0,0.35)';
+  // el dibujo ocupa menos que su hueco (el hueco sigue bloqueando el paso):
+  // casa, taller, mina y árbol élfico ~1,35 casillas; torre ~0,95; la muralla
+  // llena su casilla porque es una pared
+  const wall = type === 'wall';
+  const iconSize = wall ? s * 1.08 : size === 2 ? s * 1.38 : s * 0.98;
+  const icx = sx + w / 2;
+  const icy = sy + w / 2 + (wall ? 0 : size === 2 ? s * 0.08 : -s * 0.04);
+  // suelo del hueco: tenue, para ver qué casillas tapa
+  g.fillStyle = 'rgba(0,0,0,0.2)';
   g.beginPath();
-  g.roundRect(sx + 2, sy + 4, w - 4, w - 4, s * 0.12);
+  g.roundRect(sx + 3, sy + 3, w - 6, w - 6, s * 0.14);
   g.fill();
+  // sombra y aro del dueño bajo el edificio
+  if (!wall) {
+    g.fillStyle = 'rgba(0,0,0,0.35)';
+    g.beginPath();
+    g.ellipse(icx, icy + iconSize * 0.4, iconSize * 0.42, iconSize * 0.13, 0, 0, Math.PI * 2);
+    g.fill();
+  }
   g.strokeStyle = color;
-  g.globalAlpha *= 0.85;
-  g.lineWidth = Math.max(1.5, s * 0.05);
+  g.globalAlpha *= 0.7;
+  g.lineWidth = Math.max(1.2, s * 0.04);
   g.beginPath();
-  g.roundRect(sx + 3, sy + 3, w - 6, w - 6, s * 0.12);
+  if (wall) g.roundRect(sx + 3, sy + 3, w - 6, w - 6, s * 0.12);
+  else g.ellipse(icx, icy + iconSize * 0.4, iconSize * 0.44, iconSize * 0.14, 0, 0, Math.PI * 2);
   g.stroke();
   g.globalAlpha = ghost ? 0.38 : 1;
   // brillo para la casa (es lo que más importa) y las minas
   if (!ghost && (type === 'house' || type === 'mine')) {
-    const grd = g.createRadialGradient(sx + w / 2, sy + w / 2, 0, sx + w / 2, sy + w / 2, w * 0.75);
-    grd.addColorStop(0, 'rgba(255, 205, 69, 0.25)');
+    const grd = g.createRadialGradient(icx, icy, 0, icx, icy, iconSize * 0.8);
+    grd.addColorStop(0, 'rgba(255, 205, 69, 0.22)');
     grd.addColorStop(1, 'rgba(255, 205, 69, 0)');
     g.fillStyle = grd;
-    g.fillRect(sx - w * 0.25, sy - w * 0.25, w * 1.5, w * 1.5);
+    g.fillRect(icx - iconSize, icy - iconSize, iconSize * 2, iconSize * 2);
   }
-  const iconSize = type === 'wall' ? s * 1.08 : size === 2 ? w * 0.92 : s * 1.18;
-  if (!drawPxIcon(g, buildingIcon(b), sx + w / 2, sy + w / 2 - (type === 'tower' ? s * 0.12 : 0), iconSize)) {
+  if (!drawPxIcon(g, buildingIcon(b), icx, icy, iconSize)) {
     g.fillStyle = '#8a7a5a';
-    g.fillRect(sx + 4, sy + 4, w - 8, w - 8);
+    g.fillRect(icx - iconSize * 0.4, icy - iconSize * 0.4, iconSize * 0.8, iconSize * 0.8);
   }
   if (!ghost) {
     if (b[9] & 1) {
@@ -1426,13 +1459,17 @@ function drawBuilding(b: HuntSnapBuilding, X: (v: number) => number, Y: (v: numb
     g.font = `800 ${Math.round(Math.max(10, s * 0.27))}px system-ui, sans-serif`;
     g.textAlign = 'center';
     g.textBaseline = 'middle';
+    // nivel: en la esquina del DIBUJO, no del hueco
+    const bx = wall ? sx + w - s * 0.16 : icx + iconSize * 0.4;
+    const by = wall ? sy + s * 0.16 : icy - iconSize * 0.38;
     g.fillStyle = 'rgba(8,10,16,0.85)';
     g.beginPath();
-    g.arc(sx + w - s * 0.16, sy + s * 0.16, s * 0.17, 0, Math.PI * 2);
+    g.arc(bx, by, s * 0.15, 0, Math.PI * 2);
     g.fill();
     g.fillStyle = '#ffe9a8';
-    g.fillText(String(b[5]), sx + w - s * 0.16, sy + s * 0.17);
-    if (b[6] < b[7]) bar(sx + w / 2, sy - s * 0.12, size * 0.9, b[6] / b[7], b[6] / b[7] > 0.4 ? '#7bd88f' : '#ff5a4e');
+    g.font = `800 ${Math.round(Math.max(9, s * 0.23))}px system-ui, sans-serif`;
+    g.fillText(String(b[5]), bx, by + s * 0.01);
+    if (b[6] < b[7]) bar(icx, (wall ? sy : icy - iconSize * 0.5) - s * 0.1, wall ? 0.9 : Math.min(size * 0.9, 1.2), b[6] / b[7], b[6] / b[7] > 0.4 ? '#7bd88f' : '#ff5a4e');
   }
   if (b[0] === selected) {
     g.strokeStyle = '#ffcd45';
@@ -1525,6 +1562,31 @@ function drawCorpse(c: { kind: string; x: number; y: number; born: number }, x: 
 }
 
 const ACT_DIRS: Dir[] = ['down', 'left', 'right', 'up'];
+const DIR_VEC: [number, number][] = [[0, 1], [-1, 0], [1, 0], [0, -1]];
+// árboles que se están talando este fotograma (casilla → hora de inicio)
+const chopping = new Map<number, number>();
+const chopSeen = new Set<number>();
+// el árbol que está talando un leñador: el de su lado de trabajo más cercano
+function treeOf(x: number, y: number, act: number): number {
+  const [vx, vy] = DIR_VEC[act - 1];
+  const dead = new Set(cur?.snap.deadTrees ?? []);
+  let best = -1;
+  let bestD = Infinity;
+  for (let j = -1; j <= 1; j++)
+    for (let i = -1; i <= 1; i++) {
+      const cx = Math.floor(x + vx * 0.6) + i;
+      const cy = Math.floor(y + vy * 0.6) + j;
+      if (cx < 0 || cy < 0 || cx >= map.w || cy >= map.h) continue;
+      const idx = cy * map.w + cx;
+      if (map.tiles[idx] !== TILE_TREE || dead.has(idx)) continue;
+      const d = Math.hypot(cx + 0.5 - x - vx * 0.5, cy + 0.5 - y - vy * 0.5);
+      if (d < bestD) {
+        bestD = d;
+        best = idx;
+      }
+    }
+  return best;
+}
 
 function drawUnit(u: HuntSnapUnit, x: number, y: number, now: number, moving: boolean, faceLeft: boolean): void {
   const s = cellPx();
@@ -1533,6 +1595,13 @@ function drawUnit(u: HuntSnapUnit, x: number, y: number, now: number, moving: bo
   const big = kind === 'hunter' || kind === 'wolf';
   const worker = kind === 'repairer' || kind === 'lumberjack';
   const sheet = unitAtlasOk ? UNIT_SHEETS[kind] : undefined;
+  // obrero trabajando: se pega a su árbol/edificio (sombra incluida)
+  const working = !sheet && worker && (u[9] ?? 0) > 0;
+  if (working) {
+    const [vx, vy] = DIR_VEC[u[9] - 1];
+    x += vx * s * (kind === 'lumberjack' ? 0.5 : 0.36);
+    y += vy * s * (kind === 'lumberjack' ? (vy < 0 ? 0.62 : 0.4) : 0.36);
+  }
   const size = sheet ? (SPRITE_TILES[kind] ?? 1.3) * s * 0.8 : kind === 'hunter' ? s * 2 : kind === 'wolf' ? s * 1.45 : worker ? s * 0.85 : s * 1.2;
   const footY = sheet ? y + s * 0.32 : y + size * 0.36;
   const topY = sheet ? footY - (SPRITE_TILES[kind] ?? 1.3) * s * 0.92 : y - size * 0.55;
@@ -1566,7 +1635,20 @@ function drawUnit(u: HuntSnapUnit, x: number, y: number, now: number, moving: bo
     g.fillStyle = grd;
     g.fillRect(x - size, y - size - s * 0.3, size * 2, size * 2);
   }
-  if (sheet) {
+  // obreros trabajando: pegados a su árbol o edificio, dando hachazos/martillazos
+  if (working) {
+    const [vx] = DIR_VEC[u[9] - 1];
+    const swing = Math.sin(now / 85);
+    g.translate(x, y - s * 0.06 - Math.max(0, swing) * s * 0.04);
+    if (vx < 0) g.scale(-1, 1);
+    g.rotate(swing * 0.28);
+    if (!drawPxIcon(g, UNIT_ICON[kind], 0, 0, size)) {
+      g.fillStyle = color;
+      g.beginPath();
+      g.arc(0, 0, size * 0.35, 0, Math.PI * 2);
+      g.fill();
+    }
+  } else if (sheet) {
     const a = anim.get(u[0]);
     let dir: Dir = a?.dir ?? 'down';
     let fi: number;
@@ -1634,6 +1716,7 @@ function frame(now: number): void {
   requestAnimationFrame(frame);
   if (!active || !cur || !init) return;
   syncSteer();
+  incomeFloats();
   const dpr = window.devicePixelRatio || 1;
   const cw = Math.round(canvas.clientWidth * dpr);
   const ch = Math.round(canvas.clientHeight * dpr);
@@ -1733,7 +1816,27 @@ function frame(now: number): void {
         continue;
       }
       const n = hash(x, y);
-      drawables.push({ y: y + 0.8, draw: () => drawTree(X(x), Y(y) - s * 0.25, s * 1.1, n) });
+      const idx = y * map.w + x;
+      drawables.push({
+        y: y + 0.8,
+        draw: () => {
+          const c0 = chopping.get(idx);
+          if (c0 === undefined) return drawTree(X(x), Y(y) - s * 0.25, s * 1.1, n);
+          // talando: el árbol se sacude con cada hachazo y salen astillas
+          const hit = Math.max(0, Math.sin(now / 85));
+          drawTree(X(x) + Math.sin(now / 40) * s * 0.035 * hit, Y(y) - s * 0.25, s * 1.1, n);
+          for (let k = 0; k < 4; k++) {
+            const ph = ((now - c0) / 520 + k / 4) % 1;
+            const ang = -Math.PI / 2 + (hash(x + k, y) - 0.5) * 2.4;
+            const d = s * (0.15 + ph * 0.55);
+            g.globalAlpha = 1 - ph;
+            g.fillStyle = k % 2 ? '#c8935a' : '#8a5a32';
+            const cs = Math.max(2, s * 0.07);
+            g.fillRect(X(x + 0.5) + Math.cos(ang) * d - cs / 2, Y(y + 0.55) + Math.sin(ang) * d + ph * ph * s * 0.4 - cs / 2, cs, cs);
+          }
+          g.globalAlpha = 1;
+        },
+      });
     }
 
   // edificios (el cazador recuerda apagados los que ya vio)
@@ -1777,10 +1880,19 @@ function frame(now: number): void {
     }
     a.x = p.x;
     a.y = p.y;
+    if (u[1] === UNIT_KIND_ORDER.indexOf('lumberjack') && (u[9] ?? 0) > 0) {
+      const t = treeOf(p.x, p.y, u[9]);
+      if (t >= 0) {
+        chopSeen.add(t);
+        if (!chopping.has(t)) chopping.set(t, now);
+      }
+    }
     const moving = now - a.movedAt < 140;
     const left = a.dir === 'left';
     drawables.push({ y: p.y + 0.2, draw: () => drawUnit(u, X(p.x), Y(p.y), now, moving, left) });
   }
+  for (const t of chopping.keys()) if (!chopSeen.has(t)) chopping.delete(t);
+  chopSeen.clear();
   if (anim.size > snap.units.length * 2 + 20) {
     const alive = new Set(snap.units.map((u) => u[0]));
     for (const id of anim.keys()) if (!alive.has(id)) anim.delete(id);
@@ -1900,13 +2012,14 @@ function frame(now: number): void {
         g.fillRect(X(f.x) + Math.cos(a) * d - 2, Y(f.y) + Math.sin(a) * d - 2, 4, 4);
       }
     } else {
-      g.font = `800 ${Math.round(Math.max(11, s * 0.34))}px system-ui, sans-serif`;
+      const rise = f.small ? 0.55 : 0.9;
+      g.font = f.small ? `800 ${Math.round(Math.max(9, s * 0.22))}px system-ui, sans-serif` : `800 ${Math.round(Math.max(11, s * 0.34))}px system-ui, sans-serif`;
       g.textAlign = 'center';
       g.textBaseline = 'middle';
-      g.lineWidth = 3;
+      g.lineWidth = f.small ? 2.5 : 3;
       g.strokeStyle = 'rgba(0,0,0,0.75)';
-      g.strokeText(f.text!, X(f.x), Y(f.y - t * 0.9));
-      g.fillText(f.text!, X(f.x), Y(f.y - t * 0.9));
+      g.strokeText(f.text!, X(f.x), Y(f.y - t * rise));
+      g.fillText(f.text!, X(f.x), Y(f.y - t * rise));
     }
   }
   g.globalAlpha = 1;

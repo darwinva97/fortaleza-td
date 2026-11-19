@@ -1906,6 +1906,9 @@ function stepWorker(st: HuntState, map: HuntMap, g: Uint8Array, u: HuntUnit): vo
       moveUnit(st, map, g, u);
     } else {
       p.wood += ((LUMBERJACKS[u.tier].woodPerSec ?? 0) * RESOURCE_MULT) / TICK_RATE;
+      u.actUntil = st.tick + 2;
+      u.actX = tx + 0.5;
+      u.actY = ty + 0.5;
     }
     return;
   }
@@ -1926,6 +1929,9 @@ function stepWorker(st: HuntState, map: HuntMap, g: Uint8Array, u: HuntUnit): vo
     if (def.repairBonus) rate *= 1 + def.repairBonus;
     if (p.spec === 'repairex') rate *= 1.25;
     target.hp = Math.min(target.maxHp, target.hp + rate / TICK_RATE);
+    u.actUntil = st.tick + 2;
+    u.actX = target.cx + target.size / 2;
+    u.actY = target.cy + target.size / 2;
   } else {
     if (u.path.length === 0 && st.tick >= u.repathAt) routeTo(st, map, g, u, buildingGoal(target));
     moveUnit(st, map, g, u);

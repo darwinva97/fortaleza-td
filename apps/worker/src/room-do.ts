@@ -674,6 +674,12 @@ export class RoomDO {
     // Gated por env.TD_TEST_HOOKS (solo en apps/worker/.dev.vars, gitignoreado):
     // en producción la variable no existe y esta ruta responde 404. El Worker
     // además solo reenvía esta ruta cuando el flag está activo (doble candado).
+    if (url.pathname === '/__huntgold') {
+      if (this.env.TD_TEST_HOOKS !== '1' || !this.hunt) return new Response('not found', { status: 404 });
+      const gold = Math.max(0, Math.min(1e6, Number(url.searchParams.get('gold')) || 0));
+      for (const p of this.hunt.players) p.gold += gold;
+      return new Response('ok');
+    }
     if (url.pathname === '/__evict') {
       if (this.env.TD_TEST_HOOKS !== '1') return new Response('not found', { status: 404 });
       // 1) volcar el estado más reciente a storage (saltándose el throttle) para que

@@ -344,6 +344,16 @@ export default {
       return new Response(res.body, { status: res.status, headers: { 'content-type': 'application/json' } });
     }
 
+    // SOLO PRUEBAS · da oro a todos en una Cacería (capturas de tools/huntvisual).
+    // Mismo doble candado que /api/__evict.
+    if (url.pathname === '/api/__huntgold' && env.TD_TEST_HOOKS === '1') {
+      const code = (url.searchParams.get('code') ?? '').toUpperCase();
+      if (!/^[A-Z]{4}$/.test(code)) return json({ error: 'bad code' }, 400);
+      const stub = env.ROOM.get(env.ROOM.idFromName(code));
+      const res = await stub.fetch(`https://do/__huntgold?gold=${Number(url.searchParams.get('gold')) || 0}`, { method: 'POST' });
+      return new Response(res.body, { status: res.status });
+    }
+
     if (url.pathname === '/ws') {
       if (request.headers.get('Upgrade') !== 'websocket') {
         return new Response('expected websocket', { status: 426 });
