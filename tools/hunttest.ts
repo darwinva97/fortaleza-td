@@ -98,7 +98,7 @@ console.log('economía, requisitos y murallas');
   assert(!!house, 'la casa se construye (gratis)');
   const g0 = ana.gold;
   run(st, sec(10));
-  assert(Math.abs(ana.gold - g0 - 10) <= 1, `la casa de nivel 1 da 1 de oro/s (${ana.gold - g0} en 10 s)`);
+  assert(Math.abs(ana.gold - g0 - 30) <= 3, `la casa de nivel 1 da 1×3 de oro/s (${ana.gold - g0} en 10 s)`);
   ana.gold = 10_000;
   const r = run(st, 1, [{ playerId: 'p2', cmd: { k: 'upgrade', id: house!.id } }]);
   assert(house!.level === 1 && r.some((e) => e.e === 'reject' && e.reason.includes('muralla')), 'para subir la casa hace falta una muralla');

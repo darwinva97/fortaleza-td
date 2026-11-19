@@ -55,6 +55,7 @@ import {
   type TowerBranch,
   type UnitKind,
   type WallBranch,
+  RESOURCE_MULT,
 } from '@td/shared';
 import { net } from './net.js';
 import { sfx, unlockAudio } from './audio.js';
@@ -1036,14 +1037,14 @@ function syncPanel(): void {
   lines.push(`<div class="bar hp"><i style="width:${(b[6] / b[7]) * 100}%"></i><span>${fmt(b[6])} / ${fmt(b[7])}</span></div>`);
   const stat = (k: string, v: string) => `<span class="st"><em>${k}</em>${v}</span>`;
   const stats: string[] = [stat('armadura', String(def.armor))];
-  if (def.income) stats.push(stat('oro/s', fmt(def.income)));
+  if (def.income) stats.push(stat('oro/s', fmt(def.income * RESOURCE_MULT)));
   if (def.food) stats.push(stat('comida', `+${def.food}`));
   if (def.dmg) stats.push(stat('daño', fmt(def.dmg)), stat('cadencia', `${def.cd}s`), stat('alcance', def.range!.toFixed(1)));
   if (def.regen) stats.push(stat('regen', `${fmt(def.regen)}/s`));
   if (def.flatReduce) stats.push(stat('por golpe', `−${fmt(def.flatReduce)}`));
   if (def.thorns) stats.push(stat('espinas', fmt(def.thorns)));
   if (def.slowAura) stats.push(stat('congela', `−${Math.round(def.slowAura * 100)} %`));
-  if (def.goldPerHit) stats.push(stat(type === 'wall' ? 'oro al recibir' : 'oro/disparo', `+${def.goldPerHit}`));
+  if (def.goldPerHit) stats.push(stat(type === 'wall' ? 'oro al recibir' : 'oro/disparo', `+${def.goldPerHit * RESOURCE_MULT}`));
   if (def.repairBonus) stats.push(stat('reparación', `+${Math.round(def.repairBonus * 100)} %`));
   lines.push(`<div class="hk-stats-grid">${stats.join('')}</div>`);
 
@@ -1061,7 +1062,7 @@ function syncPanel(): void {
       const req = reqText(nd.req);
       const delta: string[] = [];
       if (nd.hp !== def.hp) delta.push(`vida ${fmt(nd.hp)}`);
-      if (nd.income && nd.income !== def.income) delta.push(`${fmt(nd.income)} oro/s`);
+      if (nd.income && nd.income !== def.income) delta.push(`${fmt(nd.income * RESOURCE_MULT)} oro/s`);
       if (nd.dmg && nd.dmg !== def.dmg) delta.push(`daño ${fmt(nd.dmg)}`);
       if (nd.armor !== def.armor) delta.push(`armadura ${nd.armor}`);
       up = `<button class="hk-btn wide primary${!afford(nd.gold, nd.wood) || req ? ' poor' : ''}" data-act="upgrade" data-tip="${esc(`<b>${nd.name}</b><br>${delta.join(' · ')}${req ? `<br><em>${req}</em>` : ''}`)}">
@@ -1090,7 +1091,7 @@ function syncPanel(): void {
     train = `<div class="hk-label">${type === 'workshop' ? 'Reparadores' : 'Leñadores'}</div><div class="hk-train">${table
       .map((w, i) => {
         const req = reqText(w.req);
-        const info = kind === 'repairer' ? `repara el edificio entero en ${Math.round(50 * (w.ratio ?? 1))} s · comida ${w.food}` : `${w.woodPerSec} de madera/s`;
+        const info = kind === 'repairer' ? `repara el edificio entero en ${Math.round(50 * (w.ratio ?? 1))} s · comida ${w.food}` : `${(w.woodPerSec ?? 0) * RESOURCE_MULT} de madera/s`;
         return `<button class="hk-btn tr${!afford(w.gold, 0) || req ? ' poor' : ''}" data-act="train" data-v="${kind}" data-n="${i}" data-tip="${esc(`<b>${w.name}</b> · ${costHtml(w.gold, 0)}<br>${info}${req ? `<br><em>${req}</em>` : ''}`)}">
           <span class="ic">${icon(kind === 'repairer' ? 'hk:repairer' : 'hk:lumberjack')}</span><span class="lv">${i + 1}</span><span class="ct">${fmt(w.gold)}</span></button>`;
       })
@@ -1142,7 +1143,7 @@ function syncShop(): void {
       })
       .join('')}
     <button class="hk-item${afford(WOOD_FOR_GOLD, 0) && m.nearShop ? '' : ' poor'}" data-act="buywood" data-tip="${esc(`<b>1 de madera</b><br>Para los objetos rúnicos.<br>${costHtml(WOOD_FOR_GOLD, 0)}`)}"><span class="ic">${icon('hk:item-wood')}</span><span class="ct">${fmt(WOOD_FOR_GOLD)}</span></button>
-    ${m.form === 'hunter' ? `<button class="hk-item hut${nextHut && afford(nextHut.cost, 0) ? '' : ' poor'}" data-act="hut" data-tip="${esc(nextHut ? `<b>Mejorar la guarida</b><br>${m.hutIncome} → ${nextHut.income} de oro/s<br>${costHtml(nextHut.cost, 0)}` : 'Guarida al máximo')}"><span class="ic">${icon('hk:hut')}</span><span class="v">nv ${m.hutLevel}</span><span class="ct">${nextHut ? fmt(nextHut.cost) : 'máx'}</span></button>` : ''}
+    ${m.form === 'hunter' ? `<button class="hk-item hut${nextHut && afford(nextHut.cost, 0) ? '' : ' poor'}" data-act="hut" data-tip="${esc(nextHut ? `<b>Mejorar la guarida</b><br>${m.hutIncome} → ${nextHut.income * RESOURCE_MULT} de oro/s<br>${costHtml(nextHut.cost, 0)}` : 'Guarida al máximo')}"><span class="ic">${icon('hk:hut')}</span><span class="v">nv ${m.hutLevel}</span><span class="ct">${nextHut ? fmt(nextHut.cost) : 'máx'}</span></button>` : ''}
   </div></div>`;
   const html = `<div class="hk-panel-head"><span class="ic big">${icon('hk:shop')}</span><div><b>Tienda de la guarida</b><small>${m.nearShop ? 'Dos objetos iguales se funden en el siguiente nivel' : 'Acércate a la guarida para comprar'}</small></div><button data-act="close" data-v="shop">✕</button></div>${lines}${extras}`;
   if (html !== hashes.shop) {

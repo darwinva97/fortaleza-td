@@ -11,6 +11,13 @@
 //     negativa: ×(2 − 0.98^−a). Todos los tipos de ataque pegan 100 % a todo.
 // Los nombres, el universo y el arte son de Fortaleza: aquí solo viven las reglas.
 
+// Todo lo que se GANA (oro y madera, en los dos bandos) vale el triple que en el
+// original: ingresos de la casa, minas, guarida y leñadores, oro por golpe,
+// recompensas, robo del ángel y oro inicial del lobo. La velocidad del juego no
+// cambia. No se multiplican el mercado de madera ni los reembolsos (serían un
+// bucle para fabricar oro).
+export const RESOURCE_MULT = 3;
+
 export const T_PER_UNIT = 1 / 128;
 export const toTiles = (units: number): number => units / 128;
 
@@ -72,7 +79,7 @@ function logLerp(table: [number, number][], min: number): number {
 }
 export const goldUnit = (min: number): number => logLerp(A2E, min); // «unidad de oro» del minuto
 export const roleBounty = (min: number): number => logLerp(A6E, min); // matar un ángel o un lobo
-export const wolfStartGold = (min: number): number => Math.round(3.75 * Math.pow(goldUnit(min), 1.25));
+export const wolfStartGold = (min: number): number => Math.round(3.75 * Math.pow(goldUnit(min), 1.25)) * RESOURCE_MULT;
 
 // ---------- personajes ----------
 export type Form = 'hunter' | 'elf' | 'angel' | 'wolf';

@@ -27,6 +27,7 @@ import {
   MARKET,
   MAX_LUMBERJACKS,
   PHASE,
+  RESOURCE_MULT,
   REPAIRERS,
   REPAIR_BASE_SEC,
   SHOP_RADIUS,
@@ -413,6 +414,11 @@ const cell = (v: number) => Math.floor(v);
 function pay(p: HuntPlayer, gold: number): void {
   p.gold = Math.min(GOLD_CAP, p.gold + gold);
   if (gold > 0) p.stats.goldEarned += gold;
+}
+
+// lo GANADO (no el comercio ni los reembolsos) se multiplica por RESOURCE_MULT
+function earn(p: HuntPlayer, gold: number): void {
+  pay(p, gold * RESOURCE_MULT);
 }
 
 function reject(ev: HuntEvent[], playerId: string, reason: string): void {
@@ -831,7 +837,7 @@ function killElfPlayer(st: HuntState, u: HuntUnit, killer: HuntPlayer | undefine
   if (!p) return;
   const bounty = Math.min(GOLD_CAP, Math.floor(p.gold * ELF_KILL_GOLD_FRAC) + p.wood * ELF_KILL_GOLD_PER_WOOD);
   if (killer) {
-    pay(killer, bounty);
+    earn(killer, bounty);
     killer.stats.kills += 1;
     giveXp(st, killer, XP_FOR_ELF, ev);
   }
@@ -887,14 +893,14 @@ function killUnit(st: HuntState, u: HuntUnit, killerOwner: string | null, ev: Hu
   if (u.tree >= 0) st.treeTaken.delete(u.tree);
   ev.push({ e: 'unitdeath', x: u.x, y: u.y, kind: u.kind });
   if (u.kind === 'beast') {
-    if (killer) pay(killer, roleBounty(huntMinute(st)));
+    if (killer) earn(killer, roleBounty(huntMinute(st)));
     (u as HuntUnit & { respawnAt?: number }).respawnAt = st.tick + T(BEAST.respawnSec);
     return;
   }
   if (u.kind === 'angel' || u.kind === 'wolf') {
     const p = playerOf(st, u.owner);
     if (p) p.respawnAt = st.tick + T(u.kind === 'angel' ? ANGEL.respawnSec : WOLF.respawnSec);
-    if (killer) pay(killer, roleBounty(huntMinute(st)));
+    if (killer) earn(killer, roleBounty(huntMinute(st)));
     if (killer) giveXp(st, killer, 100, ev);
   } else if (killer) {
     giveXp(st, killer, xpForKill(u.tier + 1), ev);
@@ -932,7 +938,7 @@ function strike(st: HuntState, att: HuntUnit, p: HuntPlayer, target: { b?: HuntB
     let dmg = raw * armorMult(v.kind === 'mage' ? MAGE.armor : 0);
     dmg = Math.max(0, dmg);
     v.hp -= dmg;
-    const gold = Math.floor(Math.min(dmg, v.hp + dmg) * plunder);
+    const gold = Math.floor(Math.min(dmg, v.hp + dmg) * plunder) * RESOURCE_MULT;
     pay(p, gold);
     p.stats.damage += dmg;
     att.hp = Math.min(att.maxHp, att.hp + dmg * HUNTER.lifesteal);
@@ -951,12 +957,12 @@ function strike(st: HuntState, att: HuntUnit, p: HuntPlayer, target: { b?: HuntB
   if (def.flatReduce) raw = Math.max(1, raw - def.flatReduce);
   const dmg = Math.min(b.hp, raw * armorMult(def.armor + b.luckArmor));
   b.hp -= dmg;
-  const gold = Math.floor(dmg * plunder);
+  const gold = Math.floor(dmg * plunder) * RESOURCE_MULT;
   pay(p, gold);
   p.stats.damage += dmg;
   att.hp = Math.min(att.maxHp, att.hp + dmg * HUNTER.lifesteal);
   const owner = playerOf(st, b.owner);
-  if (owner && def.goldPerHit && b.type === 'wall') pay(owner, def.goldPerHit);
+  if (owner && def.goldPerHit && b.type === 'wall') earn(owner, def.goldPerHit);
   if (def.thorns) {
     att.hp -= def.thorns * armorMult(s.armor);
     if (att.hp <= 0) killUnit(st, att, b.owner, ev);
@@ -1586,7 +1592,7 @@ function castAbility(
       break;
     case 'steal': {
       if (Math.hypot(u.x - (map.camp.x + 0.5), u.y - (map.camp.y + 0.5)) > (def.range ?? 2.5) + 0.5) return reject(ev, p.id, 'Acércate a la guarida del cazador');
-      const gold = goldUnit(huntMinute(st));
+      const gold = goldUnit(huntMinute(st)) * RESOURCE_MULT;
       pay(p, gold);
       ev.push({ e: 'steal', x: u.x, y: u.y, gold });
       break;
@@ -1799,7 +1805,7 @@ function stepWorker(st: HuntState, map: HuntMap, g: Uint8Array, u: HuntUnit): vo
       if (u.path.length === 0 && st.tick >= u.repathAt) routeTo(st, map, g, u, { x: tx, y: ty, w: 1, h: 1, near: true });
       moveUnit(st, map, g, u);
     } else {
-      p.wood += (LUMBERJACKS[u.tier].woodPerSec ?? 0) / TICK_RATE;
+      p.wood += ((LUMBERJACKS[u.tier].woodPerSec ?? 0) * RESOURCE_MULT) / TICK_RATE;
     }
     return;
   }
@@ -2030,7 +2036,7 @@ export function stepHunt(st: HuntState, cmds: HuntPlayerCommand[]): HuntEvent[] 
     const owner = playerOf(st, b.owner);
     if (owner) {
       owner.stats.damage += dmg;
-      if (def.goldPerHit) pay(owner, def.goldPerHit);
+      if (def.goldPerHit) earn(owner, def.goldPerHit);
     }
     ev.push({ e: 'shot', x: b.cx + 0.5, y: b.cy + 0.5, tx: target.x, ty: target.y, dmg: Math.round(dmg), gold: !!def.goldPerHit, ...(fxName ? { fx: fxName } : {}) });
     if (target.hp <= 0) killUnit(st, target, b.owner, ev);
@@ -2067,10 +2073,10 @@ export function stepHunt(st: HuntState, cmds: HuntPlayerCommand[]): HuntEvent[] 
           if (b.owner !== p.id) continue;
           const inc = buildingDef(b).income;
           if (!inc) continue;
-          pay(p, b.type === 'mine' && b.forceUntil > st.tick ? inc * 2 : inc);
+          earn(p, b.type === 'mine' && b.forceUntil > st.tick ? inc * 2 : inc);
         }
       }
-      if (p.form === 'hunter' && p.alive && st.tick >= st.releaseTick) pay(p, HUT_LEVELS[st.hutLevel - 1].income);
+      if (p.form === 'hunter' && p.alive && st.tick >= st.releaseTick) earn(p, HUT_LEVELS[st.hutLevel - 1].income);
       if (p.form === 'choosing' && st.tick >= p.chooseUntil) becomeRole(st, p, 'angel', ev);
       if ((p.form === 'angel' || p.form === 'wolf') && p.respawnAt > 0 && st.tick >= p.respawnAt && !mainUnit(st, p.id)) {
         p.respawnAt = 0;
@@ -2219,8 +2225,9 @@ export function buildHuntSnap(st: HuntState, viewerId: string | null): HuntSnap 
         income += b.type === 'mine' && b.forceUntil > st.tick ? inc * 2 : inc;
       }
     } else if (viewer.form === 'hunter') income = HUT_LEVELS[st.hutLevel - 1].income;
+    income *= RESOURCE_MULT;
     let woodRate = 0;
-    for (const w of st.units) if (w.alive && w.owner === viewer.id && w.kind === 'lumberjack') woodRate += LUMBERJACKS[w.tier].woodPerSec ?? 0;
+    for (const w of st.units) if (w.alive && w.owner === viewer.id && w.kind === 'lumberjack') woodRate += (LUMBERJACKS[w.tier].woodPerSec ?? 0) * RESOURCE_MULT;
     const cds: Partial<Record<Ability, number>> = {};
     for (const [a, t] of Object.entries(viewer.cds)) if ((t ?? 0) > st.tick) cds[a as Ability] = secsLeft((t ?? 0) - st.tick);
     const map = getHuntMap();
@@ -2250,7 +2257,7 @@ export function buildHuntSnap(st: HuntState, viewerId: string | null): HuntSnap 
       channel: u && u.channelEnd > 0 ? secsLeft(u.channelEnd - st.tick) : 0,
       hutLevel: st.hutLevel,
       hutNext: HUT_LEVELS[st.hutLevel]?.cost ?? 0,
-      hutIncome: HUT_LEVELS[st.hutLevel - 1].income,
+      hutIncome: HUT_LEVELS[st.hutLevel - 1].income * RESOURCE_MULT,
       income,
       woodRate: r2(woodRate),
       nearShop: !!u && shopNear(st, u.x, u.y, viewer.side),
