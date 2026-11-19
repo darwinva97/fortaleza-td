@@ -18,5 +18,21 @@
   "enemy:sapper": 434740, "enemy:thief": 445489, "enemy:berserker": 434707, "enemy:skywhale": 13422,
   "enemy:wraith": 1624, "enemy:chimera": 9440, "enemy:behemoth": 5102, "enemy:gargoyle": 741,
   "enemy:harpy": 441710, "enemy:stalker": 439381, "enemy:runebrat": 447938, "enemy:bannerman": 434989,
-  "enemy:knight": 426738, "enemy:mammoth": 748
+  "enemy:knight": 426738, "enemy:mammoth": 748,
+  "hk:house": 160750, "hk:wall": 506103, "hk:wall-rock": 2507, "hk:wall-elf": 258084,
+  "hk:wall-ice": 614914, "hk:wall-cement": 1212583, "hk:wall-coral": 1337, "hk:wall-gold": 499907,
+  "hk:wall-ruin": 215191, "hk:tower": 339009, "hk:tower-gold": 535133, "hk:workshop": 1310914,
+  "hk:townhall": 267475, "hk:elftree": 20950, "hk:mine": 5063, "hk:sighttower": 5378,
+  "hk:hut": 2610, "hk:shop": 962939, "hk:elf": 434900, "hk:repairer": 706444,
+  "hk:lumberjack": 436689, "hk:angel": 1128939, "hk:wolf": 4534, "hk:troll": 715710,
+  "hk:gold": 413612, "hk:wood": 6895, "hk:food": 911, "hk:blink": 317034,
+  "hk:haste": 435930, "hk:roots": 670553, "hk:silence": 434771, "hk:moonguard": 596360,
+  "hk:book": 13434, "hk:spec-mines": 279445, "hk:spec-repair": 1614, "hk:spec-skin": 957530,
+  "hk:spec-holylight": 14732, "hk:demolish": 189578, "hk:upgrade": 2339, "hk:windwalk": 935752,
+  "hk:eye": 854629, "hk:berserk": 344264, "hk:trap": 432830, "hk:recall": 1192096,
+  "hk:steal": 848871, "hk:stun": 233819, "hk:holyarmor": 302638, "hk:howl": 843097,
+  "hk:run": 441816, "hk:item-sword": 170705, "hk:item-lance": 339415, "hk:item-axe": 905475,
+  "hk:item-shield": 390, "hk:item-hp": 335235, "hk:item-regen": 266751, "hk:item-gloves": 751021,
+  "hk:item-boots": 1098219, "hk:item-scroll": 944165, "hk:item-ankh": 467333, "hk:item-ward": 365387,
+  "hk:item-wood": 912636
 }

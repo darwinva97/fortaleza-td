@@ -1,17 +1,18 @@
-// Prueba de la sim de CACERÍA con bots: `npx tsx tools/hunttest.ts`.
-// No mide diversión; comprueba que las reglas hacen lo que dicen.
+// Prueba de la sim de CACERÍA: `npx tsx tools/hunttest.ts`.
+// No mide diversión; comprueba que las reglas hacen lo que dicen y que el
+// servidor aguanta una partida grande.
 import {
-  HUNT,
   HUNT_BOT,
+  PHASE,
   TICK_RATE,
-  createHuntBotMemory,
-  huntBotCommands,
+  armorMult,
   buildHuntSnap,
   createHunt,
-  filterHuntEvents,
+  createHuntBotMemory,
   getHuntMap,
+  huntBotCommands,
   huntHunterUnit,
-  huntMaxHp,
+  mainUnit,
   stepHunt,
   type HuntPlayerCommand,
   type HuntState,
@@ -29,195 +30,252 @@ const roster = [
   { id: 'p2', name: 'Ana', color: '#0f0' },
   { id: 'p3', name: 'Beto', color: '#00f' },
 ];
+const sec = (s: number) => Math.round(s * TICK_RATE);
 const run = (st: HuntState, ticks: number, cmds: HuntPlayerCommand[] = []) => {
   const evs = stepHunt(st, cmds);
   for (let i = 1; i < ticks && !st.over; i++) evs.push(...stepHunt(st, []));
   return evs;
 };
-const sec = (s: number) => Math.round(s * TICK_RATE);
 const map = getHuntMap();
+const P = (st: HuntState, id: string) => st.players.find((p) => p.id === id)!;
 
 console.log('mapa');
-assert(map.bases.length === 6, 'hay 6 bases');
-assert(map.bases.every((b) => map.tiles[b.door.y * map.w + b.door.x] === 0), 'cada base tiene su entrada abierta');
-{
-  // cada interior de base es alcanzable desde la guarida
-  const seen = new Set<number>([map.camp.y * map.w + map.camp.x]);
-  const q = [...seen];
-  while (q.length) {
-    const i = q.pop()!;
-    for (const d of [1, -1, map.w, -map.w]) {
-      const j = i + d;
-      if (map.tiles[j] === 0 && !seen.has(j)) {
-        seen.add(j);
-        q.push(j);
-      }
-    }
-  }
-  assert(map.bases.every((b) => seen.has((b.y + 3) * map.w + b.x + 4)), 'todas las bases son alcanzables');
-}
+assert(map.plots.length >= 20, `hay ${map.plots.length} parcelas`);
+assert(map.plots.every((p) => p.doors.length >= 1), 'todas tienen puerta');
+assert(map.trees.length > 500, `hay ${map.trees.length} árboles`);
+const big = map.plots.filter((p) => p.area >= 60).length;
+assert(big >= map.plots.length / 2, `la mayoría son grandes (${big} con ≥60 casillas libres)`);
 
-console.log('retención y movimiento');
+// parcela de pruebas: una con puerta de 1 casilla
+const plot = map.plots.find((p) => p.doors.length === 1 && p.area >= 60 && p.shape === 'rect')!;
+const door = plot.doors[0];
+const inner = (() => {
+  for (let j = plot.y + 2; j < plot.y + plot.h - 2; j++)
+    for (let i = plot.x + 2; i < plot.x + plot.w - 2; i++) if (map.tiles[j * map.w + i] === 0 && map.plotOf[j * map.w + i] === plot.id) return { x: i, y: j };
+  return { x: plot.x + 3, y: plot.y + 3 };
+})();
+// casilla libre del interior, lejos de los árboles, para la casa (2×2)
+const houseCell = (() => {
+  for (let j = plot.y + 2; j < plot.y + plot.h - 3; j++)
+    for (let i = plot.x + 2; i < plot.x + plot.w - 3; i++) {
+      const ok = [0, 1].every((a) => [0, 1].every((b) => map.tiles[(j + b) * map.w + i + a] === 0 && map.plotOf[(j + b) * map.w + i + a] === plot.id));
+      const nearDoor = Math.max(Math.abs(i - door.x), Math.abs(j - door.y)) <= 3;
+      if (ok && !nearDoor) return { x: i, y: j };
+    }
+  return inner;
+})();
+
+console.log('ventaja y construcción a distancia');
 {
   const st = createHunt(1, roster, 'p1');
   const h = huntHunterUnit(st)!;
   const x0 = h.x;
-  const ev = run(st, sec(2), [{ playerId: 'p1', cmd: { k: 'move', x: 10, y: 20 } }]);
-  assert(h.x === x0, 'el cazador no se mueve mientras está retenido');
-  assert(ev.some((e) => e.e === 'reject'), 'y recibe el aviso');
-  const c = st.units.find((u) => u.owner === 'p2')!;
-  const cx0 = c.x;
-  run(st, sec(3), [{ playerId: 'p2', cmd: { k: 'move', x: 9, y: 5 } }]);
-  assert(c.x !== cx0, 'el colono sí se mueve desde el principio');
-  run(st, sec(HUNT.RELEASE_SEC));
-  run(st, sec(3), [{ playerId: 'p1', cmd: { k: 'move', x: 10, y: 20 } }]);
-  assert(h.x < x0 - 5, 'tras soltarlo, el cazador se mueve');
+  const r = run(st, sec(2), [{ playerId: 'p1', cmd: { k: 'move', x: 10, y: 10 } }]);
+  assert(h.x === x0 && r.some((e) => e.e === 'reject'), 'el cazador está retenido al empezar');
+  const elf = mainUnit(st, 'p2')!;
+  // ordena la muralla en la puerta: el colono va andando y la planta al llegar
+  run(st, sec(40), [{ playerId: 'p2', cmd: { k: 'build', type: 'wall', cx: door.x, cy: door.y } }]);
+  const wall = st.buildings.find((b) => b.type === 'wall');
+  assert(!!wall && wall.cx === door.x && wall.cy === door.y, 'el colono camina hasta la puerta y la cierra con una muralla');
+  assert(P(st, 'p2').gold === 30 - 4, 'la muralla cuesta 4 de oro');
+  void elf;
 }
 
-console.log('base cerrada, economía y asedio');
+console.log('economía, requisitos y murallas');
 {
   const st = createHunt(2, roster, 'p1');
-  const base = map.bases[1]; // arriba al centro
-  const c = st.units.find((u) => u.owner === 'p2')!;
-  run(st, sec(12), [{ playerId: 'p2', cmd: { k: 'move', x: base.x + 4, y: base.y + 3 } }]);
-  assert(Math.floor(c.x) === base.x + 4 && Math.floor(c.y) === base.y + 3, 'el colono llega al interior de la base');
-  const ev = run(st, 2, [
-    { playerId: 'p2', cmd: { k: 'build', type: 'wall', cx: base.door.x, cy: base.door.y } },
-    { playerId: 'p2', cmd: { k: 'build', type: 'treasury', cx: base.x + 2, cy: base.y + 2 } },
-    { playerId: 'p2', cmd: { k: 'build', type: 'tower', cx: base.x + 4, cy: base.y + 4 } },
-    { playerId: 'p2', cmd: { k: 'build', type: 'treasury', cx: base.x + 3, cy: base.y + 2 } },
+  const ana = P(st, 'p2');
+  const elf = mainUnit(st, 'p2')!;
+  elf.x = inner.x + 0.5;
+  elf.y = inner.y + 0.5;
+  const hev = run(st, sec(15), [
+    { playerId: 'p2', cmd: { k: 'build', type: 'house', cx: houseCell.x, cy: houseCell.y } },
   ]);
-  assert(st.buildings.length === 3, 'construye muralla, tesorería y torre');
-  assert(ev.some((e) => e.e === 'reject' && e.reason.includes('una')), 'la segunda tesorería se rechaza');
-  const p2 = st.players.find((p) => p.id === 'p2')!;
-  const gold0 = p2.gold;
+  for (const e of hev) if (e.e === 'reject') console.log('    (rechazo:', e.reason, ')');
+  const house = st.buildings.find((b) => b.type === 'house');
+  assert(!!house, 'la casa se construye (gratis)');
+  const g0 = ana.gold;
   run(st, sec(10));
-  assert(p2.gold === gold0 + 10, 'la tesorería nivel 1 da 1 de oro por segundo');
+  assert(Math.abs(ana.gold - g0 - 10) <= 1, `la casa de nivel 1 da 1 de oro/s (${ana.gold - g0} en 10 s)`);
+  ana.gold = 10_000;
+  const r = run(st, 1, [{ playerId: 'p2', cmd: { k: 'upgrade', id: house!.id } }]);
+  assert(house!.level === 1 && r.some((e) => e.e === 'reject' && e.reason.includes('muralla')), 'para subir la casa hace falta una muralla');
+  run(st, sec(20), [{ playerId: 'p2', cmd: { k: 'build', type: 'wall', cx: door.x, cy: door.y } }]);
   const wall = st.buildings.find((b) => b.type === 'wall')!;
-  const treasury = st.buildings.find((b) => b.type === 'treasury')!;
-  run(st, 1, [{ playerId: 'p2', cmd: { k: 'upgrade', id: treasury.id } }]);
-  assert(treasury.level === 1 || p2.gold < 50, 'la tesorería no sube sin oro');
-  p2.gold = 1000;
-  run(st, 1, [{ playerId: 'p2', cmd: { k: 'upgrade', id: treasury.id } }]);
-  assert(treasury.level === 2, 'con muralla nivel 1, la tesorería sube a 2');
-  const r = run(st, 1, [{ playerId: 'p2', cmd: { k: 'upgrade', id: treasury.id } }]);
-  assert(treasury.level === 2 && r.some((e) => e.e === 'reject'), 'pero a 3 exige subir la muralla');
-  run(st, 1, [{ playerId: 'p2', cmd: { k: 'upgrade', id: wall.id } }]);
-  assert(wall.level === 2 && wall.maxHp === huntMaxHp('wall', 2), 'la muralla sube y duplica su vida');
+  run(st, 1, [{ playerId: 'p2', cmd: { k: 'upgrade', id: house!.id } }]);
+  assert(house!.level === 2, 'con una muralla la casa sube a nivel 2 (2 de oro/s)');
+  for (let i = 0; i < 4; i++) run(st, 1, [{ playerId: 'p2', cmd: { k: 'upgrade', id: wall.id } }]);
+  assert(wall.level === 5 && wall.maxHp === 250, 'tronco de la muralla: nivel 5 con 250 de vida');
+  const rr = run(st, 1, [{ playerId: 'p2', cmd: { k: 'upgrade', id: wall.id } }]);
+  assert(wall.level === 5 && rr.some((e) => e.e === 'reject'), 'al nivel 6 hay que elegir especialidad');
+  run(st, 1, [{ playerId: 'p2', cmd: { k: 'upgrade', id: wall.id, branch: 'cement' } }]);
+  assert(wall.level === 6 && wall.wallBranch === 'cement' && wall.maxHp === 360, 'muralla de cemento: 360 de vida');
 
-  // taller y obreros: reparan la muralla dañada
-  run(st, 1, [{ playerId: 'p2', cmd: { k: 'build', type: 'workshop', cx: base.x + 6, cy: base.y + 2 } }]);
-  run(st, 1, [{ playerId: 'p2', cmd: { k: 'worker' } }]);
-  assert(p2.workers === 1, 'contrata un obrero en el taller');
-  wall.hp = 10;
-  run(st, sec(5));
-  assert(wall.hp > 10, 'el obrero repara la muralla');
-
-  // el cazador no puede entrar: va a la muralla y la golpea
-  run(st, sec(HUNT.RELEASE_SEC));
+  // asedio: el cazador golpea la muralla de cemento (armadura 5, −1 por golpe)
+  run(st, sec(PHASE.headStartSec));
   const h = huntHunterUnit(st)!;
-  const hp = st.players.find((p) => p.id === 'p1')!;
-  run(st, sec(12), [{ playerId: 'p1', cmd: { k: 'move', x: base.x + 4, y: base.y + 3 } }]);
-  assert(!(Math.floor(h.y) < base.y + 6), 'la muralla le cierra el paso');
-  const g0 = hp.gold;
-  const hpWall = wall.hp;
-  run(st, sec(8), [{ playerId: 'p1', cmd: { k: 'attack', target: wall.id } }]);
-  assert(wall.hp < hpWall || !st.buildings.includes(wall), 'el cazador daña la muralla');
-  assert(hp.gold > g0 + 8, 'y cobra oro por cada golpe');
-  assert(h.hp < h.maxHp, 'la torre le dispara mientras tanto');
-  // visión: el cazador no ve la tesorería del fondo salvo que esté cerca
-  const snapH = buildHuntSnap(st, 'p1');
-  const snapC = buildHuntSnap(st, 'p2');
-  assert(snapC.buildings.length >= snapH.buildings.length, 'el colono ve todos sus edificios');
-  assert(snapH.players.find((p) => p.id === 'p2')!.gold === -1, 'el cazador no ve el oro del colono');
+  const hunter = P(st, 'p1');
+  h.x = door.x + 0.5;
+  h.y = door.y + (door.y === plot.y ? -1 : door.y === plot.y + plot.h - 1 ? 1 : 0) + 0.5;
+  h.x += door.x === plot.x ? -1 : door.x === plot.x + plot.w - 1 ? 1 : 0;
+  const gold0 = hunter.gold;
+  const hp0 = wall.hp;
+  run(st, 3, [{ playerId: 'p1', cmd: { k: 'attack', target: wall.id } }]);
+  const expected = Math.max(1, 5 - 1) * armorMult(5);
+  assert(Math.abs(hp0 - wall.hp - expected) < 0.01, `cada golpe hace ${expected.toFixed(2)} a la muralla (armadura y cemento)`);
+  assert(hunter.gold - gold0 >= Math.floor(expected), 'y el cazador cobra el daño hecho en oro');
+
+  // reparador: rellena la muralla
+  run(st, sec(10), [{ playerId: 'p1', cmd: { k: 'stop' } }]);
+  h.x = map.camp.x + 0.5;
+  h.y = map.camp.y + 2.5;
+  run(st, sec(15), [{ playerId: 'p2', cmd: { k: 'build', type: 'workshop', cx: houseCell.x + 3, cy: houseCell.y } }]);
+  const shop = st.buildings.find((b) => b.type === 'workshop');
+  assert(!!shop, 'construye un taller');
+  if (shop) {
+    run(st, 1, [{ playerId: 'p2', cmd: { k: 'train', id: shop.id, unit: 'repairer', tier: 0 } }]);
+    assert(st.units.some((u) => u.kind === 'repairer' && u.alive), 'contrata un aprendiz');
+    wall.hp = 100;
+    run(st, sec(25));
+    assert(wall.hp > 120, `el reparador sube la muralla (${Math.round(wall.hp)} de 360)`);
+  }
 }
 
-console.log('caza y final');
+console.log('torres, golpes y papeles al morir');
 {
   const st = createHunt(3, roster, 'p1');
-  run(st, sec(HUNT.RELEASE_SEC) + 1);
-  const victim = st.units.find((u) => u.owner === 'p2')!;
-  const ev = run(st, sec(6), [{ playerId: 'p1', cmd: { k: 'attack', target: victim.id } }]);
-  assert(!victim.alive, 'el cazador alcanza y mata de un golpe a un colono quieto');
-  assert(ev.some((e) => e.e === 'death'), 'se anuncia la baja');
-  assert(st.over === null, 'la partida sigue: queda otro colono');
-  assert(filterHuntEvents(st, 'p3', [{ e: 'reject', priv: 'p1', reason: 'x' }]).length === 0, 'los avisos privados no llegan a otros');
-  const other = st.units.find((u) => u.owner === 'p3')!;
-  run(st, sec(8), [{ playerId: 'p1', cmd: { k: 'attack', target: other.id } }]);
-  assert(st.over?.winner === 'hunter', 'sin colonos vivos gana el cazador');
+  run(st, sec(PHASE.headStartSec) + 1);
+  const h = huntHunterUnit(st)!;
+  const ana = mainUnit(st, 'p2')!;
+  P(st, 'p2').gold = 100;
+  ana.x = h.x + 1;
+  ana.y = h.y;
+  run(st, 1, [{ playerId: 'p1', cmd: { k: 'attack', target: ana.id } }]);
+  assert(ana.alive && ana.hp === 5, 'el primer golpe deja al colono a media vida');
+  run(st, sec(2));
+  assert(!ana.alive, 'el segundo lo mata');
+  assert(P(st, 'p1').gold >= 75 + 67, 'el cazador se lleva el 67 % del oro del colono');
+  assert(P(st, 'p2').form === 'choosing', 'el caído elige papel');
+  run(st, 1, [{ playerId: 'p2', cmd: { k: 'form', f: 'wolf' } }]);
+  assert(P(st, 'p2').side === 'hunter' && st.units.some((u) => u.kind === 'wolf' && u.alive), 'como lobo se pasa al bando del cazador');
+  assert(!st.over, 'la partida sigue mientras quede un colono');
+  const beto = mainUnit(st, 'p3')!;
+  beto.x = h.x - 1;
+  beto.y = h.y;
+  run(st, sec(4), [{ playerId: 'p1', cmd: { k: 'attack', target: beto.id } }]);
+  run(st, 1, [{ playerId: 'p3', cmd: { k: 'form', f: 'angel' } }]);
+  assert(st.over?.winner === 'hunter', 'sin colonos vivos gana el cazador (ángeles y lobos no cuentan)');
 }
 {
-  // las torres pueden matar al cazador
   const st = createHunt(4, roster, 'p1');
+  const ana = P(st, 'p2');
+  const elf = mainUnit(st, 'p2')!;
+  // una torre mejorada junto a la plaza mata a un cazador débil
+  const tx = map.plaza.x + map.plaza.w + 1;
+  const ty = map.camp.y;
+  elf.x = tx + 1.5;
+  elf.y = ty + 0.5;
+  run(st, sec(3), [{ playerId: 'p2', cmd: { k: 'build', type: 'tower', cx: tx, cy: ty } }]);
+  const tower = st.buildings.find((b) => b.type === 'tower');
+  assert(!!tower && P(st, 'p2').wood === 7, 'la torre cuesta 1 de madera');
+  ana.gold = 100;
+  run(st, 1, [{ playerId: 'p2', cmd: { k: 'upgrade', id: tower!.id } }]);
+  assert(tower!.level === 2, 'mejorada a torre de madera (2 de daño)');
+  run(st, sec(PHASE.headStartSec));
   const h = huntHunterUnit(st)!;
-  const c = st.units.find((u) => u.owner === 'p2')!;
-  st.players.find((p) => p.id === 'p2')!.gold = 100;
-  run(st, sec(4), [{ playerId: 'p2', cmd: { k: 'move', x: map.camp.x + 7, y: map.camp.y } }]);
-  run(st, 2, [{ playerId: 'p2', cmd: { k: 'build', type: 'tower', cx: Math.floor(c.x), cy: Math.floor(c.y) + 1 } }]);
-  assert(st.buildings.length === 1, 'torre construida fuera de la zona de la guarida');
-  run(st, sec(HUNT.RELEASE_SEC));
-  run(st, sec(4), [{ playerId: 'p1', cmd: { k: 'move', x: c.x - 3, y: c.y } }]);
-  h.hp = 1; // fuera de la guarida ya no se cura
-  run(st, sec(3));
-  assert(st.over?.winner === 'colonist' && st.over.reason === 'hunter_dead', 'si el cazador muere ganan los colonos');
+  h.hp = 6;
+  h.x = tx - 2.5;
+  h.y = ty + 0.5;
+  run(st, sec(4), [{ playerId: 'p1', cmd: { k: 'stop' } }]);
+  assert(st.over?.winner === 'colonist', 'la torre mata al cazador y ganan los colonos');
 }
+
+console.log('tienda, fusión de objetos y niveles');
 {
   const st = createHunt(5, roster, 'p1');
-  st.endTick = sec(5);
-  run(st, sec(6));
-  assert(st.over?.winner === 'colonist' && st.over.reason === 'time', 'si se acaba el tiempo ganan los colonos');
+  const hp = P(st, 'p1');
+  hp.gold = 1000;
+  run(st, 1, [{ playerId: 'p1', cmd: { k: 'buy', line: 'weapon', tier: 0 } }]);
+  run(st, 1, [{ playerId: 'p1', cmd: { k: 'buy', line: 'weapon', tier: 0 } }]);
+  const weapons = hp.inv.filter((s) => s?.kind === 'item' && s.line === 'weapon');
+  assert(weapons.length === 1 && weapons[0]!.kind === 'item' && weapons[0]!.tier === 1, 'dos espadas cortas se funden en una espada (+4)');
+  run(st, 1, [{ playerId: 'p1', cmd: { k: 'buy', line: 'life', tier: 0 } }]);
+  assert(huntHunterUnit(st)!.maxHp === 1000, 'el corazón sube la vida máxima a 1000');
+  hp.xp = 199;
+  const h = huntHunterUnit(st)!;
+  run(st, sec(PHASE.headStartSec) + 1);
+  const wolfless = mainUnit(st, 'p3')!;
+  wolfless.x = h.x + 1;
+  wolfless.y = h.y;
+  run(st, sec(3), [{ playerId: 'p1', cmd: { k: 'attack', target: wolfless.id } }]);
+  assert(hp.level >= 2, `matar a un colono le sube de nivel (nivel ${hp.level})`);
+  assert(h.maxHp >= 1500, 'cada nivel da +500 de vida');
 }
+
+console.log('visión');
 {
   const st = createHunt(6, roster, 'p1');
-  const c = st.units.find((u) => u.owner === 'p2')!;
-  const x0 = c.x;
-  run(st, 1, [{ playerId: 'p2', cmd: { k: 'blink', x: c.x + 6, y: c.y } }]);
-  assert(Math.abs(c.x - x0) > 5, 'el colono salta');
-  const r = run(st, 1, [{ playerId: 'p2', cmd: { k: 'blink', x: c.x + 3, y: c.y } }]);
-  assert(r.some((e) => e.e === 'reject'), 'y el salto queda en recarga');
+  const a = mainUnit(st, 'p2')!;
+  const b = mainUnit(st, 'p3')!;
+  a.x = 10;
+  a.y = 10;
+  b.x = 90;
+  b.y = 90;
+  run(st, 2);
+  const early = buildHuntSnap(st, 'p2');
+  assert(!early.units.some((u) => u[0] === b.id), 'al principio un colono no ve a otro lejano');
+  run(st, sec(PHASE.sharedVisionSec));
+  b.x = 90;
+  b.y = 90;
+  const late = buildHuntSnap(st, 'p2');
+  assert(late.units.some((u) => u[0] === b.id), 'a los 3 minutos comparten visión');
+  const hs = buildHuntSnap(st, 'p1');
+  assert(hs.players.find((p) => p.id === 'p2')!.gold === -1, 'el cazador no ve el oro de los colonos');
 }
 
-console.log('bot cazador');
+console.log('bot y rendimiento');
 {
-  const solo = [{ id: 'p2', name: 'Ana', color: '#0f0' }, HUNT_BOT];
-  const play = (st: HuntState, seconds: number, each?: (t: number) => HuntPlayerCommand[]) => {
-    const mem = createHuntBotMemory();
-    for (let i = 0; i < sec(seconds) && !st.over; i++) {
-      const cmds: HuntPlayerCommand[] = each ? each(i) : [];
-      for (const cmd of huntBotCommands(st, mem)) cmds.push({ playerId: HUNT_BOT.id, cmd });
-      stepHunt(st, cmds);
+  const big = [
+    { id: 'p1', name: 'A', color: '#f00' },
+    { id: 'p2', name: 'B', color: '#0f0' },
+    { id: 'p3', name: 'C', color: '#00f' },
+    { id: 'p4', name: 'D', color: '#ff0' },
+    { id: 'p5', name: 'E', color: '#0ff' },
+    { id: 'p6', name: 'F', color: '#f0f' },
+    { id: 'p7', name: 'G', color: '#fff' },
+    HUNT_BOT,
+  ];
+  const st = createHunt(7, big, HUNT_BOT.id);
+  const mem = createHuntBotMemory();
+  // cada colono se mete en una parcela distinta, la cierra y monta casa, taller y torres
+  const plots = map.plots.filter((p) => p.doors.length === 1).slice(0, 7);
+  const t0 = performance.now();
+  let maxTick = 0;
+  for (let i = 0; i < sec(600) && !st.over; i++) {
+    const cmds: HuntPlayerCommand[] = [];
+    if (i === 0) {
+      plots.forEach((pl, k) => {
+        const d = pl.doors[0];
+        cmds.push({ playerId: big[k].id, cmd: { k: 'build', type: 'wall', cx: d.x, cy: d.y } });
+      });
     }
-    return mem;
-  };
-  // un colono que se queda quieto junto a la guarida no dura nada
-  const st1 = createHunt(11, solo, HUNT_BOT.id);
-  play(st1, HUNT.RELEASE_SEC + 15);
-  assert(st1.over?.winner === 'hunter', 'el bot caza a un colono que no se mueve');
-
-  // un colono encerrado: el bot encuentra la base, golpea la muralla y va a comprar
-  const st2 = createHunt(12, solo, HUNT_BOT.id);
-  const base = map.bases[4];
-  const bot = st2.players.find((p) => p.id === HUNT_BOT.id)!;
-  const ana = st2.players.find((p) => p.id === 'p2')!;
-  const mem = play(st2, 240, (t) => {
-    if (t === 0) return [{ playerId: 'p2', cmd: { k: 'move', x: base.x + 4.5, y: base.y + 3.5 } }];
-    if (t === sec(20)) {
-      return [
-        { playerId: 'p2', cmd: { k: 'build', type: 'wall', cx: base.door.x, cy: base.door.y } },
-        { playerId: 'p2', cmd: { k: 'build', type: 'treasury', cx: base.x + 2, cy: base.y + 3 } },
-      ];
+    if (i % sec(5) === 0) {
+      for (const pp of st.players) {
+        if (pp.form !== 'elf') continue;
+        for (const b of st.buildings.filter((o) => o.owner === pp.id)) cmds.push({ playerId: pp.id, cmd: { k: 'upgrade', id: b.id, branch: 'rock' } });
+      }
     }
-    // sube la muralla cada vez que puede, como haría una persona
-    if (t % sec(3) === 0) {
-      const wall = st2.buildings.find((b) => b.type === 'wall');
-      if (wall && ana.gold >= 8 * 2 ** (wall.level - 1)) return [{ playerId: 'p2', cmd: { k: 'upgrade', id: wall.id } }];
-    }
-    return [];
-  });
-  assert(mem.known.size > 0 || st2.over !== null, 'el bot localiza la base del colono');
-  assert(bot.damage > 0, 'y golpea sus edificios');
-  assert(bot.weapon > 0 || st2.over !== null, 'con el oro que saca, vuelve y compra garras');
-  console.log(`    (4 min: garras ${bot.weapon}, pellejo ${bot.vitality}, oro ${Math.floor(bot.gold)}, fin ${st2.over?.winner ?? 'sigue'})`);
+    for (const cmd of huntBotCommands(st, mem)) cmds.push({ playerId: HUNT_BOT.id, cmd });
+    const a = performance.now();
+    stepHunt(st, cmds);
+    for (const pp of st.players) buildHuntSnap(st, pp.id);
+    maxTick = Math.max(maxTick, performance.now() - a);
+  }
+  const ms = (performance.now() - t0) / Math.min(sec(600), st.tick);
+  const botP = st.players.find((p) => p.id === HUNT_BOT.id)!;
+  assert(botP.stats.goldEarned > 300, `el bot gana oro golpeando (${Math.round(botP.stats.goldEarned)})`);
+  assert(ms < 4, `tick medio con 8 jugadores + snapshots: ${ms.toFixed(2)} ms (máx ${maxTick.toFixed(1)} ms)`);
+  console.log(`    (10 min: bot nivel ${botP.level}, ${st.players.filter((p) => p.form === 'elf' && p.alive).length} colonos vivos, fin ${st.over?.winner ?? 'sigue'})`);
 }
 
 console.log(failed === 0 ? '\nTODO OK' : `\n${failed} FALLOS`);

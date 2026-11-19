@@ -26,7 +26,10 @@ function pct(i: number, n: number): number {
 export function pxIcon(key: string, fallback = ''): string {
   const cell = PX_CELLS[key];
   if (!cell) return fallback;
-  return `<i class="px" style="background-position:${pct(cell[0], PX_COLS)}% ${pct(cell[1], PX_ROWS)}%" aria-hidden="true"></i>`;
+  // background-size sale de la rejilla generada (no del CSS): así añadir filas al
+  // atlas no descuadra los iconos. Con tamaño = N celdas, la posición i/(N-1)·100%
+  // alinea exactamente la celda i con la caja del <i>.
+  return `<i class="px" style="background-size:${PX_COLS * 100}% ${PX_ROWS * 100}%;background-position:${pct(cell[0], PX_COLS)}% ${pct(cell[1], PX_ROWS)}%" aria-hidden="true"></i>`;
 }
 
 export const towerIcon = (t: TowerTypeId): string => pxIcon(`tower:${t}`, TOWER_ICONS[t]);

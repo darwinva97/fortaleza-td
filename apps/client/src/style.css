@@ -2833,7 +2833,7 @@ body.q-lite *::after {
 }
 
 /* ICONOS PIXEL de la interfaz (px-icons.ts): un sprite 16x16 del atlas
-   /icons/px-atlas.png (rejilla 16x5). Mide en `em` para heredar el tamaño del
+   /icons/px-atlas.png (rejilla 16xN, ver px-icons.gen.ts). Mide en `em` para heredar el tamaño del
    texto que acompaña, igual que hacía el emoji al que sustituye. */
 .px {
   display: inline-block;
@@ -2842,6 +2842,6 @@ body.q-lite *::after {
   vertical-align: -0.28em;
   background-image: url('/icons/px-atlas.png');
   background-repeat: no-repeat;
-  background-size: 1600% 500%;
+  /* background-size va inline desde pxIcon() (PX_COLS/PX_ROWS del atlas generado) */
   image-rendering: pixelated;
 }

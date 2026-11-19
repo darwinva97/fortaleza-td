@@ -1,0 +1,308 @@
+{
+ "hk:house": [
+  "cottage",
+  "tiny house",
+  "treehouse"
+ ],
+ "hk:wall": [
+  "stone brick block",
+  "stone block",
+  "cobblestone block"
+ ],
+ "hk:wall-rock": [
+  "boulder",
+  "menhir",
+  "stone pillar"
+ ],
+ "hk:wall-elf": [
+  "rune obelisk",
+  "rune pillar",
+  "rune block",
+  "crystal pillar"
+ ],
+ "hk:wall-ice": [
+  "ice cube",
+  "frozen block symbol",
+  "iceberg"
+ ],
+ "hk:wall-cement": [
+  "brick wall segment",
+  "brick block",
+  "brick stack"
+ ],
+ "hk:wall-coral": [
+  "staghorn coral",
+  "elkhorn coral",
+  "pillar coral",
+  "thorny bramble"
+ ],
+ "hk:wall-gold": [
+  "stack of gold bars",
+  "gold bar",
+  "pyramid of gold bars"
+ ],
+ "hk:wall-ruin": [
+  "stone archway",
+  "broken column",
+  "stone fragments"
+ ],
+ "hk:tower": [
+  "castle tower",
+  "watchtower",
+  "wizard tower"
+ ],
+ "hk:tower-gold": [
+  "gold coin tower",
+  "castle tower"
+ ],
+ "hk:workshop": [
+  "blacksmith shop",
+  "blacksmith forge",
+  "anvil"
+ ],
+ "hk:townhall": [
+  "castle",
+  "castle keep",
+  "fortress"
+ ],
+ "hk:elftree": [
+  "spirit tree",
+  "giant mushroom tree",
+  "lantern tree"
+ ],
+ "hk:mine": [
+  "ore-filled mine cart",
+  "mine cart",
+  "gold ore"
+ ],
+ "hk:sighttower": [
+  "lighthouse",
+  "signal beacon",
+  "watchtower"
+ ],
+ "hk:hut": [
+  "stone hut",
+  "yurt",
+  "camping tent"
+ ],
+ "hk:shop": [
+  "market stall",
+  "merchant cart"
+ ],
+ "hk:elf": [
+  "wood elf",
+  "elf",
+  "elf archer",
+  "hooded figure"
+ ],
+ "hk:repairer": [
+  "carpenter",
+  "construction worker",
+  "dwarf blacksmith"
+ ],
+ "hk:lumberjack": [
+  "lumberjack",
+  "will-o-wisp",
+  "light wisp"
+ ],
+ "hk:angel": [
+  "frost fairy",
+  "fairy",
+  "valkyrie",
+  "pixie"
+ ],
+ "hk:wolf": [
+  "wolf",
+  "dire wolf",
+  "storm wolf"
+ ],
+ "hk:troll": [
+  "ogre",
+  "troll",
+  "forest troll",
+  "cave troll"
+ ],
+ "hk:gold": [
+  "pile of gold coins",
+  "stack of gold coins",
+  "bag of gold coins"
+ ],
+ "hk:wood": [
+  "firewood stack",
+  "lumber pile",
+  "wooden log"
+ ],
+ "hk:food": [
+  "round bread loaf",
+  "loaf of bread",
+  "travel bread"
+ ],
+ "hk:blink": [
+  "magic sparkle",
+  "teleport skill symbol",
+  "sparkle icon"
+ ],
+ "hk:haste": [
+  "winged boot symbol",
+  "boots of speed",
+  "wind gust icon"
+ ],
+ "hk:roots": [
+  "rooted vine symbol",
+  "hanging vine",
+  "mandrake root"
+ ],
+ "hk:silence": [
+  "silenced mouth symbol",
+  "muted speaker symbol"
+ ],
+ "hk:moonguard": [
+  "crescent moon",
+  "moonstone",
+  "energy shield"
+ ],
+ "hk:book": [
+  "spellbook",
+  "magic tome",
+  "nature tome"
+ ],
+ "hk:spec-mines": [
+  "pickaxe",
+  "pile of gold nuggets"
+ ],
+ "hk:spec-repair": [
+  "adjustable wrench",
+  "gear icon",
+  "hammer"
+ ],
+ "hk:spec-skin": [
+  "leather armor",
+  "studded leather armor",
+  "hide armor"
+ ],
+ "hk:spec-holylight": [
+  "healing plus icon",
+  "healing hands symbol",
+  "sun icon"
+ ],
+ "hk:demolish": [
+  "sledgehammer",
+  "broken shield symbol",
+  "bomb icon"
+ ],
+ "hk:upgrade": [
+  "level up arrow icon",
+  "up arrow icon",
+  "shield up arrow icon"
+ ],
+ "hk:windwalk": [
+  "sheet ghost",
+  "stealth skill symbol",
+  "shadow cloak"
+ ],
+ "hk:eye": [
+  "eye icon",
+  "floating eye",
+  "eye orb"
+ ],
+ "hk:berserk": [
+  "anger mark icon",
+  "battle cry symbol",
+  "skull icon"
+ ],
+ "hk:trap": [
+  "spike trap",
+  "bear trap",
+  "snare trap"
+ ],
+ "hk:recall": [
+  "portal swirl marker",
+  "home icon",
+  "teleport stone"
+ ],
+ "hk:steal": [
+  "loot sack",
+  "money bag",
+  "thief"
+ ],
+ "hk:stun": [
+  "lightning bolt icon",
+  "dizzy stars icon",
+  "electric shock icon"
+ ],
+ "hk:holyarmor": [
+  "shield",
+  "paladin armor",
+  "winged circlet"
+ ],
+ "hk:howl": [
+  "wolf",
+  "wolf totem",
+  "war horn"
+ ],
+ "hk:run": [
+  "dash skill symbol",
+  "running shoe",
+  "fast forward icon"
+ ],
+ "hk:item-sword": [
+  "longsword",
+  "knight sword",
+  "broadsword"
+ ],
+ "hk:item-lance": [
+  "boar spear",
+  "lance",
+  "spear"
+ ],
+ "hk:item-axe": [
+  "battle axe",
+  "great axe",
+  "double axe"
+ ],
+ "hk:item-shield": [
+  "kite shield",
+  "heater shield",
+  "round shield"
+ ],
+ "hk:item-hp": [
+  "round potion flask",
+  "heart icon",
+  "heart-shaped potion bottle"
+ ],
+ "hk:item-regen": [
+  "potion icon",
+  "gem pendant",
+  "amulet"
+ ],
+ "hk:item-gloves": [
+  "gauntlet",
+  "gauntlets",
+  "plate gauntlet"
+ ],
+ "hk:item-boots": [
+  "hunter boots",
+  "plate boots",
+  "travel boots"
+ ],
+ "hk:item-scroll": [
+  "spell scroll",
+  "sealed scroll",
+  "scroll"
+ ],
+ "hk:item-ankh": [
+  "phoenix amulet",
+  "phoenix feather",
+  "sun amulet"
+ ],
+ "hk:item-ward": [
+  "carved totem",
+  "totem staff",
+  "ward stone"
+ ],
+ "hk:item-wood": [
+  "plank bundle",
+  "firewood stack",
+  "lumber pile"
+ ]
+}

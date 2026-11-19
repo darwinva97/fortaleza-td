@@ -1002,9 +1002,10 @@ export function renderLobby(): void {
   $('lobby-maps').hidden = huntMode;
   if (huntMode) {
     $('lobby-map-desc').textContent =
-      'Uno de vosotros será el CAZADOR (va rotando) y el resto, COLONOS. Los colonos tienen 30 s para correr a una base, ' +
-      'cerrarla con una Muralla y montar su Tesorería; mueren de un golpe. El cazador cobra oro por cada golpe y compra mejoras ' +
-      'en su guarida. Ganan los colonos si lo matan o aguantan 12 minutos. Si juegas solo, el cazador lo lleva un bot.';
+      'Uno será el CAZADOR (va rotando; si juegas solo lo lleva un bot) y el resto, COLONOS. Los colonos tienen 30 s para ' +
+      'meterse en una parcela del laberinto, cerrar sus puertas con murallas y montar casa, taller y torres; mueren en dos golpes. ' +
+      'El cazador cobra en oro cada punto de daño, sube de nivel y se equipa en su guarida. Quien cae vuelve como ángel o como lobo. ' +
+      'Ganan los colonos si matan al cazador; gana el cazador si no queda ninguno.';
   }
   // F9b · lista de puertas reclamables (solo mapas multi-ruta; oculta si no)
   renderDoors(selectedMap);

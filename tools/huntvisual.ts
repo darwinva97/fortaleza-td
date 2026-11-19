@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { getHuntMap, type HuntInit, type HuntSnap } from '@td/shared';
+void 0;
 
 const PORT = process.env.PORT ?? '8787';
 const OUT = resolve(process.argv[2] ?? join(tmpdir(), 'fortaleza-huntshots'));
@@ -53,7 +54,7 @@ class Bot {
   }
 }
 
-async function shot(url: string, file: string, waitMs: number): Promise<void> {
+async function shot(url: string, file: string, waitMs: number, js?: string): Promise<void> {
   const chrome = [process.env.CHROME, 'C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', '/usr/bin/google-chrome', '/usr/bin/chromium'].find(
     (p) => p && existsSync(p),
   );
@@ -105,6 +106,10 @@ async function shot(url: string, file: string, waitMs: number): Promise<void> {
     await call('Emulation.setDeviceMetricsOverride', { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
     await call('Page.navigate', { url });
     await sleep(waitMs);
+    if (js) {
+      await call('Runtime.evaluate', { expression: js });
+      await sleep(700);
+    }
     const res = await call('Page.captureScreenshot', { format: 'png' });
     writeFileSync(file, Buffer.from(res.data, 'base64'));
     console.log('captura:', file, logs.length ? `\n  ${logs.join('\n  ')}` : '(sin errores de consola)');
@@ -136,52 +141,73 @@ async function partida(view: 'colonist' | 'hunter'): Promise<void> {
   const colonists = bots.filter((b) => b.role === 'colonist');
   console.log(`sala ${code} · cazador ${hunter.name} · colonos ${colonists.map((c) => c.name).join(', ')}`);
 
-  // cada colono a una base distinta: muralla en la puerta, tesorería, torres y taller
+  // cada colono a una parcela distinta cerca del centro: muralla en la puerta,
+  // casa, taller, árbol y torres
+  const center = { x: map.w / 2, y: map.h / 2 };
+  const plots = map.plots
+    .filter((p) => p.doors.length === 1 && p.shape === 'rect')
+    .sort((a, b) => Math.hypot(a.x + a.w / 2 - center.x, a.y + a.h / 2 - center.y) - Math.hypot(b.x + b.w / 2 - center.x, b.y + b.h / 2 - center.y));
   colonists.forEach((c, i) => {
-    const b = map.bases[[1, 4, 0, 2][i]];
-    const top = b.door.y > b.y;
-    const iy = top ? b.door.y - 2 : b.door.y + 2;
-    c.cmd({ k: 'move', x: b.door.x + 0.5, y: iy + 0.5 });
+    const p = plots[i];
+    const d = p.doors[0];
+    const free = (x: number, y: number, s: number) => {
+      for (let j = 0; j < s; j++) for (let k = 0; k < s; k++) if (map.tiles[(y + j) * map.w + x + k] !== 0 || map.plotOf[(y + j) * map.w + x + k] !== p.id) return false;
+      return true;
+    };
+    const spots: [number, number][] = [];
+    for (let y = p.y + 2; y < p.y + p.h - 3; y++) for (let x = p.x + 2; x < p.x + p.w - 3; x++) if (free(x, y, 2) && Math.hypot(x - d.x, y - d.y) > 3) spots.push([x, y]);
+    const pick = (n: number) => spots[Math.min(spots.length - 1, Math.floor((spots.length * n) / 4))];
+    c.cmd({ k: 'build', type: 'wall', cx: d.x, cy: d.y });
+    setTimeout(() => c.cmd({ k: 'build', type: 'house', cx: pick(1)[0], cy: pick(1)[1] }), 13000);
+    setTimeout(() => c.cmd({ k: 'build', type: 'workshop', cx: pick(3)[0], cy: pick(3)[1] }), 17000);
+    const inside = (dx: number, dy: number): [number, number] => {
+      const x = d.x + dx;
+      const y = d.y + dy;
+      return [x, y];
+    };
+    const inward = d.y === p.y ? [0, 1] : d.y === p.y + p.h - 1 ? [0, -1] : d.x === p.x ? [1, 0] : [-1, 0];
     setTimeout(() => {
-      c.cmd({ k: 'build', type: 'wall', cx: b.door.x, cy: b.door.y });
-      c.cmd({ k: 'build', type: 'treasury', cx: b.x + 2, cy: b.y + 3 });
-      c.cmd({ k: 'build', type: 'tower', cx: b.door.x - 1, cy: top ? b.door.y - 1 : b.door.y + 1 });
-      c.cmd({ k: 'build', type: 'tower', cx: b.door.x + 1, cy: top ? b.door.y - 1 : b.door.y + 1 });
-      c.cmd({ k: 'build', type: 'workshop', cx: b.x + 6, cy: b.y + 3 });
-    }, 9000);
-    // con el oro que va entrando, sube la muralla y las torres
+      const [x1, y1] = inside(inward[0] * 2 + inward[1], inward[1] * 2 + inward[0]);
+      const [x2, y2] = inside(inward[0] * 2 - inward[1], inward[1] * 2 - inward[0]);
+      c.cmd({ k: 'build', type: 'tower', cx: x1, cy: y1 });
+      setTimeout(() => c.cmd({ k: 'build', type: 'tower', cx: x2, cy: y2 }), 1500);
+    }, 21000);
+    // con el oro que va entrando, mejora lo que tenga
     setInterval(() => {
-      const mine = c.snap?.buildings.filter((o) => o[2] === c.init!.players.findIndex((p) => p.id === c.init!.youAre)) ?? [];
-      for (const o of mine) if (o[1] === 1 || o[1] === 2) c.cmd({ k: 'upgrade', id: o[0] });
-    }, 4000);
+      const idx = c.init!.players.findIndex((q) => q.id === c.init!.youAre);
+      for (const o of c.snap?.buildings.filter((b) => b[2] === idx) ?? []) c.cmd({ k: 'upgrade', id: o[0], branch: 'elf' });
+      const shop = c.snap?.buildings.find((b) => b[2] === idx && b[1] === 3);
+      if (shop) c.cmd({ k: 'train', id: shop[0], unit: 'repairer', tier: 0 });
+    }, 3000);
   });
-  // el cazador va a por la muralla del primer colono en cuanto lo sueltan
-  const prey = map.bases[1];
+  // el cazador compra al salir y va a por la muralla del primer colono
+  setTimeout(() => {
+    hunter.cmd({ k: 'buy', line: 'weapon', tier: 0 });
+    hunter.cmd({ k: 'buy', line: 'life', tier: 0 });
+  }, 2000);
+  const prey = plots[0];
   setInterval(() => {
     if (!hunter.snap || hunter.snap.releaseIn > 0) return;
     const wall = hunter.snap.buildings.find((o) => o[1] === 1);
     if (wall) hunter.cmd({ k: 'attack', target: wall[0] });
-    else hunter.cmd({ k: 'move', x: prey.door.x + 0.5, y: prey.door.y + 3.5 });
+    else hunter.cmd({ k: 'move', x: prey.doors[0].x + 0.5, y: prey.doors[0].y + 0.5 });
   }, 1500);
 
   const who = view === 'hunter' ? hunter : colonists[0];
   if (view === 'colonist') {
-    // captura 1: durante la cuenta atrás, ya con la base montada
-    await sleep(14000);
+    await sleep(22000);
     who.ws.close();
     await sleep(300);
-    await shot(`http://localhost:${PORT}/?n=${who.name}#${code}`, join(OUT, 'colono-1-preparacion.png'), 5000);
-    // captura 2: con el cazador ya suelto y pegando a la muralla
-    await sleep(26000);
-    await shot(`http://localhost:${PORT}/?n=${who.name}#${code}`, join(OUT, 'colono-2-asedio.png'), 5000);
+    await shot(`http://localhost:${PORT}/?n=${who.name}#${code}`, join(OUT, 'colono-1-base.png'), 5000);
+    await sleep(22000);
+    await shot(`http://localhost:${PORT}/?n=${who.name}#${code}`, join(OUT, 'colono-2-asedio.png'), 5000,
+      `(() => { const b = window.__hunt.mine().find((x) => x.type === 'wall') || window.__hunt.mine()[0]; if (b) window.__hunt.select(b.id); })()`);
   } else {
-    // el bot lleva al cazador hasta la muralla; la orden de ataque sigue viva al soltarlo
-    await sleep(43000);
+    await sleep(46000);
     who.ws.close();
     await sleep(300);
     await shot(`http://localhost:${PORT}/?n=${who.name}#${code}`, join(OUT, 'cazador-1-asedio.png'), 5000);
-    await sleep(8000);
-    await shot(`http://localhost:${PORT}/?n=${who.name}#${code}`, join(OUT, 'cazador-2-asedio.png'), 5000);
+    await shot(`http://localhost:${PORT}/?n=${who.name}#${code}`, join(OUT, 'cazador-2-tienda.png'), 4000, 'window.__hunt.shop()');
   }
   for (const b of bots) b.ws.close();
 }
