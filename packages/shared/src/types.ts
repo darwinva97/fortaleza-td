@@ -3,7 +3,9 @@ export type Difficulty = 'easy' | 'normal' | 'hard';
 // propia parcela y sus propias vidas, todos reciben las mismas oleadas y nadie
 // interactúa con nadie. Al quedarte sin vidas quedas eliminado; gana el último en
 // pie y el ranking va por oleada alcanzada.
-export type GameMode = 'classic' | 'endless' | 'horde' | 'arena';
+// CACERÍA (5º modo, prototipo) · ASIMÉTRICO: un cazador contra los colonos. No usa
+// GameState: tiene su propia sim en hunt/hunt.ts y el RoomDO la arranca aparte.
+export type GameMode = 'classic' | 'endless' | 'horde' | 'arena' | 'hunt';
 export type TargetMode = 'first' | 'last' | 'strong' | 'weak' | 'near';
 
 // ---------- F5.1 · matriz ataque × armadura ----------

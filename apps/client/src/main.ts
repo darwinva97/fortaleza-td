@@ -7,6 +7,7 @@ import { initInput } from './input.js';
 import { initBestiary } from './bestiary.js';
 import { applySpectatorUI, buildTowerBar, hidePanel, initMarket, initScoreboard, initShop, onTick, toast, addChat, refreshPanel, syncSpeedButton, syncTowerBar, toggleSpectatorTowers } from './hud.js';
 import { hideEnd, homeError, initHome, initLobby, renderLobby, showEnd, showLadderResults, switchScreen } from './screens.js';
+import { abandonHunt, isHuntActive, onHuntOver, onHuntTick, startHunt } from './hunt.js';
 import { beam, bulletTrail, burst, clearParticles, floatText, fx, line, ring } from './particles.js';
 import { sfx, setMuted, setSfxVolume, setMusicVolume, unlockAudio } from './audio.js';
 import { startMusic, setMusicState, pauseMusic, resumeMusic, stopMusic, type MusicState } from './music.js';
@@ -511,6 +512,27 @@ function wireNet(): void {
     // modo espectador de la UI (banner + ocultar controles de jugador). Para un
     // jugador normal esto lo desactiva (deja la UI completa).
     applySpectatorUI();
+  });
+
+  // ---------- CACERÍA (modo asimétrico; pantalla y lógica en hunt.ts) ----------
+  net.on('hunt_started', (msg) => {
+    hideCountdown();
+    store.playerId = msg.init.youAre;
+    $('overlay-reconnect').hidden = true;
+    stopMusic();
+    startHunt(msg.init);
+    switchScreen('hunt');
+  });
+  net.on('hunt_tick', (msg) => onHuntTick(msg.snap, msg.events));
+  net.on('hunt_over', (msg) => onHuntOver(msg.result, () => switchScreen('lobby')));
+  // si la sala vuelve al lobby sin final (el servidor se reinició a mitad de la
+  // cacería, que no se guarda), no dejar a nadie mirando un mapa congelado
+  net.on('lobby_state', (msg) => {
+    if (store.screen === 'hunt' && isHuntActive() && !msg.inGame && $('hk-end').hidden) {
+      abandonHunt();
+      switchScreen('lobby');
+      toast('La cacería se interrumpió: de vuelta a la sala', 'info');
+    }
   });
 
   net.on('tick', (msg) => {

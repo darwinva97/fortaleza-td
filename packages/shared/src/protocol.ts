@@ -16,6 +16,7 @@ import { TOWER_ORDER } from './balance/towers.js';
 import { MAPS } from './balance/maps.js';
 import { boomCost, repairCost } from './sim/commands.js';
 import { BALANCE_VERSION, MAX_PLAYERS, sanitizeClosedDoors, TICK_RATE } from './constants.js';
+import type { HuntCommand, HuntEvent, HuntInit, HuntResult, HuntSnap } from './hunt/hunt.js';
 
 // ---------- Lobby / sala ----------
 
@@ -70,7 +71,9 @@ export function sanitizeSettings(s: Partial<RoomSettings> | undefined): RoomSett
         ? 'horde'
         : s?.mode === 'arena'
           ? 'arena'
-          : 'classic';
+          : s?.mode === 'hunt'
+            ? 'hunt'
+            : 'classic';
   // ARENA · mapa y modo van EMPAREJADOS. Un mapa de parcelas en cooperativo son
   // ocho caminos aislados que nadie puede defender a la vez, y el modo arena sin
   // parcelas no tendría dónde repartir a la gente. Se corrige aquí, que es la
@@ -436,7 +439,9 @@ export type ClientMsg =
   // CARGAR: en el lobby de un guardado, ADOPTAR un slot libre (identidad de la
   // partida cuyo token no coincidió con el tuyo). `slot` = id del SaveSlot.
   | { type: 'claim_slot'; slot: string }
-  | { type: 'ping'; t: number };
+  | { type: 'ping'; t: number }
+  // CACERÍA · orden de un jugador en una partida de ese modo (la valida stepHunt)
+  | { type: 'hunt_cmd'; cmd: HuntCommand };
 
 // ---------- Mensajes servidor -> cliente ----------
 
@@ -465,6 +470,10 @@ export interface LobbySpectator {
 
 export type ServerMsg =
   | { type: 'error'; msg: string }
+  // CACERÍA · arranque, tick (cada jugador recibe SOLO lo que ve) y final
+  | { type: 'hunt_started'; init: HuntInit }
+  | { type: 'hunt_tick'; snap: HuntSnap; events: HuntEvent[] }
+  | { type: 'hunt_over'; result: HuntResult }
   | { type: 'room_joined'; code: string; playerId: string; isHost: boolean; spectator?: boolean }
   // `saved`: presente solo en el lobby de una partida CARGADA (guardado), para
   // pintar el banner y los slots reclamables. Opcional → los lobbies normales lo omiten.

@@ -20,7 +20,7 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getEleme
 
 const DIFF_LABELS: Record<string, string> = { easy: 'Fácil', normal: 'Normal', hard: 'Difícil' };
 const DIFF_EMOJI: Record<string, string> = { easy: '😊', normal: '🙂', hard: '😈' };
-const MODE_LABELS: Record<string, string> = { classic: 'Clásico', endless: 'Infinito', horde: 'Horda 🌀', arena: 'Arena ⚔️' };
+const MODE_LABELS: Record<string, string> = { classic: 'Clásico', endless: 'Infinito', horde: 'Horda 🌀', arena: 'Arena ⚔️', hunt: 'Cacería 🐾' };
 
 // F9b/F9d · nº mínimo de rutas para habilitar puertas (reclamo y cierre): ahora
 // viene de @td/shared (MULTI_DOOR_MIN) — la misma constante que usan
@@ -36,11 +36,12 @@ const MINI_THEME: Record<MapDef['theme'], { bg: string; path: string; blocked: s
   crystal: { bg: '#2b2547', path: '#5d5480', blocked: '#7c4dff' },
 };
 
-export function switchScreen(screen: 'home' | 'lobby' | 'game'): void {
+export function switchScreen(screen: 'home' | 'lobby' | 'game' | 'hunt'): void {
   store.screen = screen;
   $('screen-home').hidden = screen !== 'home';
   $('screen-lobby').hidden = screen !== 'lobby';
   $('screen-game').hidden = screen !== 'game';
+  $('screen-hunt').hidden = screen !== 'hunt'; // CACERÍA: pantalla propia (hunt.ts)
 }
 
 export function homeError(msg: string): void {
@@ -995,17 +996,27 @@ export function renderLobby(): void {
   const arenaMode = settings.mode === 'arena';
   renderMapCards('lobby-maps', settings.mapId, !store.isHost, (id) => sendSettings({ mapId: id }), doorColors, settings.closedDoors, arenaMode);
   $('lobby-map-desc').textContent = mapDesc(settings.mapId);
+  // CACERÍA · tiene su propio mapa y sus propias reglas: el selector de mapas, la
+  // dificultad y el turbo no pintan nada, así que se cambian por la explicación.
+  const huntMode = settings.mode === 'hunt';
+  $('lobby-maps').hidden = huntMode;
+  if (huntMode) {
+    $('lobby-map-desc').textContent =
+      'Uno de vosotros será el CAZADOR (va rotando) y el resto, COLONOS. Los colonos tienen 30 s para correr a una base, ' +
+      'cerrarla con una Muralla y montar su Tesorería; mueren de un golpe. El cazador cobra oro por cada golpe y compra mejoras ' +
+      'en su guarida. Ganan los colonos si lo matan o aguantan 12 minutos. Si juegas solo, el cazador lo lleva un bot.';
+  }
   // F9b · lista de puertas reclamables (solo mapas multi-ruta; oculta si no)
   renderDoors(selectedMap);
   setSeg('lobby-mode', settings.mode, !store.isHost);
-  setSeg('lobby-diff', settings.difficulty, !store.isHost);
+  setSeg('lobby-diff', settings.difficulty, !store.isHost || huntMode);
   setSeg('lobby-visibility', settings.public ? 'public' : 'private', !store.isHost);
   // MODO TURBO ⚡: en HORDA no aplica (economía de bucle) → se deshabilita y se
   // muestra el porqué. Fuera de horda: editable solo por el anfitrión.
   // ARENA · reclamar puerta no aplica: la parcela te la asigna el orden de entrada
-  if (arenaMode) $('lobby-doors-box').hidden = true;
+  if (arenaMode || huntMode) $('lobby-doors-box').hidden = true;
   const turboHorde = settings.mode === 'horde';
-  setSeg('lobby-turbo', settings.turbo ? 'on' : 'off', !store.isHost || turboHorde);
+  setSeg('lobby-turbo', settings.turbo ? 'on' : 'off', !store.isHost || turboHorde || huntMode);
   $('lobby-turbo-hint').textContent = turboHorde
     ? 'El Turbo ⚡ no aplica en Horda (su economía es un bucle de saturación).'
     : 'Economía ×1.75, madera ×1.5, interludios a la mitad. Mismo reto, la mitad de tiempo. Sin récords.';

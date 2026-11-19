@@ -34,6 +34,21 @@ import {
   type TowerTypeId,
 } from '@td/shared';
 import { saveScore } from './scores.js';
+import {
+  HUNT,
+  HUNT_BOT,
+  buildHuntSnap,
+  createHuntBotMemory,
+  huntBotCommands,
+  type HuntBotMemory,
+  createHunt,
+  filterHuntEvents,
+  huntResult,
+  stepHunt,
+  type HuntInit,
+  type HuntPlayerCommand,
+  type HuntState,
+} from '@td/shared';
 
 export interface Env {
   ASSETS: Fetcher;
@@ -267,6 +282,15 @@ export class RoomDO {
   private game: GameState | null = null;
   private simCtx: SimContext | null = null;
   private pendingCmds: PlayerCommand[] = [];
+  // CACERÍA · partida del modo asimétrico. Es una sim APARTE: mientras corre,
+  // `game` sigue en null. No se persiste (prototipo): si el DO se recicla a mitad,
+  // la sala vuelve al lobby.
+  private hunt: HuntState | null = null;
+  private huntCmds: HuntPlayerCommand[] = [];
+  // memoria del BOT cazador (solo cuando se juega sin nadie más)
+  private huntBot: HuntBotMemory | null = null;
+  // cuántas veces ha sido cazador cada token en esta sala, para ir rotando
+  private huntTurns = new Map<string, number>();
   private loop: ReturnType<typeof setInterval> | null = null;
   // cuentas regresivas de inicio y de reanudación (3 s); no-null = en marcha
   private startTimer: ReturnType<typeof setTimeout> | null = null;
@@ -442,6 +466,8 @@ export class RoomDO {
     this.game = null;
     this.simCtx = null;
     this.pendingCmds = [];
+    this.hunt = null;
+    this.huntCmds = [];
     this.banned = new Set();
     this.kicked = new Set();
     this.paused = false;
@@ -970,7 +996,7 @@ export class RoomDO {
       const wanted = (name || '').slice(0, 16).trim().toLowerCase();
       const reclaim =
         (prevToken ? this.players.find((p) => !p.ws && p.token === prevToken && !p.abandoned) : undefined) ??
-        (this.game && !this.game.over && wanted
+        ((this.hunt || (this.game && !this.game.over)) && wanted
           ? this.players.find((p) => !p.ws && !p.abandoned && p.name.trim().toLowerCase() === wanted)
           : undefined);
       if (reclaim) {
@@ -994,7 +1020,7 @@ export class RoomDO {
     }
     // con la partida en curso, un token nuevo entra como espectador
     // (la reconexión de los que ya jugaban sí funciona, por token, arriba)
-    if (this.game && !this.game.over) {
+    if (this.hunt || (this.game && !this.game.over)) {
       if (this.spectators.length >= MAX_SPECTATORS) return { kind: 'error', msg: 'Hay demasiados espectadores, intenta luego' };
       const spectator: Spectator = {
         id: `s${this.nextSpectatorNum++}`,
@@ -1035,6 +1061,10 @@ export class RoomDO {
   }
 
   private sendGameStateTo(player: RoomPlayer): void {
+    if (this.hunt) {
+      this.send(player, { type: 'hunt_started', init: this.huntInit(player.id) });
+      return;
+    }
     if (this.game && !this.game.over) {
       this.send(player, { type: 'game_started', init: this.gameInit(player.id) });
       if (this.speed !== 1) this.send(player, { type: 'speed', speed: this.speed, by: '' });
@@ -1045,6 +1075,10 @@ export class RoomDO {
   // igual que sendGameStateTo pero para un espectador (usa su propio id como
   // youAre, aunque no controle nada) para que renderice la partida.
   private sendGameStateToSpectator(spec: Spectator): void {
+    if (this.hunt) {
+      this.sendTo(spec.ws, { type: 'hunt_started', init: this.huntInit(spec.id) });
+      return;
+    }
     if (this.game && !this.game.over) {
       this.sendTo(spec.ws, { type: 'game_started', init: this.gameInit(spec.id) });
       if (this.speed !== 1) this.sendTo(spec.ws, { type: 'speed', speed: this.speed, by: '' });
@@ -1076,7 +1110,7 @@ export class RoomDO {
     player.ws = null;
     this.markConnected(player.id, false);
 
-    if (!this.game) {
+    if (!this.game && !this.hunt) {
       this.players = this.players.filter((p) => p !== player);
     }
     if (player.isHost) {
@@ -1120,6 +1154,8 @@ export class RoomDO {
   }
 
   private markConnected(playerId: string, connected: boolean): void {
+    const hp = this.hunt?.players.find((p) => p.id === playerId);
+    if (hp) hp.connected = connected;
     const gp = this.game?.players.find((p) => p.id === playerId);
     if (gp && gp.connected !== connected) {
       gp.connected = connected;
@@ -1162,7 +1198,7 @@ export class RoomDO {
       players: this.lobbyPlayers(),
       spectators: this.lobbySpectators(),
       settings: this.settings,
-      inGame: this.game !== null && !this.game.over,
+      inGame: this.hunt !== null || (this.game !== null && !this.game.over),
       ...(saved ? { saved } : {}),
     });
     // cualquier cambio de sala (miembros/ajustes/estado) refresca el directorio
@@ -1247,7 +1283,7 @@ export class RoomDO {
       mode: this.settings.mode,
       difficulty: this.settings.difficulty,
       players: connected,
-      inGame: this.game !== null && !this.game.over,
+      inGame: this.hunt !== null || (this.game !== null && !this.game.over),
       wave: this.game && !this.game.over ? this.game.wave : 0,
       turbo: this.settings.turbo === true, // MODO TURBO ⚡: distintivo en la lista de salas públicas
     };
@@ -1292,6 +1328,10 @@ export class RoomDO {
   // ---------- partida ----------
 
   private startGame(): void {
+    if (this.settings.mode === 'hunt') {
+      this.startHunt();
+      return;
+    }
     const map = getMap(this.settings.mapId);
     const seed = (Math.random() * 0xffffffff) | 0;
     this.game = createGame(
@@ -1308,6 +1348,8 @@ export class RoomDO {
     );
     this.simCtx = makeSimContext(map, makePlacementContext(map));
     this.pendingCmds = [];
+    this.hunt = null;
+    this.huntCmds = [];
     this.paused = false;
     this.speed = 1;
     // partida NUEVA: sin guardado pendiente
@@ -1441,6 +1483,8 @@ export class RoomDO {
 
     this.savedGame = null;
     this.pendingCmds = [];
+    this.hunt = null;
+    this.huntCmds = [];
     this.paused = false;
     this.speed = 1;
 
@@ -1526,7 +1570,7 @@ export class RoomDO {
 
   // arranca (o reanuda) el bucle de simulación si hay partida activa y jugadores
   private reviveLoop(force = false): void {
-    if (!this.game || this.game.over) return;
+    if ((!this.game || this.game.over) && !this.hunt) return;
     if (this.loop && !force) return;
     if (this.loop) clearInterval(this.loop);
     this.loop = setInterval(() => this.tick(), TICK_MS);
@@ -1540,6 +1584,10 @@ export class RoomDO {
       this.checkIdle();
     } catch (err) {
       console.error('[room] checkIdle lanzó', err);
+    }
+    if (this.hunt) {
+      this.tickHunt();
+      return;
     }
     if (!this.game || !this.simCtx || this.paused) return;
 
@@ -1588,6 +1636,114 @@ export class RoomDO {
       // abortar con gracia (todos al lobby) en vez de dejar la sala congelada.
       if (this.tickErrors >= MAX_TICK_ERRORS) this.abortGame();
     }
+  }
+
+  // ---------- CACERÍA ----------
+
+  private huntInit(forId: string): HuntInit {
+    const h = this.hunt!;
+    return {
+      youAre: forId,
+      hunterId: h.players.find((p) => p.role === 'hunter')?.id ?? '',
+      players: h.players.map((p) => ({ id: p.id, name: p.name, color: p.color, role: p.role })),
+    };
+  }
+
+  private startHunt(): void {
+    const roster = this.players.filter((p) => p.ws);
+    if (roster.length < HUNT.MIN_PLAYERS) return;
+    const humans = roster.map((p) => ({ id: p.id, name: p.name, color: p.color }));
+    const seed = (Math.random() * 0xffffffff) | 0;
+    if (roster.length === 1) {
+      // sin nadie más con quien jugar: el cazador lo lleva el bot
+      this.huntBot = createHuntBotMemory();
+      this.hunt = createHunt(seed, [...humans, HUNT_BOT], HUNT_BOT.id);
+    } else {
+      // el cazador ROTA: le toca a quien menos veces lo haya sido en esta sala
+      const least = Math.min(...roster.map((p) => this.huntTurns.get(p.token) ?? 0));
+      const candidates = roster.filter((p) => (this.huntTurns.get(p.token) ?? 0) === least);
+      const hunter = candidates[Math.floor(Math.random() * candidates.length)];
+      this.huntTurns.set(hunter.token, least + 1);
+      this.huntBot = null;
+      this.hunt = createHunt(seed, humans, hunter.id);
+    }
+    this.huntCmds = [];
+    this.paused = false;
+    this.speed = 1;
+    this.savedGame = null;
+    this.tickErrors = 0;
+    if (this.resumeTimer) {
+      clearTimeout(this.resumeTimer);
+      this.resumeTimer = null;
+    }
+    if (this.demoteTimer) {
+      clearTimeout(this.demoteTimer);
+      this.demoteTimer = null;
+    }
+    for (const p of this.players) p.cameFromSpectator = false;
+    for (const p of this.players) this.sendGameStateTo(p);
+    for (const s of this.spectators) this.sendGameStateToSpectator(s);
+    this.reviveLoop(true);
+    this.reportPublic(true);
+  }
+
+  private tickHunt(): void {
+    const h = this.hunt;
+    if (!h) return;
+    try {
+      const cmds = this.huntCmds;
+      this.huntCmds = [];
+      const wasOver = h.over !== null;
+      if (this.huntBot) {
+        for (const cmd of huntBotCommands(h, this.huntBot)) cmds.push({ playerId: HUNT_BOT.id, cmd });
+      }
+      const events = stepHunt(h, cmds);
+      // cada uno recibe SOLO lo que ve: la niebla se decide aquí, no en el cliente
+      for (const p of this.players) {
+        if (!p.ws) continue;
+        const inHunt = h.players.some((q) => q.id === p.id);
+        const viewer = inHunt ? p.id : null;
+        this.send(p, { type: 'hunt_tick', snap: buildHuntSnap(h, viewer), events: filterHuntEvents(h, viewer, events) });
+      }
+      if (this.spectators.length > 0) {
+        const data: ServerMsg = { type: 'hunt_tick', snap: buildHuntSnap(h, null), events: filterHuntEvents(h, null, events) };
+        for (const s of this.spectators) this.sendTo(s.ws, data);
+      }
+      this.reportPublic();
+      if (h.over && !wasOver) this.endHunt(h);
+      this.tickErrors = 0;
+    } catch (err) {
+      this.tickErrors++;
+      console.error(`[room] EXCEPCIÓN en tick de cacería — tick ${h.tick} fallo ${this.tickErrors}/${MAX_TICK_ERRORS}`, err);
+      if (this.tickErrors >= MAX_TICK_ERRORS) {
+        this.tickErrors = 0;
+        this.systemMsg('⚠️ La cacería sufrió un error y tuvo que detenerse. Vuelven al lobby.');
+        this.finishHunt(h);
+      }
+    }
+  }
+
+  private endHunt(h: HuntState): void {
+    // un instante con el mapa destapado antes de la pantalla de resultado
+    setTimeout(() => this.finishHunt(h), 1500);
+  }
+
+  private finishHunt(h: HuntState): void {
+    if (this.hunt !== h) return;
+    if (this.loop) clearInterval(this.loop);
+    this.loop = null;
+    this.hunt = null;
+    this.huntCmds = [];
+    this.broadcast({ type: 'hunt_over', result: huntResult(h) });
+    for (const p of this.players) p.ready = p.isHost;
+    // quien se desconectó durante la cacería ya no ocupa sitio en el lobby
+    this.players = this.players.filter((p) => p.ws);
+    if (this.players.length > 0 && !this.players.some((p) => p.isHost)) {
+      this.players[0].isHost = true;
+      this.players[0].ready = true;
+    }
+    this.promoteSpectators();
+    this.broadcastLobby();
   }
 
   // Aborta la partida por fallo irrecuperable del bucle de sim: detiene el bucle y
@@ -1970,7 +2126,7 @@ export class RoomDO {
 
     switch (msg.type) {
       case 'set_settings': {
-        if (this.game) break;
+        if (this.game || this.hunt) break;
         // F9d · rechazo EXPLÍCITO al no-anfitrión (antes se ignoraba en silencio):
         // con las puertas cerrables los ajustes ganaron poder de sala y un cliente
         // manipulado debe recibir un no claro, no un lobby que «no reacciona».
@@ -2140,7 +2296,7 @@ export class RoomDO {
       }
 
       case 'set_ready':
-        if (this.game) break;
+        if (this.game || this.hunt) break;
         player.ready = msg.ready === true;
         // desmarcar «Listo» durante la cuenta atrás de inicio la cancela (si no,
         // la partida arrancaría igual 3 s después de que alguien se arrepintiera)
@@ -2193,8 +2349,12 @@ export class RoomDO {
           this.send(player, { type: 'error', msg: 'Solo el anfitrión puede iniciar' });
           break;
         }
-        if (this.game && !this.game.over) break;
+        if (this.hunt || (this.game && !this.game.over)) break;
         if (this.startTimer) break; // ya en cuenta atrás
+        if (this.settings.mode === 'hunt' && this.players.filter((p) => p.ws).length < HUNT.MIN_PLAYERS) {
+          this.send(player, { type: 'error', msg: 'No hay jugadores conectados para la Cacería' });
+          break;
+        }
         // REANUDAR un guardado: sin gate de «Listo» (el anfitrión decide). Al llegar
         // a 0, reconstruye la sim (fast-forward) y arranca en vivo desde el guardado.
         if (this.savedGame) {
@@ -2246,6 +2406,12 @@ export class RoomDO {
         this.broadcast({ type: 'chat', from: player.name, color: player.color, text });
         break;
       }
+
+      case 'hunt_cmd':
+        if (!this.hunt || this.hunt.over) break;
+        // tope defensivo: nadie llena la cola con miles de órdenes por tick
+        if (this.huntCmds.length < 400) this.huntCmds.push({ playerId: player.id, cmd: msg.cmd });
+        break;
 
       case 'cmd':
         if (!this.game || this.game.over) break;

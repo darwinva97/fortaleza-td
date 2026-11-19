@@ -76,7 +76,7 @@ export const store = {
   // volúmenes 0..1 (persisten como enteros 0..100 en localStorage).
   sfxVol: readVol('td_sfx_vol', 0.8),
   musicVol: readVol('td_music_vol', 0.6),
-  screen: 'home' as 'home' | 'lobby' | 'game',
+  screen: 'home' as 'home' | 'lobby' | 'game' | 'hunt',
   playerId: '',
   roomCode: '',
   isHost: false,
