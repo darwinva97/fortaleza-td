@@ -743,9 +743,10 @@ function onUiClick(e: Event): void {
       follow = true;
       break;
   }
-  hashes.card = '';
-  hashes.panel = '';
-  hashes.shop = '';
+  // forzar a repintar ya (en el sitio, sin rehacer los botones)
+  hashes['hk-card'] = '';
+  hashes['hk-panel'] = '';
+  hashes['hk-shop'] = '';
 }
 
 function onUiHover(e: Event): void {
@@ -761,6 +762,7 @@ function onUiHover(e: Event): void {
 
 function openBook(): void {
   const modal = root.querySelector<HTMLElement>('#hk-modal')!;
+  hashes['hk-modal'] = '';
   modal.innerHTML = `<div class="hk-modal-box">
     <div class="hk-modal-head"><span>${icon('hk:book', '📖')} Libro de especialidades</span><button data-act="close" data-v="modal">✕</button></div>
     <p class="hk-sub">Elige UNA para toda la partida. Las estrellas dicen lo recomendable que es para empezar.</p>
@@ -907,10 +909,45 @@ function onEvents(events: HuntEvent[]): void {
 }
 
 // ---------- HUD ----------
+// Actualiza el HTML de un panel SIN rehacerlo: se conservan los mismos
+// elementos y solo se tocan los atributos y textos que cambian. Si se
+// reemplazara con innerHTML (la vida, el oro... cambian a cada rato), el botón
+// que estás pulsando desaparecería entre el «pulsar» y el «soltar» y el clic se
+// perdería.
 function setHtml(id: string, html: string): void {
   if (hashes[id] === html) return;
   hashes[id] = html;
-  root.querySelector(`#${id}`)!.innerHTML = html;
+  const el = root.querySelector(`#${id}`)!;
+  const tpl = document.createElement('template');
+  tpl.innerHTML = html;
+  morphChildren(el, tpl.content);
+}
+function morphChildren(into: Node, from: Node): void {
+  const want = Array.from(from.childNodes);
+  let i = 0;
+  for (; i < want.length; i++) {
+    const n = want[i];
+    const have = into.childNodes[i];
+    if (!have) into.appendChild(n.cloneNode(true));
+    else if (!morphNode(have, n)) into.replaceChild(n.cloneNode(true), have);
+  }
+  while (into.childNodes.length > want.length) into.removeChild(into.lastChild!);
+}
+// actualiza `have` para que sea como `want`; false si son de distinto tipo
+function morphNode(have: Node, want: Node): boolean {
+  if (have.nodeType !== want.nodeType) return false;
+  if (have.nodeType === Node.TEXT_NODE || have.nodeType === Node.COMMENT_NODE) {
+    if (have.nodeValue !== want.nodeValue) have.nodeValue = want.nodeValue;
+    return true;
+  }
+  if (have.nodeType !== Node.ELEMENT_NODE) return false;
+  const a = have as Element;
+  const b = want as Element;
+  if (a.tagName !== b.tagName) return false;
+  for (const at of Array.from(a.attributes)) if (!b.hasAttribute(at.name)) a.removeAttribute(at.name);
+  for (const at of Array.from(b.attributes)) if (a.getAttribute(at.name) !== at.value) a.setAttribute(at.name, at.value);
+  morphChildren(a, b);
+  return true;
 }
 
 function syncHud(): void {
@@ -1073,7 +1110,7 @@ function syncPanel(): void {
   if (!b || !m || cur!.snap.over || m.form !== 'elf') {
     if (selected && !b) selected = 0;
     if (!panel.hidden) panel.hidden = true;
-    hashes.panel = '';
+    hashes['hk-panel'] = '';
     return;
   }
   const { type, wall, tower, def } = buildingInfo(b);
@@ -1146,10 +1183,7 @@ function syncPanel(): void {
   const html = `<div class="hk-panel-head"><span class="ic big">${icon(buildingIcon(b))}</span><div><b>${esc(def.name)}</b><small>nivel ${level}/${maxLv}</small></div><button data-act="close" data-v="panel">✕</button></div>
     ${lines.join('')}${up}${train}
     <button class="hk-btn sm danger" data-act="demolish" data-tip="Derribar (Supr). Solo con la vida casi entera y sin el cazador cerca. No devuelve nada.">${icon('hk:demolish')} Derribar</button>`;
-  if (html !== hashes.panel) {
-    hashes.panel = html;
-    panel.innerHTML = html;
-  }
+  setHtml('hk-panel', html);
   panel.hidden = false;
 }
 
@@ -1158,7 +1192,7 @@ function syncShop(): void {
   const m = me();
   if (!shopOpen || !m || m.side !== 'hunter' || cur!.snap.over) {
     if (!shop.hidden) shop.hidden = true;
-    hashes.shop = '';
+    hashes['hk-shop'] = '';
     return;
   }
   const lines = ITEM_LINE_ORDER.map((line) => {
@@ -1192,10 +1226,7 @@ function syncShop(): void {
     ${m.form === 'hunter' ? `<button class="hk-item hut${nextHut && afford(nextHut.cost, 0) ? '' : ' poor'}" data-act="hut" data-tip="${esc(nextHut ? `<b>Mejorar la guarida</b><br>${m.hutIncome} → ${nextHut.income * RESOURCE_MULT} de oro/s<br>${costHtml(nextHut.cost, 0)}` : 'Guarida al máximo')}"><span class="ic">${icon('hk:hut')}</span><span class="v">nv ${m.hutLevel}</span><span class="ct">${nextHut ? fmt(nextHut.cost) : 'máx'}</span></button>` : ''}
   </div></div>`;
   const html = `<div class="hk-panel-head"><span class="ic big">${icon('hk:shop')}</span><div><b>Tienda de la guarida</b><small>${m.nearShop ? 'Dos objetos iguales se funden en el siguiente nivel' : 'Acércate a la guarida para comprar'}</small></div><button data-act="close" data-v="shop">✕</button></div>${lines}${extras}`;
-  if (html !== hashes.shop) {
-    hashes.shop = html;
-    shop.innerHTML = html;
-  }
+  setHtml('hk-shop', html);
   shop.hidden = false;
 }
 
@@ -1210,10 +1241,8 @@ function syncChoose(): void {
         <button class="hk-choice angel" data-act="form" data-v="angel"><span class="ic">${icon('hk:angel')}</span><b>Ángel</b><small>Ayudas a los colonos: reparas sus edificios, aturdes al cazador y le robas oro en su guarida.</small></button>
         <button class="hk-choice wolf" data-act="form" data-v="wolf"><span class="ic">${icon('hk:wolf')}</span><b>Lobo</b><small>Te pasas al cazador: golpeas y cobras oro por cada golpe, compras en su guarida. Empiezas con oro según los minutos de partida.</small></button>
       </div></div>`;
-    if (hashes.choose !== html) {
-      hashes.choose = html;
-      modal.innerHTML = html;
-    }
+    setHtml('hk-modal', html);
+    hashes.choose = html;
     modal.hidden = false;
   } else if (hashes.choose) {
     hashes.choose = '';
