@@ -1,5 +1,6 @@
 import {
   arenaPlaces,
+  getHuntMap,
   MAPS,
   MULTI_DOOR_MIN,
   type EndStats,
@@ -15,6 +16,7 @@ import { tokenParaCrearSala } from './turnstile.js';
 import { roomPrevToken, saveName, store } from './store.js';
 import { ask } from './dialog.js';
 import { ladderBadge, ladderFields } from './identity.js';
+import { pxIcon } from './px-icons.js';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -1000,12 +1002,19 @@ export function renderLobby(): void {
   // dificultad y el turbo no pintan nada, así que se cambian por la explicación.
   const huntMode = settings.mode === 'hunt';
   $('lobby-maps').hidden = huntMode;
-  if (huntMode) {
-    $('lobby-map-desc').textContent =
-      'Uno será el CAZADOR (va rotando; si juegas solo lo lleva un bot) y el resto, COLONOS. Los colonos tienen 30 s para ' +
-      'meterse en una parcela del laberinto, cerrar sus puertas con murallas y montar casa, taller y torres; mueren en dos golpes. ' +
-      'El cazador cobra en oro cada punto de daño, sube de nivel y se equipa en su guarida. Quien cae vuelve como ángel o como lobo. ' +
-      'Ganan los colonos si matan al cazador; gana el cazador si no queda ninguno.';
+  $('lobby-map-desc').hidden = huntMode;
+  $('lobby-hunt-info').hidden = !huntMode;
+  if (huntMode) renderHuntInfo();
+  // la Cacería no usa dificultad ni turbo: fuera de la vista para no confundir
+  $('lobby-diff-title').hidden = huntMode;
+  $('lobby-diff').hidden = huntMode;
+  $('lobby-turbo-box').hidden = huntMode;
+  {
+    const mapsTitle = $('lobby-maps-box').querySelector('h3');
+    if (mapsTitle) {
+      const label = mapsTitle.lastChild;
+      if (label && label.nodeType === Node.TEXT_NODE) label.textContent = huntMode ? 'Cómo se juega' : 'Mapa';
+    }
   }
   // F9b · lista de puertas reclamables (solo mapas multi-ruta; oculta si no)
   renderDoors(selectedMap);
@@ -1308,4 +1317,37 @@ export function hideEnd(): void {
 
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+}
+
+// ---------- CACERÍA: vista previa en el lobby ----------
+let huntInfoDone = false;
+function renderHuntInfo(): void {
+  if (huntInfoDone) return;
+  huntInfoDone = true;
+  const box = $('lobby-hunt-info');
+  const card = (ic: string, title: string, text: string, cls = '') =>
+    `<div class="hi-card ${cls}"><span class="hi-ic">${pxIcon(ic)}</span><div><b>${title}</b><p>${text}</p></div></div>`;
+  box.innerHTML = `
+    <div class="hi-map"><canvas id="lobby-hunt-map" width="200" height="200"></canvas><span><b style="color:var(--h-fg)">Un laberinto de 26 parcelas</b><br>amuralladas y forradas de árboles. En el centro, en rojo, la guarida del cazador. Cada colono elige la suya.</span></div>
+    <div class="hi-cards">
+      ${card('hk:elf', 'Colonos', 'Tenéis 30 s para meteros en una parcela, cerrar sus puertas con murallas y montar casa, taller y torres. Morís en dos golpes.', 'elf')}
+      ${card('hk:troll', 'Cazador', 'Cobra en oro cada punto de daño, sube de nivel y se equipa en su guarida. Va rotando; si juegas solo, lo lleva un bot.', 'hunter')}
+      ${card('hk:angel', 'Al caer', 'Vuelves como ángel para ayudar a los tuyos o como lobo para cazar con él.')}
+      ${card('hk:house', 'Victoria', 'Ganan los colonos si matan al cazador. Gana el cazador si no queda ningún colono.')}
+    </div>`;
+  const c = document.getElementById('lobby-hunt-map') as HTMLCanvasElement;
+  const g = c.getContext('2d')!;
+  const m = getHuntMap();
+  const k = c.width / m.w;
+  for (let y = 0; y < m.h; y++)
+    for (let x = 0; x < m.w; x++) {
+      const i = y * m.w + x;
+      const t = m.tiles[i];
+      g.fillStyle = t === 1 ? '#5a6373' : t === 2 ? '#2f7a45' : m.noBuild[i] ? '#7a3a2c' : m.plotOf[i] >= 0 ? '#5d4d39' : '#1d3a26';
+      g.fillRect(x * k, y * k, k + 0.3, k + 0.3);
+    }
+  g.fillStyle = '#ff5a4e';
+  g.beginPath();
+  g.arc((m.camp.x + 0.5) * k, (m.camp.y + 0.5) * k, 4, 0, Math.PI * 2);
+  g.fill();
 }
