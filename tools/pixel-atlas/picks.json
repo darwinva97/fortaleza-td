@@ -34,5 +34,13 @@
   "hk:run": 441816, "hk:item-sword": 170705, "hk:item-lance": 339415, "hk:item-axe": 905475,
   "hk:item-shield": 390, "hk:item-hp": 335235, "hk:item-regen": 266751, "hk:item-gloves": 751021,
   "hk:item-boots": 1098219, "hk:item-scroll": 944165, "hk:item-ankh": 467333, "hk:item-ward": 365387,
-  "hk:item-wood": 912636
+  "hk:item-wood": 912636,
+  "hk:item-branch": 1083885, "hk:item-ring": 335479, "hk:item-mask": 304383, "hk:item-orb": 7349,
+  "hk:item-helm": 150248, "hk:item-woodshield": 1302118, "hk:item-whitesleg": 261214, "hk:item-mercury": 825210,
+  "hk:item-heartbuilding": 1098793, "hk:item-potion": 314367, "hk:item-speedscroll": 33642, "hk:item-voodoo": 605610,
+  "hk:item-bookstr": 785064, "hk:item-bookagi": 64014, "hk:ams": 570116, "hk:blind": 390556,
+  "hk:pack": 3172, "hk:retrofit": 956844, "hk:aura": 558270, "hk:moonlight": 1252,
+  "hk:fullforce": 709381, "hk:blinkback": 887799, "hk:hasteex": 746600, "hk:repairex": 1041009,
+  "hk:occult": 459392, "hk:bloodlust": 634774, "hk:detect": 492495, "hk:beast": 437132,
+  "hk:mage": 431606, "hk:wall-tree": 1296123, "hk:wall-hay": 916473, "hk:wall-random": 234107
 }

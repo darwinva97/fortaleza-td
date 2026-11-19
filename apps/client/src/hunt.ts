@@ -22,8 +22,15 @@ import {
   MARKET,
   PHASE,
   REPAIRERS,
+  BEAST,
+  MAGE_FUSION_TOWERS,
   SPECS,
+  SPEC_ABILITY,
   SPEC_ORDER,
+  TRINKETS,
+  TRINKET_ORDER,
+  wallMaxLevel,
+  type Trinket,
   TECH_NAMES,
   UNIT_KIND_ORDER,
   WALL_BRANCHES,
@@ -140,6 +147,8 @@ const UNIT_ICON: Record<UnitKind, string> = {
   wolf: 'hk:wolf',
   repairer: 'hk:repairer',
   lumberjack: 'hk:lumberjack',
+  beast: 'hk:beast',
+  mage: 'hk:mage',
 };
 
 function reqText(req: Req | undefined): string | null {
@@ -421,7 +430,12 @@ function onWorldClick(x: number, y: number, right: boolean): void {
   // ¿clic sobre un edificio propio? → seleccionar
   const own = myBuildings().find((o) => cx >= o[3] && cx < o[3] + bSize(o) && cy >= o[4] && cy < o[4] + bSize(o));
   if (own && m.side === 'elf') {
-    if (m.form === 'angel') send({ k: 'repair', target: own[0] });
+    // Mayús+clic (o el ángel): ir a repararlo
+    if (m.form === 'angel' || (keys.has('Shift') && own[6] < own[7])) {
+      send({ k: 'repair', target: own[0] });
+      ring(own[3] + bSize(own) / 2, own[4] + bSize(own) / 2, '#ffe9a8');
+      if (m.form === 'angel') return;
+    }
     selected = own[0];
     return;
   }
@@ -466,7 +480,8 @@ function abilitiesOfMe(): Ability[] {
   const m = me();
   if (!m) return [];
   const list = [...(FORM_ABILITIES[m.form as keyof typeof FORM_ABILITIES] ?? [])];
-  if (m.form === 'elf' && m.spec === 'holylight') list.push('holylight');
+  const extra = m.form === 'elf' && m.spec ? SPEC_ABILITY[m.spec] : undefined;
+  if (extra) list.push(extra);
   return list;
 }
 
@@ -532,8 +547,8 @@ function useItem(slot: number): void {
   const m = me();
   const it = m?.inv[slot];
   if (!it || it.kind !== 'cons') return;
-  if (it.c === 'ward') useSlot = slot;
-  else if (it.c === 'scroll') send({ k: 'use', slot });
+  if (it.c === 'ward' || it.c === 'voodoo') useSlot = slot;
+  else if (it.c !== 'ankh') send({ k: 'use', slot });
 }
 
 function upgradeSelected(branch?: string): void {
@@ -586,6 +601,26 @@ function onUiClick(e: Event): void {
     case 'buycons':
       send({ k: 'buycons', c: v as Consumable });
       break;
+    case 'buytrinket':
+      send({ k: 'buytrinket', t: v as Trinket });
+      break;
+    case 'beast':
+      send({ k: 'beast' });
+      break;
+    case 'mage':
+      send({ k: 'mage' });
+      break;
+    case 'lots':
+      send({ k: 'lots', id: selected });
+      break;
+    case 'eat':
+      send({ k: 'eat', id: selected });
+      break;
+    case 'give': {
+      const m2 = me();
+      if (m2) send({ k: 'give', to: v, gold: Math.floor(m2.gold * (n / 100)), wood: 0 });
+      break;
+    }
     case 'buywood':
       send({ k: 'buywood' });
       break;
@@ -628,9 +663,9 @@ function openBook(): void {
   const modal = root.querySelector<HTMLElement>('#hk-modal')!;
   modal.innerHTML = `<div class="hk-modal-box">
     <div class="hk-modal-head"><span>${icon('hk:book', '📖')} Libro de especialidades</span><button data-act="close" data-v="modal">✕</button></div>
-    <p class="hk-sub">Elige UNA para toda la partida.</p>
-    <div class="hk-choices">${SPEC_ORDER.map(
-      (s) => `<button class="hk-choice" data-act="spec" data-v="${s}"><span class="ic">${icon(SPECS[s].icon)}</span><b>${SPECS[s].name}</b><small>${SPECS[s].desc}</small></button>`,
+    <p class="hk-sub">Elige UNA para toda la partida. Las estrellas dicen lo recomendable que es para empezar.</p>
+    <div class="hk-choices book">${SPEC_ORDER.map(
+      (s) => `<button class="hk-choice" data-act="spec" data-v="${s}"><span class="ic">${icon(SPECS[s].icon)}</span><b>${SPECS[s].name}</b><span class="stars">${'★'.repeat(SPECS[s].stars)}${'☆'.repeat(3 - SPECS[s].stars)}</span><small>${SPECS[s].desc}</small></button>`,
     ).join('')}</div></div>`;
   modal.hidden = false;
 }
@@ -643,6 +678,17 @@ function floatText(x: number, y: number, text: string, color: string): void {
   fx.push({ kind: 'text', x, y, text, color, born: performance.now(), life: 1000 });
 }
 const FX_COLOR: Partial<Record<string, string>> = {
+  blind: '#6b6f80',
+  moonlight: '#c9d8ff',
+  fullforce: '#ff9b4e',
+  pack: '#ffcd45',
+  retrofit: '#ffe066',
+  ams: '#9fd4ff',
+  wolfams: '#9fd4ff',
+  bloodlust: '#ff5a4e',
+  occult: '#7fe0d0',
+  voodoo: '#d08bff',
+  potion: '#9fd4ff',
   roots: '#7bd88f',
   silence: '#b48cff',
   stun: '#ffe066',
@@ -670,7 +716,10 @@ function onEvents(events: HuntEvent[]): void {
         sfx.shot(0);
         break;
       case 'shot':
-        fx.push({ kind: 'shot', x: ev.x, y: ev.y, tx: ev.tx, ty: ev.ty, color: ev.gold ? '#ffd54f' : '#fff0c0', born: now, life: 170 });
+        {
+          const c: Record<string, string> = { chain: '#8fd3ff', burn: '#ff8a3d', poison: '#7bd88f', frost: '#bfe6ff', corrupt: '#b48cff', mage: '#e2c6ff' };
+          fx.push({ kind: ev.fx === 'mage' ? 'beam' : 'shot', x: ev.x, y: ev.y, tx: ev.tx, ty: ev.ty, color: (ev.fx && c[ev.fx]) || (ev.gold ? '#ffd54f' : '#fff0c0'), born: now, life: ev.fx ? 260 : 170 });
+        }
         if (ev.dmg > 0) floatText(ev.tx, ev.ty - 1.2, `-${fmt(ev.dmg)}`, '#fff0c0');
         break;
       case 'built':
@@ -734,6 +783,16 @@ function onEvents(events: HuntEvent[]): void {
       case 'steal':
         floatText(ev.x, ev.y - 0.8, `+${fmt(ev.gold)}`, '#ffd54f');
         break;
+      case 'miss':
+        floatText(ev.x, ev.y - 0.5, 'falla', '#c9c9d1');
+        break;
+      case 'treeeaten':
+        fx.push({ kind: 'burst', x: ev.x, y: ev.y, color: '#7bd88f', born: now, life: 700 });
+        break;
+      case 'mage':
+        ring(ev.x, ev.y, '#c4a5ff', 3);
+        toast(`${icon('hk:mage')} ¡Ha nacido un Mago élfico!`);
+        break;
       case 'bought':
         toast(ev.text);
         sfx.coin();
@@ -789,7 +848,9 @@ function syncHud(): void {
         const f = sp?.form ?? '';
         const ic = f === 'hunter' ? 'hk:troll' : f === 'wolf' ? 'hk:wolf' : f === 'angel' ? 'hk:angel' : f === 'elf' ? 'hk:elf' : '';
         const gold = sp && sp.gold >= 0 && p.id !== meId() ? `<small>${fmt(sp.gold)}</small>` : '';
-        return `<span class="tm${sp?.alive ? '' : ' down'}${!sp?.connected ? ' off' : ''}"><i style="background:${p.color}"></i>${ic ? icon(ic) : '☠'} ${esc(p.name)}${p.id === meId() ? ' (tú)' : ''}${f === 'hunter' || f === 'wolf' ? ` <small>nv ${sp?.level}</small>` : ''}${gold}</span>`;
+        const ally = s.me && sp && p.id !== meId() && sp.gold >= 0 && (sp.form === 'hunter' || sp.form === 'wolf' ? 'hunter' : 'elf') === s.me.side;
+        const give = ally && s.me!.gold > 0 ? `<button class="give" data-act="give" data-v="${p.id}" data-n="50" data-tip="Darle la mitad de tu oro">${icon('hk:gold')}½</button><button class="give" data-act="give" data-v="${p.id}" data-n="100" data-tip="Darle todo tu oro">${icon('hk:gold')}todo</button>` : '';
+        return `<span class="tm${sp?.alive ? '' : ' down'}${!sp?.connected ? ' off' : ''}"><i style="background:${p.color}"></i>${ic ? icon(ic) : '☠'} ${esc(p.name)}${p.id === meId() ? ' (tú)' : ''}${f === 'hunter' || f === 'wolf' ? ` <small>nv ${sp?.level}</small>` : ''}${gold}${give}</span>`;
       })
       .join(''),
   );
@@ -842,7 +903,7 @@ function syncCard(): void {
         <div class="bar hp"><i style="width:${frac * 100}%"></i><span>${fmt(u[5])} / ${fmt(u[6])}</span></div>
         <div class="bar xp"><i style="width:${Math.min(1, xpFrac) * 100}%"></i><span>nivel ${m.level} · ${fmt(m.xp - m.xpPrev)}/${fmt(m.xpNext - m.xpPrev)} xp</span></div>
       </div>
-      <div class="hk-stats">⚔ ${fmt(m.stats.dmg)} · 🛡 ${fmt(m.stats.armor)} · ⏱ ${m.stats.attackSec}s · 👣 ${m.stats.speed} · ❤ +${m.stats.regen}/s</div>`;
+      <div class="hk-stats">⚔ ${fmt(m.stats.dmg)} · 🛡 ${fmt(m.stats.armor)} · ⏱ ${m.stats.attackSec}s · 👣 ${m.stats.speed} · ❤ +${fmt(m.stats.regen)}/s${m.attrs[0] || m.attrs[1] ? ` · 💪 ${fmt(m.attrs[0])} · 🏹 ${fmt(m.attrs[1])}` : ''}</div>`;
     } else {
       unitbar = `<div class="hk-bars"><div class="bar hp small"><i style="width:${frac * 100}%"></i><span>${u[5]} / ${u[6]}</span></div></div>`;
     }
@@ -867,8 +928,12 @@ function syncCard(): void {
     const book = m.spec
       ? `<span class="hk-spec" data-tip="${esc(`<b>${SPECS[m.spec].name}</b><br>${SPECS[m.spec].desc}`)}">${icon(SPECS[m.spec].icon)}</span>`
       : `<button class="hk-btn ab book" data-act="book" data-tip="Elige una especialidad para toda la partida">${icon('hk:book', '📖')}<span class="dot"></span></button>`;
+    const mage =
+      m.mageReady > 0
+        ? `<button class="hk-btn ab${m.mageReady >= MAGE_FUSION_TOWERS ? '' : ' poor'}" data-act="mage" data-tip="${esc(`<b>Mago élfico</b><br>Funde ${MAGE_FUSION_TOWERS} torres del misterio en un mago que te sigue y fulmina al cazador.<br>Tienes ${m.mageReady}.`)}"><span class="ic">${icon('hk:mage')}</span><span class="nb">${m.mageReady}</span></button>`
+        : '';
     card = `<div class="hk-group"><div class="hk-label">Construir</div><div class="hk-row">${builds}</div></div>
-      <div class="hk-group"><div class="hk-label">Habilidades</div><div class="hk-row">${abilities}${book}</div></div>
+      <div class="hk-group"><div class="hk-label">Habilidades</div><div class="hk-row">${abilities}${book}${mage}</div></div>
       <div class="hk-group"><div class="hk-label">Mercado</div>${market}</div>`;
   } else if (m.side === 'hunter') {
     const inv = m.inv
@@ -878,13 +943,19 @@ function syncCard(): void {
           const c = CONSUMABLES[it.c];
           return `<button class="hk-slot" data-act="slot" data-n="${i}" data-tip="${esc(`<b>${c.name}</b><br>${c.desc}${it.c !== 'ankh' ? '<br><small>Clic para usar</small>' : ''}`)}"><span class="ic">${icon(c.icon)}</span><kbd>${i + 1}</kbd></button>`;
         }
+        if (it.kind === 'trinket') {
+          const t = TRINKETS[it.t];
+          return `<button class="hk-slot t2" data-act="slot" data-n="${i}" data-tip="${esc(`<b>${t.name}</b><br>${t.desc}<br><small>Mayús+clic en la guarida: vender por la mitad</small>`)}"><span class="ic">${icon(t.icon)}</span></button>`;
+        }
         const tier = ITEMS[it.line].tiers[it.tier];
-        const stat = it.line === 'gloves' ? `+${Math.round(tier.value * 100)} %` : it.line === 'boots' ? `+${Math.round(tier.value * 128)}` : `+${fmt(tier.value)}`;
+        const stat = it.line === 'gloves' ? `+${Math.round(tier.value * 100)} %` : `+${fmt(tier.value)}`;
         return `<button class="hk-slot t${Math.min(4, Math.floor(it.tier / 3))}" data-act="slot" data-n="${i}" data-tip="${esc(`<b>${tier.name}</b><br>${stat} ${ITEMS[it.line].stat}<br><small>Mayús+clic en la guarida: vender por la mitad</small>`)}"><span class="ic">${icon(tier.icon)}</span><span class="lv">${it.tier + 1}</span></button>`;
       })
       .join('');
+    const boots = m.boots >= 0 ? ITEMS.boots.tiers[m.boots] : null;
+    const bootsSlot = `<button class="hk-slot boots${boots ? ' t1' : ' empty'}" data-tip="${esc(boots ? `<b>${boots.name}</b><br>+${Math.round(boots.value * 128)} de velocidad<br><small>Hueco propio de las botas</small>` : 'Hueco para botas (cómpralas en la tienda)')}"><span class="ic">${icon('hk:item-boots')}</span></button>`;
     card = `<div class="hk-group"><div class="hk-label">Habilidades</div><div class="hk-row">${abilities}</div></div>
-      <div class="hk-group"><div class="hk-label">Inventario</div><div class="hk-row inv">${inv}</div></div>
+      <div class="hk-group"><div class="hk-label">Inventario</div><div class="hk-row inv">${inv}<span class="hk-sep"></span>${bootsSlot}</div></div>
       <div class="hk-group"><div class="hk-label">Guarida</div><div class="hk-row"><button class="hk-btn ab shopbtn${shopOpen ? ' on' : ''}" data-act="shop" data-tip="Tienda de la guarida (G). Solo se compra estando cerca."><span class="ic">${icon('hk:shop')}</span><kbd>G</kbd>${m.nearShop ? '<span class="dot"></span>' : ''}</button></div></div>`;
   } else if (m.form === 'angel') {
     card = `<div class="hk-group"><div class="hk-label">Ángel · ayuda a los colonos</div><div class="hk-row">${abilities}</div></div>
@@ -906,7 +977,7 @@ function syncPanel(): void {
   }
   const { type, wall, tower, def } = buildingInfo(b);
   const level = b[5];
-  const maxLv = levelsOf(type);
+  const maxLv = type === 'wall' ? wallMaxLevel(wall) : levelsOf(type);
   const lines: string[] = [];
   lines.push(`<div class="bar hp"><i style="width:${(b[6] / b[7]) * 100}%"></i><span>${fmt(b[6])} / ${fmt(b[7])}</span></div>`);
   const stat = (k: string, v: string) => `<span class="st"><em>${k}</em>${v}</span>`;
@@ -951,6 +1022,13 @@ function syncPanel(): void {
     }
   } else up = `<div class="hk-req ok">Nivel máximo</div>`;
 
+  if (type === 'wall' && def.luck) {
+    up += `<button class="hk-btn wide${b[12] > 0 ? ' poor' : ''}" data-act="lots" data-tip="${esc('<b>Sortear armadura</b><br>De 0 a 30 de armadura extra. Cada 3 minutos.')}">${icon('hk:wall-random')} Sortear armadura <span class="ct">${b[12] > 0 ? `${b[12]} s` : `ahora +${b[11]}`}</span></button>`;
+  }
+  if (type === 'wall' && def.eatsTree) {
+    up += `<button class="hk-btn wide${b[9] & 64 ? ' poor' : ''}" data-act="eat" data-tip="${esc(`<b>Comerse un árbol</b><br>Uno a 4 casillas como mucho: +${fmt(def.eatsTree)} de vida en 30 s. El árbol vuelve a crecer al minuto.`)}">${icon('hk:wall-tree')} Comerse un árbol <span class="ct">+${fmt(def.eatsTree)}</span></button>`;
+  }
+  if (type === 'tower' && b[10] > 0) lines.push(`<div class="hk-req ok">Remodelada ${b[10]}/5: +${b[10] * 20} % de alcance, +${b[10] * 5} % de cadencia</div>`);
   let train = '';
   if (type === 'workshop' || type === 'elftree') {
     const table = type === 'workshop' ? REPAIRERS : LUMBERJACKS;
@@ -994,7 +1072,15 @@ function syncShop(): void {
     return `<div class="hk-shopline"><div class="hk-label">${L.name}</div><div class="hk-row">${tiers}</div></div>`;
   }).join('');
   const nextHut = HUT_LEVELS[m.hutLevel];
-  const extras = `<div class="hk-shopline"><div class="hk-label">Otros</div><div class="hk-row">
+  const trinkets = `<div class="hk-shopline"><div class="hk-label">Objetos sueltos</div><div class="hk-row">${TRINKET_ORDER.map((t: Trinket) => {
+    const d = TRINKETS[t];
+    return `<button class="hk-item${afford(d.gold, d.wood) && m.nearShop ? '' : ' poor'}" data-act="buytrinket" data-v="${t}" data-tip="${esc(`<b>${d.name}</b><br>${d.desc}<br>${costHtml(d.gold, d.wood)}`)}"><span class="ic">${icon(d.icon)}</span><span class="ct">${d.gold ? fmt(d.gold) : `${icon('hk:wood')}${d.wood}`}</span></button>`;
+  }).join('')}</div></div>`;
+  const beastBtn =
+    m.form === 'hunter'
+      ? `<button class="hk-item${m.beast === 0 && afford(0, BEAST.wood) && m.nearShop ? '' : ' poor'}" data-act="beast" data-tip="${esc(`<b>${BEAST.name}</b><br>Un compañero de ${fmt(BEAST.hp)} de vida y ${BEAST.dmg} de daño que te sigue y ataca lo mismo que tú. Cobra la mitad del daño en oro. Si cae, vuelve a la guarida en ${BEAST.respawnSec} s.<br>${costHtml(0, BEAST.wood)}`)}"><span class="ic">${icon('hk:beast')}</span><span class="ct">${m.beast ? (m.beast === 1 ? 'contigo' : 'vuelve') : `${icon('hk:wood')}${BEAST.wood}`}</span></button>`
+      : '';
+  const extras = `${trinkets}<div class="hk-shopline"><div class="hk-label">Otros</div><div class="hk-row">${beastBtn}
     ${(Object.keys(CONSUMABLES) as Consumable[])
       .map((c) => {
         const d = CONSUMABLES[c];
@@ -1126,6 +1212,13 @@ function drawBuilding(b: HuntSnapBuilding, X: (v: number) => number, Y: (v: numb
       g.arc(sx + w / 2, sy + w / 2, w * 0.62, 0, Math.PI * 2);
       g.stroke();
     }
+    if (b[9] & 16) g.globalAlpha = 0.35;
+    if (b[9] & 64) {
+      g.fillStyle = 'rgba(123, 216, 143, 0.9)';
+      g.font = `${Math.round(s * 0.35)}px system-ui`;
+      g.textAlign = 'center';
+      g.fillText('🌿', sx + w / 2, sy + w + s * 0.1);
+    }
     if (b[9] & 2) {
       g.fillStyle = 'rgba(255, 224, 102, 0.85)';
       g.font = `700 ${Math.round(s * 0.4)}px system-ui`;
@@ -1209,6 +1302,11 @@ function drawUnit(u: HuntSnapUnit, x: number, y: number, now: number, moving: bo
   if (u[7] & 64) st.push('🤫');
   if (u[7] & 16) st.push('✨');
   if (u[7] & 32) st.push('😡');
+  if (u[7] & 256) st.push('🙈');
+  if (u[7] & 512) st.push('🔰');
+  if (u[7] & 1024) st.push('❄️');
+  if (u[7] & 2048) st.push('🔥');
+  if (u[7] & 4096) st.push('💪');
   if (st.length) {
     g.font = `${Math.round(s * 0.36)}px system-ui`;
     g.textAlign = 'center';
@@ -1317,9 +1415,21 @@ function frame(now: number): void {
   }
 
   // árboles visibles (se ordenan con las unidades para que tapen bien)
+  const dead = new Set(snap.deadTrees);
   for (let y = y0; y < y1; y++)
     for (let x = x0; x < x1; x++) {
       if (map.tiles[y * map.w + x] !== 2) continue;
+      if (dead.has(y * map.w + x)) {
+        const sx2 = X(x);
+        const sy2 = Y(y);
+        drawables.push({ y: y + 0.5, draw: () => {
+          g.fillStyle = '#3d2a1a';
+          g.beginPath();
+          g.ellipse(sx2 + s * 0.5, sy2 + s * 0.6, s * 0.18, s * 0.1, 0, 0, Math.PI * 2);
+          g.fill();
+        } });
+        continue;
+      }
       const n = hash(x, y);
       drawables.push({ y: y + 0.8, draw: () => drawTree(X(x), Y(y) - s * 0.25, s * 1.1, n) });
     }
@@ -1339,6 +1449,8 @@ function frame(now: number): void {
   }
   for (const b of snap.buildings) drawables.push({ y: b[4] + bSize(b) - 0.05, draw: () => drawBuilding(b, X, Y, false, now) });
 
+  // minitiendas vudú del bando del cazador
+  for (const [sx3, sy3] of snap.shops) drawables.push({ y: sy3, draw: () => drawPxIcon(g, 'hk:item-voodoo', X(sx3), Y(sy3), s * 1.1) });
   // trampas (solo las ve su bando)
   for (const [tx, ty] of snap.traps) drawables.push({ y: ty, draw: () => drawPxIcon(g, 'hk:trap', X(tx), Y(ty), s * 0.7) });
 
@@ -1606,6 +1718,7 @@ function drawMini(pos: Map<number, { x: number; y: number }>, x0: number, y0: nu
 (window as unknown as { __hunt?: unknown }).__hunt = {
   select: (id: number) => (selected = id),
   shop: () => (shopOpen = true),
+  book: () => openBook(),
   zoom: (z: number) => (zoom = z),
   mine: () => myBuildings().map((b) => ({ id: b[0], type: BUILDING_ORDER[b[1]], level: b[5] })),
 };

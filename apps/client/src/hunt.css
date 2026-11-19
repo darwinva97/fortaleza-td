@@ -509,3 +509,28 @@
   .hk-card-wrap { max-width: calc(100vw - 170px); left: auto; right: 8px; transform: none; }
   .hk-panel, .hk-shop { bottom: 170px; }
 }
+
+/* ---------- v2.1: libro de 11, dar oro, hueco de botas ---------- */
+.hk-choices.book { grid-template-columns: repeat(3, 1fr); max-height: 70vh; overflow-y: auto; }
+.hk-choices.book .hk-choice { padding: 10px; }
+.hk-choices.book .hk-choice .ic { font-size: 2.2rem; }
+.hk-choice .stars { color: var(--hk-gold); font-size: 0.75rem; letter-spacing: 1px; }
+.hk-modal-box:has(.book) { width: min(94vw, 820px); }
+.hk-sep { width: 1px; align-self: stretch; background: var(--hk-border); margin: 0 3px; }
+.hk-slot.boots { border-style: dashed; }
+.hk-team .tm .give {
+  pointer-events: auto;
+  margin-left: 4px;
+  font: inherit;
+  font-size: 0.68rem;
+  color: var(--hk-gold);
+  background: rgba(255, 205, 69, 0.1);
+  border: 1px solid rgba(255, 205, 69, 0.35);
+  border-radius: 6px;
+  padding: 0 5px;
+  cursor: pointer;
+}
+.hk-team .tm .give .px { font-size: 0.85rem; }
+.hk-team { pointer-events: none; }
+/* la tienda no tapa el inventario de la tarjeta de mando */
+.hk-shop { bottom: 118px; max-height: calc(100vh - 250px); }

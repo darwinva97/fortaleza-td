@@ -1,0 +1,123 @@
+{
+ "hk:item-branch": [
+  "stick",
+  "branch staff",
+  "twig wand"
+ ],
+ "hk:item-ring": [
+  "signet ring",
+  "solitaire ring"
+ ],
+ "hk:item-mask": [
+  "tragedy mask",
+  "burial mask"
+ ],
+ "hk:item-orb": [
+  "light orb",
+  "cosmic orb"
+ ],
+ "hk:item-helm": [
+  "great helm",
+  "helmet"
+ ],
+ "hk:item-woodshield": [
+  "round shield"
+ ],
+ "hk:item-whitesleg": [
+  "greaves",
+  "plate leggings"
+ ],
+ "hk:item-mercury": [
+  "winged boots"
+ ],
+ "hk:item-heartbuilding": [
+  "heart crystal",
+  "heart-cut gem"
+ ],
+ "hk:item-potion": [
+  "potion vial",
+  "potion decanter"
+ ],
+ "hk:item-speedscroll": [
+  "scroll bundle",
+  "spell scroll",
+  "open scroll"
+ ],
+ "hk:item-voodoo": [
+  "cursed doll"
+ ],
+ "hk:item-bookstr": [
+  "scrapbook",
+  "battle tome",
+  "recipe book"
+ ],
+ "hk:item-bookagi": [
+  "notebook",
+  "nature tome"
+ ],
+ "hk:ams": [
+  "energy shield"
+ ],
+ "hk:blind": [
+  "storm cloud",
+  "thundercloud"
+ ],
+ "hk:pack": [
+  "backpack"
+ ],
+ "hk:retrofit": [
+  "pair of meshing gears",
+  "blueprint"
+ ],
+ "hk:aura": [
+  "light orb",
+  "sun icon"
+ ],
+ "hk:moonlight": [
+  "full moon"
+ ],
+ "hk:fullforce": [
+  "strength bicep symbol",
+  "power fist"
+ ],
+ "hk:blinkback": [
+  "left arrow icon",
+  "curved undo arrow",
+  "u-turn sign"
+ ],
+ "hk:hasteex": [
+  "comet",
+  "meteor"
+ ],
+ "hk:repairex": [
+  "blacksmith anvil marker",
+  "anvil"
+ ],
+ "hk:occult": [
+  "stealth skill symbol",
+  "shadow cloak"
+ ],
+ "hk:bloodlust": [
+  "lifesteal fang symbol"
+ ],
+ "hk:detect": [
+  "magnifying glass"
+ ],
+ "hk:beast": [
+  "minotaur",
+  "ogre"
+ ],
+ "hk:mage": [
+  "sorceress"
+ ],
+ "hk:wall-tree": [
+  "wooden fort"
+ ],
+ "hk:wall-hay": [
+  "hay bale"
+ ],
+ "hk:wall-random": [
+  "six-sided die",
+  "mystery box"
+ ]
+}

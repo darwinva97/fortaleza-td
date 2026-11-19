@@ -1,7 +1,7 @@
 // GENERADO por tools/pixel-atlas/build.py — no editar a mano.
 // Celda [columna, fila] de cada icono en /icons/px-atlas.png (sprites 16x16).
 export const PX_COLS = 16;
-export const PX_ROWS = 9;
+export const PX_ROWS = 11;
 export const PX_CELLS: Record<string, readonly [number, number]> = {
   'tower:archer': [0, 0],
   'tower:cannon': [1, 0],
@@ -132,4 +132,36 @@ export const PX_CELLS: Record<string, readonly [number, number]> = {
   'hk:item-ankh': [14, 7],
   'hk:item-ward': [15, 7],
   'hk:item-wood': [0, 8],
+  'hk:item-branch': [1, 8],
+  'hk:item-ring': [2, 8],
+  'hk:item-mask': [3, 8],
+  'hk:item-orb': [4, 8],
+  'hk:item-helm': [5, 8],
+  'hk:item-woodshield': [6, 8],
+  'hk:item-whitesleg': [7, 8],
+  'hk:item-mercury': [8, 8],
+  'hk:item-heartbuilding': [9, 8],
+  'hk:item-potion': [10, 8],
+  'hk:item-speedscroll': [11, 8],
+  'hk:item-voodoo': [12, 8],
+  'hk:item-bookstr': [13, 8],
+  'hk:item-bookagi': [14, 8],
+  'hk:ams': [15, 8],
+  'hk:blind': [0, 9],
+  'hk:pack': [1, 9],
+  'hk:retrofit': [2, 9],
+  'hk:aura': [3, 9],
+  'hk:moonlight': [4, 9],
+  'hk:fullforce': [5, 9],
+  'hk:blinkback': [6, 9],
+  'hk:hasteex': [7, 9],
+  'hk:repairex': [8, 9],
+  'hk:occult': [9, 9],
+  'hk:bloodlust': [10, 9],
+  'hk:detect': [11, 9],
+  'hk:beast': [12, 9],
+  'hk:mage': [13, 9],
+  'hk:wall-tree': [14, 9],
+  'hk:wall-hay': [15, 9],
+  'hk:wall-random': [0, 10],
 };

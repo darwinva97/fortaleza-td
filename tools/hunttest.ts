@@ -6,6 +6,8 @@ import {
   PHASE,
   TICK_RATE,
   armorMult,
+  huntWallLevel,
+  levelDef,
   buildHuntSnap,
   createHunt,
   createHuntBotMemory,
@@ -231,6 +233,87 @@ console.log('visión');
   assert(late.units.some((u) => u[0] === b.id), 'a los 3 minutos comparten visión');
   const hs = buildHuntSnap(st, 'p1');
   assert(hs.players.find((p) => p.id === 'p2')!.gold === -1, 'el cazador no ve el oro de los colonos');
+}
+
+console.log('reglas completas del original');
+{
+  // murallas 16-18 y ramas nuevas
+  assert(huntWallLevel(16, 'rock').flatReduce === 128 && huntWallLevel(18, 'rock').flatReduce === 16000, 'murallas torre: restan 128 / 1440 / 16000 por golpe');
+  assert(huntWallLevel(7, 'hay').extraDamageTaken === 4, 'el heno recibe daño extra');
+  assert(levelDef('mine', 9, null, 'main').income === 38400, 'la mina llega a 38 400 de oro/s');
+  const st = createHunt(21, roster, 'p1');
+  const ana = P(st, 'p2');
+  const elf = mainUnit(st, 'p2')!;
+  elf.x = inner.x + 0.5;
+  elf.y = inner.y + 0.5;
+  ana.gold = 1e7;
+  ana.wood = 1e7;
+  run(st, sec(20), [{ playerId: 'p2', cmd: { k: 'build', type: 'wall', cx: door.x, cy: door.y } }]);
+  const wall = st.buildings.find((b) => b.type === 'wall')!;
+  for (let i = 0; i < 4; i++) run(st, 1, [{ playerId: 'p2', cmd: { k: 'upgrade', id: wall.id } }]);
+  run(st, 1, [{ playerId: 'p2', cmd: { k: 'upgrade', id: wall.id, branch: 'tree' } }]);
+  const hp0 = wall.hp;
+  wall.hp = 100;
+  run(st, 1, [{ playerId: 'p2', cmd: { k: 'eat', id: wall.id } }]);
+  assert(st.deadTrees.size === 1, 'la muralla de árbol se come un árbol cercano');
+  run(st, sec(31));
+  assert(wall.hp > 250, `y recupera vida (${Math.round(wall.hp)})`);
+  void hp0;
+  // especialidad: Cegar → el cazador falla
+  run(st, 1, [{ playerId: 'p2', cmd: { k: 'spec', s: 'blind' } }]);
+  run(st, sec(PHASE.headStartSec));
+  const h = huntHunterUnit(st)!;
+  elf.x = map.camp.x + 4.5;
+  elf.y = map.camp.y + 0.5;
+  elf.path = [];
+  h.x = elf.x + 1.2;
+  h.y = elf.y;
+  run(st, 1, [{ playerId: 'p2', cmd: { k: 'ability', a: 'blind', x: h.x, y: h.y } }]);
+  const ev = run(st, sec(2), [{ playerId: 'p1', cmd: { k: 'attack', target: elf.id } }]);
+  assert(elf.alive && ev.some((e) => e.e === 'miss'), 'cegado, el cazador falla sus golpes');
+  // escudo antimagia: las raíces no le afectan
+  const st2 = createHunt(22, roster, 'p1');
+  run(st2, sec(PHASE.headStartSec));
+  const h2 = huntHunterUnit(st2)!;
+  const e2 = mainUnit(st2, 'p2')!;
+  e2.x = h2.x + 2;
+  e2.y = h2.y;
+  run(st2, 1, [{ playerId: 'p1', cmd: { k: 'ability', a: 'ams' } }]);
+  run(st2, 1, [{ playerId: 'p2', cmd: { k: 'ability', a: 'roots', x: h2.x, y: h2.y } }]);
+  assert(h2.rootUntil <= st2.tick, 'con el escudo antimagia las raíces no le atrapan');
+  // tienda: objetos sueltos, libros, botas aparte y rastreador
+  const hp = P(st2, 'p1');
+  hp.gold = 2_000_000;
+  hp.wood = 20;
+  h2.x = map.camp.x + 0.5;
+  h2.y = map.camp.y + 2.5;
+  run(st2, 1, [{ playerId: 'p1', cmd: { k: 'buytrinket', t: 'orb' } }]);
+  run(st2, 1, [{ playerId: 'p1', cmd: { k: 'buycons', c: 'bookstr' } }]);
+  run(st2, 1, [{ playerId: 'p1', cmd: { k: 'buy', line: 'boots', tier: 2 } }]);
+  assert(hp.boots === 2 && hp.inv.filter(Boolean).length === 1, 'las botas van en su propio hueco');
+  assert(h2.maxHp >= 750 + 4010 * 25, `orbe + libro de fuerza: ${h2.maxHp} de vida`);
+  run(st2, 1, [{ playerId: 'p1', cmd: { k: 'beast' } }]);
+  const beast = st2.units.find((u) => u.kind === 'beast');
+  assert(!!beast && hp.wood === 12, 'el rastreador cuesta 8 de madera');
+  e2.x = h2.x + 6;
+  e2.y = h2.y;
+  e2.invulnUntil = 0;
+  run(st2, sec(6), [{ playerId: 'p1', cmd: { k: 'attack', target: e2.id } }]);
+  assert(!e2.alive, 'el cazador y su rastreador cazan al colono');
+  // ángel: velo lunar oculta a un colono
+  run(st2, 1, [{ playerId: 'p2', cmd: { k: 'form', f: 'angel' } }]);
+  const angel = st2.units.find((u) => u.kind === 'angel' && u.alive)!;
+  const e3 = mainUnit(st2, 'p3')!;
+  angel.x = e3.x + 1;
+  angel.y = e3.y;
+  angel.invulnUntil = 0;
+  run(st2, 1, [{ playerId: 'p2', cmd: { k: 'ability', a: 'occult', x: e3.x, y: e3.y } }]);
+  const view = buildHuntSnap(st2, 'p1');
+  h2.x = e3.x + 2;
+  h2.y = e3.y;
+  const view2 = buildHuntSnap(st2, 'p1');
+  assert(!view2.units.some((u) => u[0] === e3.id) && e3.occultUntil > st2.tick, 'el velo lunar hace invisible al colono para el cazador');
+  void view;
 }
 
 console.log('bot y rendimiento');

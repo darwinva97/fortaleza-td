@@ -6,6 +6,8 @@ import { rand } from '../rng.js';
 import {
   ABILITIES,
   ANGEL,
+  ATTR,
+  BEAST,
   BUILDINGS,
   CONSUMABLES,
   ELF,
@@ -20,6 +22,8 @@ import {
   INVENTORY_SLOTS,
   ITEMS,
   LUMBERJACKS,
+  MAGE,
+  MAGE_FUSION_TOWERS,
   MARKET,
   MAX_LUMBERJACKS,
   PHASE,
@@ -27,7 +31,10 @@ import {
   REPAIR_BASE_SEC,
   SHOP_RADIUS,
   SPECS,
+  SPEC_ABILITY,
+  TRINKETS,
   WALL_BRANCHES,
+  WALL_BRANCH_ORDER,
   WOLF,
   WOOD_FOR_GOLD,
   WORKER_SPEED,
@@ -38,6 +45,7 @@ import {
   levelDef,
   levelsOf,
   roleBounty,
+  wallMaxLevel,
   wolfStartGold,
   xpForKill,
   xpForLevel,
@@ -50,6 +58,7 @@ import {
   type Req,
   type Spec,
   type TowerBranch,
+  type Trinket,
   type WallBranch,
 } from './defs.js';
 import { TILE_FLOOR, getHuntMap, type HuntMap } from './map.js';
@@ -57,10 +66,14 @@ import { TILE_FLOOR, getHuntMap, type HuntMap } from './map.js';
 // ---------- estado ----------
 
 export type Side = 'hunter' | 'elf';
-export type UnitKind = 'hunter' | 'elf' | 'angel' | 'wolf' | 'repairer' | 'lumberjack';
-export const UNIT_KIND_ORDER: UnitKind[] = ['hunter', 'elf', 'angel', 'wolf', 'repairer', 'lumberjack'];
+export type UnitKind = 'hunter' | 'elf' | 'angel' | 'wolf' | 'repairer' | 'lumberjack' | 'beast' | 'mage';
+export const UNIT_KIND_ORDER: UnitKind[] = ['hunter', 'elf', 'angel', 'wolf', 'repairer', 'lumberjack', 'beast', 'mage'];
+const FIGHTER_KINDS: UnitKind[] = ['hunter', 'wolf', 'beast'];
 
-export type InvSlot = { kind: 'item'; line: ItemLine; tier: number } | { kind: 'cons'; c: Consumable };
+export type InvSlot =
+  | { kind: 'item'; line: ItemLine; tier: number }
+  | { kind: 'cons'; c: Consumable; uses?: number }
+  | { kind: 'trinket'; t: Trinket };
 
 export interface HuntPlayer {
   id: string;
@@ -79,6 +92,9 @@ export interface HuntPlayer {
   inv: (InvSlot | null)[];
   spec: Spec | null;
   skinUsed: boolean;
+  boots: number; // nivel de las botas (hueco aparte; −1 sin botas)
+  str: number; // atributos permanentes de los libros
+  agi: number;
   chooseUntil: number; // colono caído: tick límite para elegir ángel o lobo
   respawnAt: number; // ángel o lobo muertos: tick en que vuelven
   stats: { goldEarned: number; damage: number; built: number; kills: number };
@@ -89,7 +105,8 @@ export type Order =
   | { k: 'move' }
   | { k: 'attack'; target: number }
   | { k: 'build'; type: BuildingType; cx: number; cy: number }
-  | { k: 'repair'; target: number };
+  | { k: 'repair'; target: number }
+  | { k: 'follow' };
 
 export interface HuntUnit {
   id: number;
@@ -118,6 +135,20 @@ export interface HuntUnit {
   tree: number; // leñador: casilla del árbol
   work: number; // reparador: edificio que repara
   repathAt: number;
+  // estados nuevos
+  missUntil: number; // cegado: falla todos los golpes
+  immuneUntil: number; // inmune a la magia de los colonos
+  slowUntil: number; // escarcha: −50 % de velocidad
+  dotUntil: number; // quemadura / veneno
+  dotDps: number;
+  armorDownUntil: number; // corrupción
+  armorDown: number;
+  atkSlowUntil: number; // quemadura: −80 % de cadencia
+  bloodlustUntil: number;
+  forceUntil: number; // Plena fuerza
+  speedMaxUntil: number; // pergamino veloz
+  occultUntil: number; // velo lunar: invisible para el cazador
+  blinkFrom: { x: number; y: number; until: number } | null;
 }
 
 export interface HuntBuilding {
@@ -139,6 +170,13 @@ export interface HuntBuilding {
   eyeUntil: number; // vista por el Ojo: no se puede derribar
   investGold: number;
   investWood: number;
+  retro: number; // remodelaciones (0..5)
+  forceUntil: number; // Plena fuerza: torres y minas al doble
+  packedUntil: number; // casa empaquetada
+  luckArmor: number; // muralla aleatoria
+  luckReady: number;
+  eatUntil: number; // muralla de árbol comiéndose un árbol
+  eatRate: number;
 }
 
 export interface HuntTrap {
@@ -161,6 +199,12 @@ export interface HuntWard {
   y: number;
   until: number;
 }
+export interface HuntShop {
+  owner: string;
+  x: number;
+  y: number;
+  until: number;
+}
 
 export interface HuntState {
   tick: number;
@@ -178,6 +222,9 @@ export interface HuntState {
   releaseTick: number;
   over: null | { winner: 'hunter' | 'colonist'; reason: 'hunter_dead' | 'all_dead' };
   treeTaken: Map<number, number>; // casilla de árbol → id del leñador
+  deadTrees: Map<number, number>; // árboles comidos → tick a partir del cual pueden volver
+  nightUntil: number; // Luz de luna: noche forzada
+  shops: HuntShop[]; // minitiendas vudú
 }
 
 export type HuntCommand =
@@ -199,7 +246,12 @@ export type HuntCommand =
   | { k: 'hut' }
   | { k: 'form'; f: 'angel' | 'wolf' }
   | { k: 'spec'; s: Spec }
-  | { k: 'give'; to: string; gold: number; wood: number };
+  | { k: 'give'; to: string; gold: number; wood: number }
+  | { k: 'lots'; id: number }
+  | { k: 'eat'; id: number }
+  | { k: 'mage' }
+  | { k: 'buytrinket'; t: Trinket }
+  | { k: 'beast' };
 
 export interface HuntPlayerCommand {
   playerId: string;
@@ -208,19 +260,22 @@ export interface HuntPlayerCommand {
 
 export type HuntEvent =
   | { e: 'hit'; x: number; y: number; dmg: number; gold: number; by: string }
-  | { e: 'shot'; x: number; y: number; tx: number; ty: number; dmg: number; gold: boolean }
+  | { e: 'shot'; x: number; y: number; tx: number; ty: number; dmg: number; gold: boolean; fx?: string }
   | { e: 'built'; x: number; y: number; type: BuildingType; owner: string }
   | { e: 'upgraded'; x: number; y: number; level: number; name: string }
   | { e: 'destroyed'; x: number; y: number; type: BuildingType }
   | { e: 'death'; x: number; y: number; playerId: string; name: string; left: number; bounty: number }
   | { e: 'unitdeath'; x: number; y: number; kind: UnitKind }
-  | { e: 'fx'; a: Ability | 'trap_fire' | 'ward' | 'scroll'; x: number; y: number; tx?: number; ty?: number; r?: number; side: Side }
+  | { e: 'fx'; a: Ability | 'trap_fire' | 'ward' | 'scroll' | 'voodoo' | 'potion'; x: number; y: number; tx?: number; ty?: number; r?: number; side: Side }
   | { e: 'released' }
   | { e: 'shared' }
   | { e: 'exposed'; names: string[] }
   | { e: 'levelup'; playerId: string; level: number; x: number; y: number }
   | { e: 'form'; playerId: string; name: string; form: Form }
   | { e: 'steal'; x: number; y: number; gold: number }
+  | { e: 'miss'; x: number; y: number }
+  | { e: 'treeeaten'; x: number; y: number }
+  | { e: 'mage'; x: number; y: number; playerId: string }
   | { e: 'bought'; priv: string; text: string }
   | { e: 'reject'; priv: string; reason: string };
 
@@ -258,6 +313,19 @@ function newUnit(st: HuntState, owner: string, kind: UnitKind, x: number, y: num
     tree: -1,
     work: 0,
     repathAt: 0,
+    missUntil: 0,
+    immuneUntil: 0,
+    slowUntil: 0,
+    dotUntil: 0,
+    dotDps: 0,
+    armorDownUntil: 0,
+    armorDown: 0,
+    atkSlowUntil: 0,
+    bloodlustUntil: 0,
+    forceUntil: 0,
+    speedMaxUntil: 0,
+    occultUntil: 0,
+    blinkFrom: null,
   };
   st.units.push(u);
   return u;
@@ -281,6 +349,9 @@ export function createHunt(seed: number, roster: { id: string; name: string; col
     releaseTick: T(PHASE.headStartSec),
     over: null,
     treeTaken: new Map(),
+    deadTrees: new Map(),
+    nightUntil: 0,
+    shops: [],
   };
   let slot = 0;
   const elves = roster.filter((r) => r.id !== hunterId).length;
@@ -303,6 +374,9 @@ export function createHunt(seed: number, roster: { id: string; name: string; col
       inv: new Array(INVENTORY_SLOTS).fill(null),
       spec: null,
       skinUsed: false,
+      boots: -1,
+      str: 0,
+      agi: 0,
       chooseUntil: 0,
       respawnAt: 0,
       stats: { goldEarned: 0, damage: 0, built: 0, kills: 0 },
@@ -323,6 +397,13 @@ export function createHunt(seed: number, roster: { id: string; name: string; col
 const playerOf = (st: HuntState, id: string) => st.players.find((p) => p.id === id);
 export const mainUnit = (st: HuntState, id: string): HuntUnit | undefined =>
   st.units.find((u) => u.owner === id && u.alive && (u.kind === 'hunter' || u.kind === 'elf' || u.kind === 'angel' || u.kind === 'wolf'));
+export const isNightAt = (st: HuntState): boolean => st.tick < st.nightUntil || isNight(st.tick / TICK_RATE);
+const isTreeAlive = (st: HuntState, map: HuntMap, c: number): boolean => map.tiles[c] === 2 && !st.deadTrees.has(c);
+const magicImmune = (st: HuntState, u: HuntUnit): boolean => {
+  if (u.immuneUntil > st.tick) return true;
+  const p = playerOf(st, u.owner);
+  return !!p && p.inv.some((s) => s?.kind === 'trinket' && TRINKETS[s.t].immune);
+};
 export const huntHunterUnit = (st: HuntState): HuntUnit | undefined => st.units.find((u) => u.kind === 'hunter' && u.alive);
 const sideOfOwner = (st: HuntState, owner: string): Side => playerOf(st, owner)?.side ?? 'elf';
 const cell = (v: number) => Math.floor(v);
@@ -338,7 +419,7 @@ function reject(ev: HuntEvent[], playerId: string, reason: string): void {
 
 export function huntBlockedGrid(st: HuntState, map: HuntMap): Uint8Array {
   const g = new Uint8Array(map.w * map.h);
-  for (let i = 0; i < g.length; i++) g[i] = map.tiles[i] === TILE_FLOOR ? 0 : 1;
+  for (let i = 0; i < g.length; i++) g[i] = map.tiles[i] === TILE_FLOOR || st.deadTrees.has(i) ? 0 : 1;
   g[map.camp.y * map.w + map.camp.x] = 1; // la guarida ocupa su casilla
   for (const b of st.buildings) for (let j = 0; j < b.size; j++) for (let i = 0; i < b.size; i++) g[(b.cy + j) * map.w + b.cx + i] = 1;
   return g;
@@ -492,6 +573,11 @@ export function maxWallOf(st: HuntState, owner: string): number {
   for (const b of st.buildings) if (b.owner === owner && b.type === 'wall') t = Math.max(t, b.level);
   return t;
 }
+export function shopNear(st: HuntState, x: number, y: number, side: Side): boolean {
+  const map = getHuntMap();
+  if (Math.hypot(x - (map.camp.x + 0.5), y - (map.camp.y + 0.5)) <= SHOP_RADIUS) return true;
+  return st.shops.some((s) => s.until > st.tick && sideOfOwner(st, s.owner) === side && Math.hypot(s.x - x, s.y - y) <= 3);
+}
 export function houseOf(st: HuntState, owner: string): HuntBuilding | undefined {
   return st.buildings.find((b) => b.owner === owner && b.type === 'house');
 }
@@ -519,35 +605,67 @@ export interface FighterStats {
   speed: number;
 }
 export function itemSum(p: HuntPlayer, line: ItemLine): number {
-  let s = 0;
-  let boots = 0;
-  for (const it of p.inv) {
-    if (!it || it.kind !== 'item' || it.line !== line) continue;
-    const v = ITEMS[line].tiers[it.tier].value;
-    if (line === 'boots') boots = Math.max(boots, v);
-    else s += v;
-  }
-  return line === 'boots' ? boots : s;
+  if (line === 'boots') return p.boots >= 0 ? ITEMS.boots.tiers[p.boots].value : 0;
+  let sum = 0;
+  for (const it of p.inv) if (it?.kind === 'item' && it.line === line) sum += ITEMS[line].tiers[it.tier].value;
+  return sum;
 }
-export function fighterStats(st: HuntState, p: HuntPlayer, u: HuntUnit | undefined): FighterStats {
+function trinkets(p: HuntPlayer) {
+  let str = p.str;
+  let agi = p.agi;
+  let block = 0;
+  let speed = 0;
+  let as = 0;
+  let hp = 0;
+  let regenPct = 0;
+  let maxSpeed = false;
+  for (const it of p.inv) {
+    if (it?.kind !== 'trinket') continue;
+    const t = TRINKETS[it.t];
+    str += t.str ?? 0;
+    agi += t.agi ?? 0;
+    block += t.block ?? 0;
+    speed = Math.max(speed, t.speed ?? 0);
+    as += t.attackSpeed ?? 0;
+    hp += t.hp ?? 0;
+    regenPct += t.regenPct ?? 0;
+    if (t.maxSpeed) maxSpeed = true;
+  }
+  return { str, agi, block, speed, as, hp, regenPct, maxSpeed };
+}
+export function fighterStats(st: HuntState, p: HuntPlayer, u: HuntUnit | undefined): FighterStats & { block: number } {
+  if (u?.kind === 'beast') {
+    return { maxHp: BEAST.hp, dmg: BEAST.dmg, armor: 4, regen: 0, attackSec: BEAST.attackSec, speed: BEAST.speed, block: 0 };
+  }
+  if (u?.kind === 'mage') {
+    return { maxHp: MAGE.hp, dmg: MAGE.dmg, armor: MAGE.armor, regen: MAGE.regen, attackSec: MAGE.cd, speed: MAGE.speed, block: 0 };
+  }
   const L = p.level - 1;
-  let as = HUNTER.asPerLevel * L + itemSum(p, 'gloves') + HUNTER.focusBase + (u ? u.focus * HUNTER.focusPerHit : 0);
+  const tk = trinkets(p);
+  let as = HUNTER.asPerLevel * L + itemSum(p, 'gloves') + HUNTER.focusBase + tk.as + tk.agi * ATTR.asPerAgi + (u ? u.focus * HUNTER.focusPerHit : 0);
   if (u && u.berserkUntil > st.tick) as += 1;
-  as = Math.min(HUNTER.maxAttackSpeed, as);
-  let speed = HUNTER.speed + itemSum(p, 'boots');
+  if (u && u.bloodlustUntil > st.tick) as += 0.5;
+  if (u && u.atkSlowUntil > st.tick) as -= 0.8;
+  as = tk.maxSpeed ? HUNTER.maxAttackSpeed : Math.min(HUNTER.maxAttackSpeed, as);
+  let speed = HUNTER.speed + Math.max(itemSum(p, 'boots'), tk.speed);
   speed = Math.min(HUNTER.maxSpeed, speed);
+  if (tk.maxSpeed || (u && u.speedMaxUntil > st.tick)) speed = HUNTER.maxSpeed;
   if (u) {
     if (u.invisUntil > st.tick) speed *= 1.5;
     if (u.berserkUntil > st.tick) speed *= 1.5;
     if (u.hasteUntil > st.tick) speed *= 2;
+    if (u.bloodlustUntil > st.tick) speed *= 1.3;
+    if (u.slowUntil > st.tick) speed *= 0.5;
   }
+  const maxHp = HUNTER.hp + HUNTER.hpPerLevel * L + itemSum(p, 'life') + tk.str * ATTR.hpPerStr + tk.hp;
   return {
-    maxHp: HUNTER.hp + HUNTER.hpPerLevel * L + itemSum(p, 'life'),
-    dmg: HUNTER.dmg + HUNTER.dmgPerLevel * L + itemSum(p, 'weapon'),
-    armor: HUNTER.armor + HUNTER.armorPerLevel * L + itemSum(p, 'armor'),
-    regen: HUNTER.regenPerLevel * L + itemSum(p, 'regen'),
-    attackSec: HUNTER.attackSec / (1 + as),
+    maxHp,
+    dmg: HUNTER.dmg + HUNTER.dmgPerLevel * L + itemSum(p, 'weapon') + tk.agi * ATTR.dmgPerAgi,
+    armor: HUNTER.armor + HUNTER.armorPerLevel * L + itemSum(p, 'armor') + tk.agi * ATTR.armorPerAgi - (u && u.armorDownUntil > st.tick ? u.armorDown : 0),
+    regen: HUNTER.regenPerLevel * L + itemSum(p, 'regen') + tk.str * ATTR.regenPerStr + maxHp * tk.regenPct,
+    attackSec: HUNTER.attackSec / (1 + Math.max(-0.9, as)),
     speed,
+    block: tk.block,
   };
 }
 
@@ -556,15 +674,20 @@ function unitSpeed(st: HuntState, u: HuntUnit): number {
   switch (u.kind) {
     case 'hunter':
     case 'wolf':
+    case 'beast':
+    case 'mage':
       return p ? fighterStats(st, p, u).speed : HUNTER.speed;
     case 'elf': {
       if (st.tick < st.releaseTick) return PHASE.sprintSpeed;
-      return ELF.speed * (u.hasteUntil > st.tick ? 2.1 : 1);
+      let v = ELF.speed;
+      if (u.hasteUntil > st.tick) v = p?.spec === 'hasteex' ? 600 / 128 : v * 2.1;
+      if (u.forceUntil > st.tick) v *= 2;
+      return v;
     }
     case 'angel':
-      return ANGEL.speed * (u.hasteUntil > st.tick ? 2 : 1);
+      return ANGEL.speed * (u.hasteUntil > st.tick ? 2 : 1) * (u.forceUntil > st.tick ? 2 : 1);
     default:
-      return WORKER_SPEED;
+      return WORKER_SPEED * (u.forceUntil > st.tick ? 2 : 1);
   }
 }
 
@@ -580,21 +703,22 @@ function syncFighterHp(st: HuntState, p: HuntPlayer, u: HuntUnit): void {
 // ---------- visión ----------
 
 export function visionSources(st: HuntState, side: Side, viewer: HuntPlayer | null): [number, number, number][] {
-  const night = isNight(sec(st));
+  const night = isNightAt(st);
   const src: [number, number, number][] = [];
   const shared = st.tick >= T(PHASE.sharedVisionSec);
   const mine = (owner: string) => !viewer || owner === viewer.id || side === 'hunter' || shared;
   for (const u of st.units) {
     if (!u.alive || sideOfOwner(st, u.owner) !== side || !mine(u.owner)) continue;
     let r = 4;
-    if (u.kind === 'hunter' || u.kind === 'wolf') r = night ? HUNTER.visionNight : HUNTER.visionDay;
+    if (u.kind === 'hunter' || u.kind === 'wolf' || u.kind === 'beast') r = night ? HUNTER.visionNight : HUNTER.visionDay;
+    else if (u.kind === 'mage') r = 10;
     else if (u.kind === 'elf') r = night ? ELF.visionNight : ELF.visionDay;
     else if (u.kind === 'angel') r = ANGEL.vision;
     src.push([u.x, u.y, r]);
   }
   if (side === 'elf') {
     for (const b of st.buildings) {
-      if (!mine(b.owner)) continue;
+      if (!mine(b.owner) || b.packedUntil > st.tick) continue;
       const r = b.type === 'tower' || b.type === 'sight' ? (night ? 7 : 8) : night ? 4.7 : 7;
       src.push([b.cx + b.size / 2, b.cy + b.size / 2, r]);
     }
@@ -613,7 +737,7 @@ function inVision(src: [number, number, number][], x: number, y: number): boolea
 
 // ¿Ve el bando de colonos al cazador invisible? Solo si una Atalaya lo cubre.
 function detected(st: HuntState, u: HuntUnit): boolean {
-  if (u.invisUntil <= st.tick) return true;
+  if (u.invisUntil <= st.tick && u.occultUntil <= st.tick) return true;
   for (const b of st.buildings) {
     if (b.type !== 'sight') continue;
     const r = buildingDef(b).range ?? 7;
@@ -720,6 +844,11 @@ function killUnit(st: HuntState, u: HuntUnit, killerOwner: string | null, ev: Hu
   u.hp = 0;
   if (u.tree >= 0) st.treeTaken.delete(u.tree);
   ev.push({ e: 'unitdeath', x: u.x, y: u.y, kind: u.kind });
+  if (u.kind === 'beast') {
+    if (killer) pay(killer, roleBounty(huntMinute(st)));
+    (u as HuntUnit & { respawnAt?: number }).respawnAt = st.tick + T(BEAST.respawnSec);
+    return;
+  }
   if (u.kind === 'angel' || u.kind === 'wolf') {
     const p = playerOf(st, u.owner);
     if (p) p.respawnAt = st.tick + T(u.kind === 'angel' ? ANGEL.respawnSec : WOLF.respawnSec);
@@ -745,16 +874,23 @@ function strike(st: HuntState, att: HuntUnit, p: HuntPlayer, target: { b?: HuntB
     if (distToRect(att.x, att.y, b.cx, b.cy, 1, 1) <= 1.5) slow = Math.max(slow, buildingDef(b).slowAura ?? 0);
   }
   att.atkCd = T(s.attackSec / Math.max(0.2, 1 - slow));
+  const plunder = att.kind === 'beast' ? BEAST.plunder : 1;
   let raw = s.dmg;
+  // cegado: el golpe se pierde
+  if (att.missUntil > st.tick) {
+    const tx = target.u ? target.u.x : target.b!.cx + target.b!.size / 2;
+    const ty = target.u ? target.u.y : target.b!.cy + target.b!.size / 2;
+    ev.push({ e: 'miss', x: tx, y: ty });
+    return;
+  }
   if (target.u) {
     const v = target.u;
     if (v.invulnUntil > st.tick) return;
-    const armor = v.kind === 'elf' || v.kind === 'angel' ? 0 : 0;
-    let dmg = raw * armorMult(armor);
-    if (v.kind === 'wolf' || v.kind === 'hunter') return; // no se atacan entre ellos
+    if (FIGHTER_KINDS.includes(v.kind)) return; // no se atacan entre ellos
+    let dmg = raw * armorMult(v.kind === 'mage' ? MAGE.armor : 0);
     dmg = Math.max(0, dmg);
     v.hp -= dmg;
-    const gold = Math.floor(Math.min(dmg, v.hp + dmg));
+    const gold = Math.floor(Math.min(dmg, v.hp + dmg) * plunder);
     pay(p, gold);
     p.stats.damage += dmg;
     att.hp = Math.min(att.maxHp, att.hp + dmg * HUNTER.lifesteal);
@@ -767,11 +903,13 @@ function strike(st: HuntState, att: HuntUnit, p: HuntPlayer, target: { b?: HuntB
     ev.push({ e: 'hit', x: b.cx + b.size / 2, y: b.cy + b.size / 2, dmg: 0, gold: 0, by: p.id });
     return;
   }
+  if (b.packedUntil > st.tick) return;
   const def = buildingDef(b);
+  if (def.extraDamageTaken) raw += def.extraDamageTaken;
   if (def.flatReduce) raw = Math.max(1, raw - def.flatReduce);
-  const dmg = Math.min(b.hp, raw * armorMult(def.armor));
+  const dmg = Math.min(b.hp, raw * armorMult(def.armor + b.luckArmor));
   b.hp -= dmg;
-  const gold = Math.floor(dmg);
+  const gold = Math.floor(dmg * plunder);
   pay(p, gold);
   p.stats.damage += dmg;
   att.hp = Math.min(att.maxHp, att.hp + dmg * HUNTER.lifesteal);
@@ -873,6 +1011,53 @@ function applyCommand(st: HuntState, map: HuntMap, playerId: string, cmd: HuntCo
     ev.push({ e: 'bought', priv: playerId, text: `📖 ${SPECS[cmd.s].name}` });
     return;
   }
+  // muralla aleatoria: sortear armadura
+  if (cmd.k === 'lots' || cmd.k === 'eat') {
+    const b = st.buildings.find((o) => o.id === cmd.id && o.owner === playerId && o.type === 'wall');
+    if (!b) return;
+    const def = buildingDef(b);
+    if (cmd.k === 'lots') {
+      if (!def.luck) return;
+      if (b.luckReady > st.tick) return reject(ev, playerId, 'El sorteo aún se está recargando');
+      b.luckArmor = Math.floor(rand(st) * 31);
+      b.luckReady = st.tick + T(180);
+      ev.push({ e: 'bought', priv: playerId, text: `🎲 Armadura extra: +${b.luckArmor}` });
+      return;
+    }
+    if (!def.eatsTree) return;
+    if (b.eatUntil > st.tick) return reject(ev, playerId, 'Aún está digiriendo el anterior');
+    let best = -1;
+    let bestD = Infinity;
+    for (let j = b.cy - 4; j <= b.cy + 4; j++)
+      for (let i = b.cx - 4; i <= b.cx + 4; i++) {
+        if (i < 0 || j < 0 || i >= map.w || j >= map.h) continue;
+        const c = j * map.w + i;
+        if (!isTreeAlive(st, map, c) || st.treeTaken.has(c)) continue;
+        const d = Math.hypot(i - b.cx, j - b.cy);
+        if (d < bestD) {
+          bestD = d;
+          best = c;
+        }
+      }
+    if (best < 0) return reject(ev, playerId, 'No hay ningún árbol libre a 4 casillas');
+    st.deadTrees.set(best, st.tick + T(60));
+    b.eatUntil = st.tick + T(30);
+    b.eatRate = def.eatsTree / 30;
+    ev.push({ e: 'treeeaten', x: (best % map.w) + 0.5, y: Math.floor(best / map.w) + 0.5 });
+    return;
+  }
+  // 66 torres del misterio → Mago élfico
+  if (cmd.k === 'mage') {
+    if (p.form !== 'elf') return;
+    const tops = st.buildings.filter((b) => b.owner === playerId && b.type === 'tower' && b.level >= levelsOf('tower'));
+    if (tops.length < MAGE_FUSION_TOWERS) return reject(ev, playerId, `Necesitas ${MAGE_FUSION_TOWERS} torres del misterio`);
+    const first = tops[0];
+    for (const b of tops.slice(0, MAGE_FUSION_TOWERS)) razeBuilding(st, b, ev, false);
+    const m = newUnit(st, playerId, 'mage', first.cx + 0.5, first.cy + 0.5, MAGE.hp);
+    m.order = { k: 'follow' };
+    ev.push({ e: 'mage', x: m.x, y: m.y, playerId });
+    return;
+  }
 
   const u = mainUnit(st, playerId);
   if (!u) return;
@@ -881,9 +1066,9 @@ function applyCommand(st: HuntState, map: HuntMap, playerId: string, cmd: HuntCo
   const held = p.side === 'hunter' && u.kind === 'hunter' && st.tick < st.releaseTick;
 
   // la tienda de la guarida (cazador y lobos)
-  if (cmd.k === 'buy' || cmd.k === 'buycons' || cmd.k === 'buywood' || cmd.k === 'sell' || cmd.k === 'hut') {
+  if (cmd.k === 'buy' || cmd.k === 'buycons' || cmd.k === 'buywood' || cmd.k === 'sell' || cmd.k === 'hut' || cmd.k === 'buytrinket' || cmd.k === 'beast') {
     if (p.side !== 'hunter') return;
-    const nearHut = Math.hypot(u.x - (map.camp.x + 0.5), u.y - (map.camp.y + 0.5)) <= SHOP_RADIUS;
+    const nearHut = shopNear(st, u.x, u.y, 'hunter');
     if (cmd.k === 'hut') {
       if (u.kind !== 'hunter') return;
       const next = HUT_LEVELS[st.hutLevel];
@@ -895,6 +1080,29 @@ function applyCommand(st: HuntState, map: HuntMap, playerId: string, cmd: HuntCo
       return;
     }
     if (!nearHut) return reject(ev, playerId, 'Vuelve a tu guarida para comprar');
+    if (cmd.k === 'beast') {
+      if (u.kind !== 'hunter') return reject(ev, playerId, 'Solo el cazador puede llevar un rastreador');
+      if (st.units.some((o) => o.kind === 'beast' && o.owner === playerId)) return reject(ev, playerId, 'Ya tienes un rastreador');
+      if (p.wood < BEAST.wood) return reject(ev, playerId, `Necesitas ${BEAST.wood} de madera`);
+      p.wood -= BEAST.wood;
+      const b = newUnit(st, playerId, 'beast', map.camp.x + 0.5, map.camp.y + 3.5, BEAST.hp);
+      b.order = { k: 'follow' };
+      ev.push({ e: 'bought', priv: playerId, text: `${BEAST.name}` });
+      return;
+    }
+    if (cmd.k === 'buytrinket') {
+      const t = TRINKETS[cmd.t];
+      if (!t) return;
+      if (p.gold < t.gold || p.wood < t.wood) return reject(ev, playerId, 'No te alcanza');
+      const free = p.inv.indexOf(null);
+      if (free < 0) return reject(ev, playerId, 'Inventario lleno: vende algo');
+      p.gold -= t.gold;
+      p.wood -= t.wood;
+      p.inv[free] = { kind: 'trinket', t: cmd.t };
+      syncFighterHp(st, p, u);
+      ev.push({ e: 'bought', priv: playerId, text: t.name });
+      return;
+    }
     if (cmd.k === 'buywood') {
       if (p.gold < WOOD_FOR_GOLD) return reject(ev, playerId, 'No te alcanza el oro');
       p.gold -= WOOD_FOR_GOLD;
@@ -905,7 +1113,7 @@ function applyCommand(st: HuntState, map: HuntMap, playerId: string, cmd: HuntCo
       if (!num(cmd.slot)) return;
       const it = p.inv[cmd.slot];
       if (!it) return;
-      const price = it.kind === 'item' ? ITEMS[it.line].tiers[it.tier] : CONSUMABLES[it.c];
+      const price = it.kind === 'item' ? ITEMS[it.line].tiers[it.tier] : it.kind === 'trinket' ? TRINKETS[it.t] : CONSUMABLES[it.c];
       p.inv[cmd.slot] = null;
       p.gold = Math.min(GOLD_CAP, p.gold + Math.floor(price.gold / 2));
       p.wood += Math.floor(price.wood / 2);
@@ -916,11 +1124,20 @@ function applyCommand(st: HuntState, map: HuntMap, playerId: string, cmd: HuntCo
       const c = CONSUMABLES[cmd.c];
       if (!c) return;
       if (p.gold < c.gold || p.wood < c.wood) return reject(ev, playerId, 'No te alcanza');
+      // los libros se leen al comprarlos: no ocupan hueco
+      if (cmd.c === 'bookstr' || cmd.c === 'bookagi') {
+        p.gold -= c.gold;
+        if (cmd.c === 'bookstr') p.str += 4000;
+        else p.agi += 2000;
+        syncFighterHp(st, p, u);
+        ev.push({ e: 'bought', priv: playerId, text: c.name });
+        return;
+      }
       const free = p.inv.indexOf(null);
       if (free < 0) return reject(ev, playerId, 'Inventario lleno');
       p.gold -= c.gold;
       p.wood -= c.wood;
-      p.inv[free] = { kind: 'cons', c: cmd.c };
+      p.inv[free] = { kind: 'cons', c: cmd.c, ...(cmd.c === 'voodoo' ? { uses: 2 } : {}) };
       ev.push({ e: 'bought', priv: playerId, text: `${c.name}` });
       return;
     }
@@ -929,6 +1146,14 @@ function applyCommand(st: HuntState, map: HuntMap, playerId: string, cmd: HuntCo
     if (!line || !num(cmd.tier) || cmd.tier < 0 || cmd.tier >= line.tiers.length) return;
     const tier = line.tiers[cmd.tier];
     if (p.gold < tier.gold || p.wood < tier.wood) return reject(ev, playerId, 'No te alcanza');
+    // las botas van en su propio hueco (talento «inventario extra»)
+    if (cmd.line === 'boots') {
+      if (cmd.tier <= p.boots) return reject(ev, playerId, 'Ya llevas unas botas iguales o mejores');
+      p.gold -= tier.gold;
+      p.boots = cmd.tier;
+      ev.push({ e: 'bought', priv: playerId, text: tier.name });
+      return;
+    }
     const copies = p.inv.filter((s) => s?.kind === 'item' && s.line === cmd.line && s.tier === cmd.tier).length;
     const next = line.tiers[cmd.tier + 1];
     const merges = next && next.merge > 0 && copies + 1 >= next.merge;
@@ -955,6 +1180,18 @@ function applyCommand(st: HuntState, map: HuntMap, playerId: string, cmd: HuntCo
     } else if (it.c === 'ward') {
       st.wards.push({ owner: playerId, x: num(cmd.x) ? cmd.x : u.x, y: num(cmd.y) ? cmd.y : u.y, until: st.tick + T(30) });
       ev.push({ e: 'fx', a: 'ward', x: u.x, y: u.y, side: p.side });
+    } else if (it.c === 'potion') {
+      u.immuneUntil = st.tick + T(15);
+      ev.push({ e: 'fx', a: 'potion', x: u.x, y: u.y, side: p.side });
+    } else if (it.c === 'speedscroll') {
+      u.speedMaxUntil = st.tick + T(15);
+    } else if (it.c === 'voodoo') {
+      st.shops.push({ owner: playerId, x: num(cmd.x) ? cmd.x : u.x, y: num(cmd.y) ? cmd.y : u.y, until: st.tick + T(120) });
+      ev.push({ e: 'fx', a: 'voodoo', x: u.x, y: u.y, side: p.side });
+      if ((it.uses ?? 1) > 1) {
+        it.uses = (it.uses ?? 1) - 1;
+        return;
+      }
     }
     p.inv[cmd.slot] = null;
     return;
@@ -991,7 +1228,7 @@ function applyCommand(st: HuntState, map: HuntMap, playerId: string, cmd: HuntCo
       return;
     }
     case 'repair': {
-      if (u.kind !== 'angel' || !num(cmd.target)) return;
+      if ((u.kind !== 'angel' && u.kind !== 'elf') || !num(cmd.target)) return;
       const b = st.buildings.find((o) => o.id === cmd.target && sideOfOwner(st, o.owner) === 'elf');
       if (!b) return;
       u.order = { k: 'repair', target: b.id };
@@ -1005,6 +1242,7 @@ function applyCommand(st: HuntState, map: HuntMap, playerId: string, cmd: HuntCo
       const err = buildCheck(st, map, g, p, cmd.type, cmd.cx, cmd.cy);
       if (err) return reject(ev, playerId, err);
       u.order = { k: 'build', type: cmd.type, cx: cmd.cx, cy: cmd.cy };
+      u.occultUntil = 0;
       routeTo(st, map, g, u, buildApproach(map, g, u, cmd.cx, cmd.cy, def.size));
       return;
     }
@@ -1057,7 +1295,7 @@ function addItem(p: HuntPlayer, line: ItemLine, tier: number): void {
 }
 
 function upgradeBuilding(st: HuntState, p: HuntPlayer, b: HuntBuilding, branch: string | undefined, ev: HuntEvent[]): void {
-  if (b.level >= levelsOf(b.type)) return reject(ev, p.id, 'Ya está al máximo');
+  if (b.level >= levelsOf(b.type) || (b.type === 'wall' && b.level >= wallMaxLevel(b.wallBranch))) return reject(ev, p.id, 'Ya está al máximo');
   let wallBranch = b.wallBranch;
   let towerBranch = b.towerBranch;
   if (b.type === 'wall' && b.level === 5) {
@@ -1147,7 +1385,7 @@ function castAbility(
   const a = cmd.a;
   const def = ABILITIES[a];
   const form = p.form as Form;
-  const allowed = FORM_ABILITIES[form]?.includes(a) || (a === 'holylight' && p.spec === 'holylight' && form === 'elf');
+  const allowed = FORM_ABILITIES[form]?.includes(a) || (form === 'elf' && !!p.spec && SPEC_ABILITY[p.spec] === a);
   if (!def || !allowed) return;
   if ((p.cds[a] ?? 0) > st.tick) return reject(ev, p.id, `${def.name} aún se está recargando`);
   if (u.silenceUntil > st.tick) return reject(ev, p.id, 'Estás silenciado');
@@ -1157,8 +1395,9 @@ function castAbility(
   const ty = typeof cmd.y === 'number' && Number.isFinite(cmd.y) ? cmd.y : u.y;
   if (def.target === 'point' && Math.hypot(tx - u.x, ty - u.y) > (def.range ?? 0) + 0.5) return reject(ev, p.id, 'Demasiado lejos');
   const dur = T(def.dur ?? 0);
+  // la magia de los colonos no afecta a quien sea inmune (escudo, poción, mercurio)
   const enemiesOfElves = (x: number, y: number, r: number) =>
-    st.units.filter((o) => o.alive && (o.kind === 'hunter' || o.kind === 'wolf') && Math.hypot(o.x - x, o.y - y) <= r);
+    st.units.filter((o) => o.alive && FIGHTER_KINDS.includes(o.kind) && !magicImmune(st, o) && Math.hypot(o.x - x, o.y - y) <= r);
   switch (a) {
     case 'blink':
     case 'angelblink': {
@@ -1166,13 +1405,91 @@ function castAbility(
       const cy = cell(ty);
       if (cx < 0 || cy < 0 || cx >= map.w || cy >= map.h || g[cy * map.w + cx]) return reject(ev, p.id, 'No puedes saltar ahí');
       ev.push({ e: 'fx', a, x: u.x, y: u.y, tx: cx + 0.5, ty: cy + 0.5, side: p.side });
+      if (a === 'blink' && p.spec === 'blinkex') u.blinkFrom = { x: u.x, y: u.y, until: st.tick + T(10) };
       u.x = cx + 0.5;
       u.y = cy + 0.5;
       u.path = [];
       u.goal = null;
       break;
     }
+    case 'blinkback': {
+      if (!u.blinkFrom || u.blinkFrom.until < st.tick) return reject(ev, p.id, 'Solo justo después de un Salto');
+      ev.push({ e: 'fx', a: 'blink', x: u.x, y: u.y, tx: u.blinkFrom.x, ty: u.blinkFrom.y, side: p.side });
+      u.x = u.blinkFrom.x;
+      u.y = u.blinkFrom.y;
+      u.blinkFrom = null;
+      u.path = [];
+      p.cds.blink = 0;
+      p.cds.haste = 0;
+      break;
+    }
+    case 'angelhaste':
+      u.hasteUntil = st.tick + dur;
+      break;
+    case 'blind':
+      for (const o of enemiesOfElves(tx, ty, def.radius ?? 2.3)) o.missUntil = st.tick + dur;
+      ev.push({ e: 'fx', a, x: tx, y: ty, r: def.radius, side: p.side });
+      break;
+    case 'moonlight':
+      st.nightUntil = st.tick + dur;
+      ev.push({ e: 'fx', a, x: u.x, y: u.y, r: 3, side: p.side });
+      break;
+    case 'fullforce': {
+      const r = def.radius ?? 2.3;
+      for (const o of st.units) if (o.alive && sideOfOwner(st, o.owner) === 'elf' && Math.hypot(o.x - tx, o.y - ty) <= r) o.forceUntil = st.tick + dur;
+      for (const b of st.buildings)
+        if (sideOfOwner(st, b.owner) === 'elf' && Math.hypot(b.cx + b.size / 2 - tx, b.cy + b.size / 2 - ty) <= r + b.size / 2) b.forceUntil = st.tick + dur;
+      ev.push({ e: 'fx', a, x: tx, y: ty, r, side: p.side });
+      break;
+    }
+    case 'pack': {
+      const house = houseOf(st, p.id);
+      if (!house) return reject(ev, p.id, 'No tienes casa que empaquetar');
+      house.packedUntil = st.tick + dur;
+      ev.push({ e: 'fx', a, x: house.cx + 1, y: house.cy + 1, side: p.side });
+      break;
+    }
+    case 'retrofit': {
+      const b = st.buildings.find((o) => o.id === cmd.target && o.owner === p.id && o.type === 'tower');
+      if (!b) return reject(ev, p.id, 'Elige una torre tuya');
+      if (b.retro >= 5) return reject(ev, p.id, 'Esa torre ya está remodelada al máximo');
+      b.retro += 1;
+      ev.push({ e: 'fx', a, x: b.cx + 0.5, y: b.cy + 0.5, side: p.side });
+      break;
+    }
+    case 'ams':
+    case 'wolfams': {
+      u.immuneUntil = st.tick + dur;
+      if (a === 'wolfams') for (const o of st.units) if (o.alive && o.kind === 'hunter' && Math.hypot(o.x - u.x, o.y - u.y) <= 4) o.immuneUntil = st.tick + dur;
+      ev.push({ e: 'fx', a, x: u.x, y: u.y, side: p.side });
+      break;
+    }
+    case 'detect': {
+      const r = def.radius ?? 12;
+      st.eyes.push({ side: p.side, x: tx, y: ty, r, until: st.tick + dur });
+      ev.push({ e: 'fx', a: 'eye', x: tx, y: ty, r, side: p.side });
+      break;
+    }
+    case 'bloodlust':
+      for (const o of st.units) if (o.alive && FIGHTER_KINDS.includes(o.kind) && Math.hypot(o.x - u.x, o.y - u.y) <= 3) o.bloodlustUntil = st.tick + dur;
+      ev.push({ e: 'fx', a, x: u.x, y: u.y, r: 3, side: p.side });
+      break;
+    case 'occult': {
+      const ally = st.units.find((o) => o.alive && o.kind === 'elf' && Math.hypot(o.x - tx, o.y - ty) <= (def.radius ?? 1.2));
+      if (!ally) return reject(ev, p.id, 'Apunta a un colono');
+      ally.occultUntil = st.tick + dur;
+      ev.push({ e: 'fx', a, x: ally.x, y: ally.y, side: p.side });
+      break;
+    }
     case 'haste':
+      // Prisa EX: velocidad máxima 5 s y recarga de 1 s
+      u.hasteUntil = st.tick + (p.spec === 'hasteex' ? T(5) : dur);
+      if (p.spec === 'hasteex') {
+        p.cds.haste = st.tick + T(1);
+        ev.push({ e: 'fx', a, x: u.x, y: u.y, side: p.side });
+        return;
+      }
+      break;
     case 'run':
       u.hasteUntil = st.tick + dur;
       break;
@@ -1193,11 +1510,12 @@ function castAbility(
       break;
     case 'moonguard':
     case 'holylight': {
-      const b = st.buildings.find((o) => o.id === cmd.target && o.owner === p.id);
-      if (!b) return reject(ev, p.id, 'Elige un edificio tuyo');
+      // el Guardián es para lo propio; la Luz sagrada vale para cualquier aliado
+      const b = st.buildings.find((o) => o.id === cmd.target && (o.owner === p.id || (a === 'holylight' && sideOfOwner(st, o.owner) === 'elf')));
+      if (!b) return reject(ev, p.id, a === 'holylight' ? 'Elige un edificio aliado' : 'Elige un edificio tuyo');
       if (distToRect(u.x, u.y, b.cx, b.cy, b.size, b.size) > (def.range ?? 3) + 0.5) return reject(ev, p.id, 'Demasiado lejos');
       if (a === 'moonguard') b.invulnUntil = st.tick + Math.round(dur * (b.wallBranch === 'elf' ? 1.2 : 1));
-      else b.hp = Math.min(b.maxHp, b.hp + b.maxHp * 0.25);
+      else b.hp = Math.min(b.maxHp, b.hp + 10 + (b.maxHp - b.hp) * 0.35);
       ev.push({ e: 'fx', a, x: b.cx + b.size / 2, y: b.cy + b.size / 2, side: p.side });
       break;
     }
@@ -1337,17 +1655,83 @@ function stepFighter(st: HuntState, map: HuntMap, g: Uint8Array, u: HuntUnit, p:
   u.hp = Math.min(u.maxHp, u.hp + regen / TICK_RATE);
 }
 
+// Rastreador (bando del cazador) y Mago élfico (bando de los colonos): van con su
+// amo, atacan lo que ataca él o lo que tengan cerca, y vuelven si se alejan.
+function stepCompanion(st: HuntState, map: HuntMap, g: Uint8Array, u: HuntUnit, ev: HuntEvent[]): void {
+  const p = playerOf(st, u.owner);
+  if (!p) return;
+  if (u.atkCd > 0) u.atkCd -= 1;
+  if (u.stunUntil > st.tick) return;
+  const master = mainUnit(st, u.owner);
+  const s = fighterStats(st, p, u);
+  const mySide = sideOfOwner(st, u.owner);
+  const range = u.kind === 'mage' ? MAGE.range : 1.3;
+  // objetivo: el de su amo (rastreador) o el enemigo más cercano a tiro
+  let tu: HuntUnit | undefined;
+  let tb: HuntBuilding | undefined;
+  if (u.kind === 'beast' && master?.order.k === 'attack') {
+    const id = master.order.target;
+    tb = st.buildings.find((b) => b.id === id);
+    tu = tb ? undefined : st.units.find((o) => o.id === id && o.alive);
+  }
+  if (!tu && !tb) {
+    let best = Infinity;
+    for (const o of st.units) {
+      if (!o.alive || sideOfOwner(st, o.owner) === mySide || o.invulnUntil > st.tick) continue;
+      if (mySide === 'elf' && !detected(st, o)) continue;
+      const d = Math.hypot(o.x - u.x, o.y - u.y);
+      if (d < (u.kind === 'mage' ? range : 4) && d < best) {
+        best = d;
+        tu = o;
+      }
+    }
+  }
+  const tx = tu ? tu.x : tb ? tb.cx + tb.size / 2 : 0;
+  const ty = tu ? tu.y : tb ? tb.cy + tb.size / 2 : 0;
+  if (tu || tb) {
+    const inRange = tb ? distToRect(u.x, u.y, tb.cx, tb.cy, tb.size, tb.size) <= 0.75 : Math.hypot(tx - u.x, ty - u.y) <= range;
+    if (inRange) {
+      u.path = [];
+      if (u.atkCd <= 0) {
+        if (u.kind === 'beast') strike(st, u, p, tb ? { b: tb } : { u: tu }, ev);
+        else if (tu) {
+          // el Mago dispara como una torre
+          const fp = playerOf(st, tu.owner);
+          const dmg = fp ? MAGE.dmg * armorMult(fighterStats(st, fp, tu).armor) : MAGE.dmg;
+          tu.hp -= dmg;
+          u.atkCd = T(MAGE.cd);
+          ev.push({ e: 'shot', x: u.x, y: u.y, tx: tu.x, ty: tu.y, dmg: Math.round(dmg), gold: false, fx: 'mage' });
+          if (tu.hp <= 0) killUnit(st, tu, u.owner, ev);
+        }
+      }
+    } else if (st.tick >= u.repathAt || u.path.length === 0) {
+      routeTo(st, map, g, u, tb ? buildingGoal(tb) : pointGoal(tx, ty));
+    }
+  } else if (master && Math.hypot(master.x - u.x, master.y - u.y) > 2.5 && (st.tick >= u.repathAt || u.path.length === 0)) {
+    routeTo(st, map, g, u, pointGoal(master.x, master.y));
+  }
+  // demasiado lejos de su amo: vuelve
+  if (master && Math.hypot(master.x - u.x, master.y - u.y) > BEAST.leash * 1.5 && st.tick >= u.repathAt) routeTo(st, map, g, u, pointGoal(master.x, master.y));
+  moveUnit(st, map, g, u);
+  u.hp = Math.min(u.maxHp, u.hp + s.regen / TICK_RATE);
+  if (u.kind === 'beast' && Math.hypot(u.x - (map.camp.x + 0.5), u.y - (map.camp.y + 0.5)) <= HUT_RADIUS + 1) u.hp = Math.min(u.maxHp, u.hp + (u.maxHp * HUT_REGEN) / TICK_RATE);
+}
+
 function stepWorker(st: HuntState, map: HuntMap, g: Uint8Array, u: HuntUnit): void {
   const p = playerOf(st, u.owner);
   if (!p) return;
   if (u.stunUntil > st.tick) return;
   if (u.kind === 'lumberjack') {
+    if (u.tree >= 0 && st.deadTrees.has(u.tree)) {
+      st.treeTaken.delete(u.tree);
+      u.tree = -1;
+    }
     if (u.tree < 0 || st.treeTaken.get(u.tree) !== u.id) {
       // busca el árbol libre más cercano al que pueda llegar
       let best = -1;
       let bestD = Infinity;
       for (const t of map.trees) {
-        if (st.treeTaken.has(t)) continue;
+        if (st.treeTaken.has(t) || st.deadTrees.has(t)) continue;
         const tx = t % map.w;
         const ty = (t - tx) / map.w;
         const d = Math.hypot(tx + 0.5 - u.x, ty + 0.5 - u.y);
@@ -1387,7 +1771,7 @@ function stepWorker(st: HuntState, map: HuntMap, g: Uint8Array, u: HuntUnit): vo
     let rate = target.maxHp / (REPAIR_BASE_SEC * (tier.ratio ?? 4));
     const def = buildingDef(target);
     if (def.repairBonus) rate *= 1 + def.repairBonus;
-    if (p.spec === 'repair') rate *= 1.25;
+    if (p.spec === 'repairex') rate *= 1.25;
     target.hp = Math.min(target.maxHp, target.hp + rate / TICK_RATE);
   } else {
     if (u.path.length === 0 && st.tick >= u.repathAt) routeTo(st, map, g, u, buildingGoal(target));
@@ -1449,6 +1833,13 @@ export function stepHunt(st: HuntState, cmds: HuntPlayerCommand[]): HuntEvent[] 
               eyeUntil: 0,
               investGold: lvl.gold,
               investWood: lvl.wood,
+              retro: 0,
+              forceUntil: 0,
+              packedUntil: 0,
+              luckArmor: 0,
+              luckReady: 0,
+              eatUntil: 0,
+              eatRate: 0,
             });
             ev.push({ e: 'built', x: o.cx + size / 2, y: o.cy + size / 2, type: o.type, owner: p.id });
             g = huntBlockedGrid(st, map);
@@ -1483,11 +1874,18 @@ export function stepHunt(st: HuntState, cmds: HuntPlayerCommand[]): HuntEvent[] 
           }
         }
       }
-      if (u.kind === 'angel' && u.order.k === 'repair') {
+      // el colono y el ángel también reparan (ratio 1: un edificio entero en 50 s)
+      if (u.order.k === 'repair') {
         const id = u.order.target;
         const b = st.buildings.find((o) => o.id === id);
+        const owner = playerOf(st, u.owner);
         if (!b || b.hp >= b.maxHp) u.order = { k: 'idle' };
-        else if (touchesBuilding(u, b)) b.hp = Math.min(b.maxHp, b.hp + b.maxHp / REPAIR_BASE_SEC / TICK_RATE);
+        else if (touchesBuilding(u, b)) {
+          let rate = b.maxHp / REPAIR_BASE_SEC;
+          if (buildingDef(b).repairBonus) rate *= 1 + (buildingDef(b).repairBonus ?? 0);
+          if (owner?.spec === 'repairex') rate *= 1.25;
+          b.hp = Math.min(b.maxHp, b.hp + rate / TICK_RATE);
+        }
       }
       moveUnit(st, map, g, u);
       if (u.order.k === 'move' && u.path.length === 0) u.order = { k: 'idle' };
@@ -1502,12 +1900,25 @@ export function stepHunt(st: HuntState, cmds: HuntPlayerCommand[]): HuntEvent[] 
     stepFighter(st, map, g, u, p, ev);
     if (u.order.k === 'move' && u.path.length === 0) u.order = { k: 'idle' };
   }
+  // compañeros con cabeza propia: el rastreador del cazador y el Mago élfico
+  for (const u of st.units) if (u.alive && (u.kind === 'beast' || u.kind === 'mage')) stepCompanion(st, map, g, u, ev);
+
+  // daño con el tiempo (quemadura, veneno) y comerse árboles
+  for (const u of st.units) {
+    if (!u.alive || u.dotUntil <= st.tick || u.invulnUntil > st.tick) continue;
+    u.hp -= u.dotDps / TICK_RATE;
+    if (u.hp <= 0) killUnit(st, u, null, ev);
+  }
+  for (const b of st.buildings) if (b.eatUntil > st.tick) b.hp = Math.min(b.maxHp, b.hp + b.eatRate / TICK_RATE);
 
   // trabajadores
   for (const u of st.units) if (u.alive && (u.kind === 'repairer' || u.kind === 'lumberjack')) stepWorker(st, map, g, u);
 
   // torres
-  const foes = st.units.filter((u) => u.alive && (u.kind === 'hunter' || u.kind === 'wolf'));
+  const foes = st.units.filter((u) => u.alive && FIGHTER_KINDS.includes(u.kind));
+  const durability = st.players.some((q) => q.form === 'elf' && q.alive && q.spec === 'durability');
+  const runic = st.buildings.filter((b) => b.type === 'tower' && buildingDef(b).auraHaste);
+  const angels = st.units.filter((u) => u.alive && u.kind === 'angel');
   for (const b of st.buildings) {
     if (b.type !== 'tower') continue;
     if (b.cd > 0) {
@@ -1516,7 +1927,7 @@ export function stepHunt(st: HuntState, cmds: HuntPlayerCommand[]): HuntEvent[] 
     }
     const def = buildingDef(b);
     if (!def.dmg || b.stunUntil > st.tick) continue;
-    const range = def.range ?? 4.7;
+    const range = (def.range ?? 4.7) * (1 + 0.2 * b.retro);
     let target: HuntUnit | undefined;
     let bestD = Infinity;
     for (const f of foes) {
@@ -1530,17 +1941,51 @@ export function stepHunt(st: HuntState, cmds: HuntPlayerCommand[]): HuntEvent[] 
     if (!target) continue;
     const fp = playerOf(st, target.owner)!;
     let dmg = def.dmg * (b.howlUntil > st.tick ? 0.5 : 1);
-    dmg *= armorMult(fighterStats(st, fp, target).armor);
+    // aura del ángel: +10 % al daño de las torres cercanas
+    if (angels.some((a) => Math.hypot(a.x - b.cx - 0.5, a.y - b.cy - 0.5) <= 7)) dmg *= 1.1;
+    let fxName: string | undefined;
+    if (def.chain && rand(st) < 0.25) {
+      dmg *= 1.25;
+      fxName = 'chain';
+    }
+    const fs = fighterStats(st, fp, target);
+    dmg = Math.max(0, dmg - fs.block) * armorMult(fs.armor);
     if (target.berserkUntil > st.tick) dmg *= 1.5;
     if (target.invulnUntil > st.tick) dmg = 0;
     target.hp -= dmg;
-    b.cd = T(def.cd ?? 1);
+    if (dmg > 0) {
+      if (def.burn) {
+        target.dotUntil = st.tick + T(3);
+        target.dotDps = Math.max(target.dotDps * (target.dotUntil > st.tick ? 1 : 0), 512);
+        target.atkSlowUntil = st.tick + T(3);
+        fxName = 'burn';
+      }
+      if (def.poisonDps) {
+        target.dotUntil = st.tick + T(3);
+        target.dotDps = Math.max(target.dotDps, def.poisonDps);
+        fxName = 'poison';
+      }
+      if (def.frost) {
+        target.slowUntil = st.tick + T(5);
+        fxName = 'frost';
+      }
+      if (def.corrupt) {
+        target.armorDownUntil = st.tick + T(5);
+        target.armorDown = def.corrupt;
+        fxName = 'corrupt';
+      }
+    }
+    // cadencia: remodelación, aura rúnica, aura de durabilidad y Plena fuerza
+    let haste = 0.05 * b.retro + (durability ? 0.05 : 0);
+    if (runic.some((r) => r !== b && Math.hypot(r.cx - b.cx, r.cy - b.cy) <= 7)) haste += 0.1;
+    if (b.forceUntil > st.tick) haste += 1;
+    b.cd = T((def.cd ?? 1) / (1 + haste));
     const owner = playerOf(st, b.owner);
     if (owner) {
       owner.stats.damage += dmg;
       if (def.goldPerHit) pay(owner, def.goldPerHit);
     }
-    ev.push({ e: 'shot', x: b.cx + 0.5, y: b.cy + 0.5, tx: target.x, ty: target.y, dmg: Math.round(dmg), gold: !!def.goldPerHit });
+    ev.push({ e: 'shot', x: b.cx + 0.5, y: b.cy + 0.5, tx: target.x, ty: target.y, dmg: Math.round(dmg), gold: !!def.goldPerHit, ...(fxName ? { fx: fxName } : {}) });
     if (target.hp <= 0) killUnit(st, target, b.owner, ev);
   }
 
@@ -1559,6 +2004,7 @@ export function stepHunt(st: HuntState, cmds: HuntPlayerCommand[]): HuntEvent[] 
   st.traps = st.traps.filter((t) => t.until > st.tick);
   st.eyes = st.eyes.filter((e) => e.until > st.tick);
   st.wards = st.wards.filter((w) => w.until > st.tick);
+  st.shops = st.shops.filter((x) => x.until > st.tick);
 
   // regeneración de las murallas élficas (por tick)
   for (const b of st.buildings) {
@@ -1574,7 +2020,7 @@ export function stepHunt(st: HuntState, cmds: HuntPlayerCommand[]): HuntEvent[] 
           if (b.owner !== p.id) continue;
           const inc = buildingDef(b).income;
           if (!inc) continue;
-          pay(p, b.type === 'mine' && p.spec === 'mines' ? inc * 2 : inc);
+          pay(p, b.type === 'mine' && b.forceUntil > st.tick ? inc * 2 : inc);
         }
       }
       if (p.form === 'hunter' && p.alive && st.tick >= st.releaseTick) pay(p, HUT_LEVELS[st.hutLevel - 1].income);
@@ -1594,7 +2040,28 @@ export function stepHunt(st: HuntState, cmds: HuntPlayerCommand[]): HuntEvent[] 
       }
     }
     // limpia los muertos que ya no hacen falta (trabajadores)
-    st.units = st.units.filter((u) => u.alive || u.kind === 'hunter' || u.kind === 'elf' || u.kind === 'angel' || u.kind === 'wolf');
+    // el rastreador caído vuelve a la guarida a los 20 s
+    for (const u of st.units) {
+      const r = (u as HuntUnit & { respawnAt?: number }).respawnAt ?? 0;
+      if (u.kind === 'beast' && !u.alive && r > 0 && st.tick >= r && playerOf(st, u.owner)?.alive) {
+        (u as HuntUnit & { respawnAt?: number }).respawnAt = 0;
+        u.alive = true;
+        u.hp = u.maxHp;
+        u.x = map.camp.x + 0.5;
+        u.y = map.camp.y + 3.5;
+        u.path = [];
+        u.order = { k: 'follow' };
+      }
+    }
+    // los árboles comidos vuelven a crecer si no hay nadie encima
+    for (const [c, at] of st.deadTrees) {
+      if (st.tick < at) continue;
+      const tx = c % map.w;
+      const ty = (c - tx) / map.w;
+      if (st.units.some((u) => u.alive && Math.hypot(u.x - tx - 0.5, u.y - ty - 0.5) < 0.9)) continue;
+      st.deadTrees.delete(c);
+    }
+    st.units = st.units.filter((u) => u.alive || u.kind === 'hunter' || u.kind === 'elf' || u.kind === 'angel' || u.kind === 'wolf' || u.kind === 'beast');
   }
 
   // final
@@ -1633,6 +2100,11 @@ export interface HuntSnapMe {
   inv: (InvSlot | null)[];
   spec: Spec | null;
   stats: { dmg: number; armor: number; attackSec: number; speed: number; regen: number };
+  boots: number;
+  attrs: [number, number]; // fuerza y agilidad totales
+  blinkBack: number; // segundos que quedan para «Volver» (0 = no)
+  beast: number; // 0 sin rastreador · 1 vivo · 2 caído
+  mageReady: number; // torres del misterio que tiene (para la fusión)
   choose: number; // segundos para elegir papel (0 = no toca)
   respawn: number;
   dest: [number, number] | null;
@@ -1647,8 +2119,8 @@ export interface HuntSnapMe {
 
 // [id, tipo, jugador, x, y, vida, vida máx, flags, nivel/tier]
 export type HuntSnapUnit = [number, number, number, number, number, number, number, number, number];
-// [id, tipo, jugador, cx, cy, nivel, vida, vida máx, rama, flags]
-export type HuntSnapBuilding = [number, number, number, number, number, number, number, number, number, number];
+// [id, tipo, jugador, cx, cy, nivel, vida, vida máx, rama, flags, remodelaciones, armadura de la suerte, sorteo en (s)]
+export type HuntSnapBuilding = [number, number, number, number, number, number, number, number, number, number, number, number, number];
 
 export interface HuntSnap {
   tick: number;
@@ -1665,6 +2137,8 @@ export interface HuntSnap {
   buildings: HuntSnapBuilding[];
   traps: [number, number][];
   eyes: [number, number, number][];
+  deadTrees: number[];
+  shops: [number, number][];
   vision: [number, number, number][];
   reveal: boolean;
   over: null | { winner: 'hunter' | 'colonist'; reason: string };
@@ -1695,7 +2169,7 @@ export function buildHuntSnap(st: HuntState, viewerId: string | null): HuntSnap 
       for (const b of st.buildings) {
         if (b.owner !== viewer.id) continue;
         const inc = buildingDef(b).income ?? 0;
-        income += b.type === 'mine' && viewer.spec === 'mines' ? inc * 2 : inc;
+        income += b.type === 'mine' && b.forceUntil > st.tick ? inc * 2 : inc;
       }
     } else if (viewer.form === 'hunter') income = HUT_LEVELS[st.hutLevel - 1].income;
     let woodRate = 0;
@@ -1732,11 +2206,27 @@ export function buildHuntSnap(st: HuntState, viewerId: string | null): HuntSnap 
       hutIncome: HUT_LEVELS[st.hutLevel - 1].income,
       income,
       woodRate: r2(woodRate),
-      nearShop: !!u && Math.hypot(u.x - (map.camp.x + 0.5), u.y - (map.camp.y + 0.5)) <= SHOP_RADIUS,
+      nearShop: !!u && shopNear(st, u.x, u.y, viewer.side),
+      boots: viewer.boots,
+      attrs: (() => {
+        const tk = trinkets(viewer);
+        return [tk.str, tk.agi] as [number, number];
+      })(),
+      blinkBack: u?.blinkFrom && u.blinkFrom.until > st.tick ? secsLeft(u.blinkFrom.until - st.tick) : 0,
+      beast: (() => {
+        const b = st.units.find((o) => o.kind === 'beast' && o.owner === viewer.id);
+        return b ? (b.alive ? 1 : 2) : 0;
+      })(),
+      mageReady: st.buildings.filter((b) => b.owner === viewer.id && b.type === 'tower' && b.level >= levelsOf('tower')).length,
     };
   }
   const flagsOf = (u: HuntUnit) =>
-    (u.invisUntil > st.tick ? 1 : 0) |
+    (u.invisUntil > st.tick || u.occultUntil > st.tick ? 1 : 0) |
+    (u.missUntil > st.tick ? 256 : 0) |
+    (magicImmune(st, u) ? 512 : 0) |
+    (u.slowUntil > st.tick ? 1024 : 0) |
+    (u.dotUntil > st.tick ? 2048 : 0) |
+    (u.bloodlustUntil > st.tick || u.forceUntil > st.tick ? 4096 : 0) |
     (u.stunUntil > st.tick ? 2 : 0) |
     (u.rootUntil > st.tick ? 4 : 0) |
     (u.hasteUntil > st.tick ? 8 : 0) |
@@ -1755,16 +2245,25 @@ export function buildHuntSnap(st: HuntState, viewerId: string | null): HuntSnap 
     const ownSide = sameSide(u.owner);
     let visible = ownSide || sees(u.x, u.y) || exposed.has(u.owner);
     // el cazador invisible solo lo ve el bando de colonos si una Atalaya lo detecta
-    if (!ownSide && (u.kind === 'hunter' || u.kind === 'wolf') && !detected(st, u)) visible = false;
+    if (!ownSide && (FIGHTER_KINDS.includes(u.kind) || u.kind === 'elf') && !detected(st, u)) visible = false;
     if (!visible) continue;
     units.push([u.id, UNIT_KIND_ORDER.indexOf(u.kind), idx.get(u.owner) ?? 0, r2(u.x), r2(u.y), Math.ceil(u.hp), Math.round(u.maxHp), flagsOf(u), u.kind === 'hunter' || u.kind === 'wolf' ? (playerOf(st, u.owner)?.level ?? 1) : u.tier]);
   }
   const buildings: HuntSnapBuilding[] = [];
   for (const b of st.buildings) {
     if (!(sameSide(b.owner) || sees(b.cx + b.size / 2, b.cy + b.size / 2))) continue;
-    const branch = b.type === 'wall' ? (b.wallBranch ? 1 + ['rock', 'elf', 'ice', 'cement', 'coral', 'gold', 'ruin'].indexOf(b.wallBranch) : 0) : b.towerBranch === 'gold' ? 1 : 0;
-    const flags = (b.invulnUntil > st.tick ? 1 : 0) | (b.stunUntil > st.tick ? 2 : 0) | (b.howlUntil > st.tick ? 4 : 0) | (b.eyeUntil > st.tick ? 8 : 0);
-    buildings.push([b.id, ['house', 'wall', 'tower', 'workshop', 'elftree', 'mine', 'sight'].indexOf(b.type), idx.get(b.owner) ?? 0, b.cx, b.cy, b.level, Math.ceil(b.hp), Math.round(b.maxHp), branch, flags]);
+    // la casa empaquetada no existe para el otro bando
+    if (b.packedUntil > st.tick && !sameSide(b.owner)) continue;
+    const branch = b.type === 'wall' ? (b.wallBranch ? 1 + WALL_BRANCH_ORDER.indexOf(b.wallBranch) : 0) : b.towerBranch === 'gold' ? 1 : 0;
+    const flags =
+      (b.invulnUntil > st.tick ? 1 : 0) |
+      (b.stunUntil > st.tick ? 2 : 0) |
+      (b.howlUntil > st.tick ? 4 : 0) |
+      (b.eyeUntil > st.tick ? 8 : 0) |
+      (b.packedUntil > st.tick ? 16 : 0) |
+      (b.forceUntil > st.tick ? 32 : 0) |
+      (b.eatUntil > st.tick ? 64 : 0);
+    buildings.push([b.id, ['house', 'wall', 'tower', 'workshop', 'elftree', 'mine', 'sight'].indexOf(b.type), idx.get(b.owner) ?? 0, b.cx, b.cy, b.level, Math.ceil(b.hp), Math.round(b.maxHp), branch, flags, b.retro, b.luckArmor, secsLeft(b.luckReady - st.tick)]);
   }
   return {
     tick: st.tick,
@@ -1772,7 +2271,7 @@ export function buildHuntSnap(st: HuntState, viewerId: string | null): HuntSnap 
     releaseIn: secsLeft(st.releaseTick - st.tick),
     sharedIn: secsLeft(T(PHASE.sharedVisionSec) - st.tick),
     exposeIn: secsLeft(T(PHASE.exposeSec) - st.tick),
-    night: isNight(st.tick / TICK_RATE),
+    night: isNightAt(st),
     minute: huntMinute(st),
     market: st.market,
     players: st.players.map((p) => ({
@@ -1787,6 +2286,8 @@ export function buildHuntSnap(st: HuntState, viewerId: string | null): HuntSnap 
     units,
     buildings,
     traps: v.side === 'hunter' || v.all ? st.traps.map((t) => [r2(t.x), r2(t.y)]) : [],
+    deadTrees: [...st.deadTrees.keys()],
+    shops: st.shops.filter((x) => v.all || sideOfOwner(st, x.owner) === v.side).map((x) => [r2(x.x), r2(x.y)]),
     eyes: st.eyes.filter((e) => v.all || e.side === v.side).map((e) => [r2(e.x), r2(e.y), e.r]),
     vision: v.src.map(([x, y, r]) => [r2(x), r2(y), r2(r)]),
     reveal: v.all,

@@ -264,8 +264,15 @@ export interface LevelDef {
   thorns?: number; // coral: daño de vuelta al que pega cuerpo a cuerpo
   slowAura?: number; // hielo: −% de cadencia de quien la ataca
   repairBonus?: number; // ruinas: +% de reparación
-  chain?: boolean; // torre: rayo en cadena
-  burn?: boolean; // torre: quema
+  chain?: boolean; // torre: rayo (25 % de golpes con +25 % de daño)
+  burn?: boolean; // torre: quema 512/s 3 s y −80 % de cadencia
+  auraHaste?: number; // torre rúnica: +cadencia a las torres aliadas cercanas
+  frost?: boolean; // torre: ralentiza el movimiento 5 s
+  corrupt?: number; // torre: −armadura 5 s
+  poisonDps?: number; // torre: veneno 3 s
+  luck?: boolean; // muralla aleatoria: sortea armadura extra
+  eatsTree?: number; // muralla de árbol: se come un árbol cercano y gana vida
+  extraDamageTaken?: number; // heno: +N de daño por golpe recibido
 }
 
 // --- Casa ---
@@ -284,8 +291,8 @@ export const HOUSE_LEVELS: LevelDef[] = HOUSE_NAMES.map((name, i) => ({
 }));
 
 // --- Murallas: tronco de 5 niveles y 7 especialidades del 6 al 15 ---
-export type WallBranch = 'rock' | 'elf' | 'ice' | 'cement' | 'coral' | 'gold' | 'ruin';
-export const WALL_BRANCH_ORDER: WallBranch[] = ['rock', 'elf', 'ice', 'cement', 'coral', 'gold', 'ruin'];
+export type WallBranch = 'rock' | 'elf' | 'ice' | 'cement' | 'coral' | 'gold' | 'ruin' | 'tree' | 'hay' | 'random';
+export const WALL_BRANCH_ORDER: WallBranch[] = ['rock', 'elf', 'ice', 'cement', 'coral', 'gold', 'ruin', 'tree', 'hay', 'random'];
 
 interface BranchSpec {
   name: string;
@@ -296,6 +303,7 @@ interface BranchSpec {
   armor6: number;
   armorStep: number;
   woodBase: number; // madera al nivel 11 (×2 después)
+  maxLevel?: number; // la aleatoria se queda en el 6
   effect: (lvl: number) => Partial<LevelDef>;
 }
 const k = (lvl: number) => lvl - 6; // 0 en el primer nivel de la rama
@@ -377,9 +385,43 @@ export const WALL_BRANCHES: Record<WallBranch, BranchSpec> = {
     woodBase: 32,
     effect: () => ({ repairBonus: 0.25 }),
   },
+  tree: {
+    name: 'Árbol de guerra',
+    icon: 'hk:wall-tree',
+    pitch: 'Se come un árbol cercano y gana vida durante 30 s (200 al principio, el doble cada nivel). El árbol vuelve a crecer en un minuto.',
+    hp6: 320,
+    gold6: 128,
+    armor6: 3,
+    armorStep: 1,
+    woodBase: 32,
+    effect: (l) => ({ eatsTree: 200 * 2 ** k(l) }),
+  },
+  hay: {
+    name: 'Heno',
+    icon: 'hk:wall-hay',
+    pitch: 'La más barata, pero recibe daño EXTRA en cada golpe (+2 por nivel). Para salir del paso.',
+    hp6: 280,
+    gold6: 112,
+    armor6: 1,
+    armorStep: 0.6,
+    woodBase: 28,
+    effect: (l) => ({ extraDamageTaken: l <= 10 ? 2 * (k(l) + 1) : 10 * 2 ** (l - 10) }),
+  },
+  random: {
+    name: 'Aleatoria',
+    icon: 'hk:wall-random',
+    pitch: 'Se queda en el nivel 6, pero cada 3 minutos puedes sortear una armadura extra (de 0 a 30). Puede salir muy bien… o no.',
+    hp6: 320,
+    gold6: 128,
+    armor6: 3,
+    armorStep: 1,
+    woodBase: 32,
+    maxLevel: 6,
+    effect: () => ({ luck: true }),
+  },
 };
 
-export const WALL_MAX_LEVEL = 15;
+export const WALL_MAX_LEVEL = 18;
 const WALL_TRUNK: LevelDef[] = [
   { name: 'Muralla de piedra', hp: 50, armor: 5, gold: 4, wood: 0 },
   { name: 'Muralla de piedra II', hp: 80, armor: 5, gold: 8, wood: 0 },
@@ -388,9 +430,39 @@ const WALL_TRUNK: LevelDef[] = [
   { name: 'Muralla de piedra V', hp: 250, armor: 5, gold: 64, wood: 0 },
 ];
 const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X'];
+// Niveles 16-18: «muralla torre». Mucha vida y armadura y, sobre todo, restan
+// una cantidad FIJA a cada golpe (128 / 1440 / 16 000): el último techo del colono.
+const WALL_TOP = [
+  { hpMult: 2.13, armor: 10, goldMult: 2, wood: 960, flat: 128 },
+  { hpMult: 2, armor: 26, goldMult: 1.25, wood: 12000, flat: 1440 },
+  { hpMult: 1.34, armor: 107, goldMult: 5.73, wood: 880000, flat: 16000 },
+];
+export function wallMaxLevel(branch: WallBranch | null): number {
+  return branch ? (WALL_BRANCHES[branch].maxLevel ?? WALL_MAX_LEVEL) : WALL_MAX_LEVEL;
+}
 export function huntWallLevel(level: number, branch: WallBranch | null): LevelDef {
   if (level <= 5 || !branch) return WALL_TRUNK[Math.min(5, level) - 1];
   const b = WALL_BRANCHES[branch];
+  if (level >= 16) {
+    const l15 = huntWallLevel(15, branch);
+    let hp = l15.hp;
+    let gold = l15.gold;
+    for (let i = 0; i <= level - 16; i++) {
+      hp = Math.round(hp * WALL_TOP[i].hpMult);
+      gold = Math.round(gold * WALL_TOP[i].goldMult);
+    }
+    const top = WALL_TOP[level - 16];
+    return {
+      ...b.effect(15),
+      name: `Muralla torre de ${b.name.toLowerCase()} ${level === 18 ? 'MÁX' : ROMAN[level - 16]}`,
+      hp,
+      armor: top.armor,
+      gold,
+      wood: top.wood,
+      req: { tech: 5 },
+      flatReduce: (b.effect(15).flatReduce ?? 0) + top.flat,
+    };
+  }
   const i = level - 6;
   return {
     name: `Muralla de ${b.name.toLowerCase()} ${ROMAN[i]}`,
@@ -415,20 +487,24 @@ const TOWER_MAIN: LevelDef[] = [
   { name: 'Cristal fortificado', hp: 200, armor: 4, gold: 512, wood: 16, dmg: 64, cd: 0.8, range: toTiles(725), req: { tech: 4 }, chain: true },
   { name: 'Cristal oscuro', hp: 250, armor: 4, gold: 1024, wood: 32, dmg: 128, cd: 0.8, range: toTiles(750), req: { tech: 4 }, chain: true },
   { name: 'Torre infernal', hp: 500, armor: 8, gold: 2048, wood: 64, dmg: 256, cd: 0.6, range: toTiles(775), req: { house: 8 } },
-  { name: 'Torre rúnica', hp: 1000, armor: 4, gold: 4096, wood: 128, dmg: 800, cd: 0.5, range: toTiles(800), req: { tech: 5 } },
+  { name: 'Torre rúnica', hp: 1000, armor: 4, gold: 4096, wood: 128, dmg: 800, cd: 0.5, range: toTiles(800), req: { tech: 5 }, auraHaste: 0.1 },
   { name: 'Torre del dragón', hp: 1000, armor: 4, gold: 8192, wood: 256, dmg: 1728, cd: 0.5, range: toTiles(850), req: { tech: 5 }, burn: true },
   { name: 'Dragón negro', hp: 5120, armor: 4, gold: 32768, wood: 1024, dmg: 5120, cd: 0.5, range: toTiles(900), req: { tech: 5 } },
-  { name: 'Dragón de hielo', hp: 32000, armor: 8, gold: 0, wood: 10240, dmg: 40960, cd: 0.5, range: toTiles(950), req: { tech: 5 } },
-  { name: 'Altar maldito', hp: 64000, armor: 16, gold: 0, wood: 25600, dmg: 81920, cd: 0.5, range: toTiles(1000), req: { tech: 5 } },
-  { name: 'Dragón verde', hp: 128000, armor: 32, gold: 0, wood: 160000, dmg: 512000, cd: 0.5, range: toTiles(1100), req: { tech: 5 } },
+  { name: 'Dragón de hielo', hp: 32000, armor: 8, gold: 0, wood: 10240, dmg: 40960, cd: 0.5, range: toTiles(950), req: { tech: 5 }, frost: true },
+  { name: 'Altar maldito', hp: 64000, armor: 16, gold: 0, wood: 25600, dmg: 81920, cd: 0.5, range: toTiles(1000), req: { tech: 5 }, corrupt: 512 },
+  { name: 'Dragón verde', hp: 128000, armor: 32, gold: 0, wood: 160000, dmg: 512000, cd: 0.5, range: toTiles(1100), req: { tech: 5 }, poisonDps: 512 },
+  { name: 'Torre del misterio', hp: 250000, armor: 32, gold: 1_000_000, wood: 1_000_000, dmg: 3_200_000, cd: 0.35, range: toTiles(1200), req: { tech: 5 } },
 ];
+// 66 torres del misterio se funden en un Mago élfico
+export const MAGE_FUSION_TOWERS = 66;
+export const MAGE = { hp: 5_120_000, armor: 160, dmg: 5_120_000, cd: 0.5, range: toTiles(800), speed: toTiles(500), regen: 512 };
 const TOWER_GOLD: LevelDef[] = [
   { name: 'Torre de oro', hp: 30, armor: 3, gold: 32, wood: 0, dmg: 1, cd: 0.9, range: toTiles(625), goldPerHit: 1, req: { tech: 2 } },
   { name: 'Torreón de oro', hp: 50, armor: 4, gold: 64, wood: 0, dmg: 4, cd: 0.9, range: toTiles(650), goldPerHit: 1, req: { tech: 2 } },
   { name: 'Torre de energía dorada', hp: 80, armor: 4, gold: 128, wood: 0, dmg: 8, cd: 0.9, range: toTiles(675), goldPerHit: 2, req: { tech: 3 } },
   { name: 'Cristal rojo dorado', hp: 140, armor: 4, gold: 256, wood: 0, dmg: 16, cd: 0.9, range: toTiles(700), goldPerHit: 4, req: { tech: 3 } },
-  { name: 'Cristal fortificado dorado', hp: 200, armor: 4, gold: 512, wood: 16, dmg: 32, cd: 0.8, range: toTiles(725), goldPerHit: 8, req: { tech: 4 } },
-  { name: 'Cristal oscuro dorado', hp: 250, armor: 4, gold: 1024, wood: 32, dmg: 64, cd: 0.8, range: toTiles(750), goldPerHit: 16, req: { tech: 4 } },
+  { name: 'Cristal fortificado dorado', hp: 200, armor: 4, gold: 512, wood: 16, dmg: 32, cd: 0.8, range: toTiles(725), goldPerHit: 8, req: { tech: 4 }, chain: true },
+  { name: 'Cristal oscuro dorado', hp: 250, armor: 4, gold: 1024, wood: 32, dmg: 64, cd: 0.8, range: toTiles(750), goldPerHit: 16, req: { tech: 4 }, chain: true },
 ];
 export const TOWER_MAX_LEVEL = TOWER_MAIN.length;
 // la rama de oro ocupa los niveles 3-8 y al 9 vuelve a la línea principal
@@ -457,6 +533,8 @@ export const MINE_LEVELS: LevelDef[] = [
   { name: 'Mina rica', hp: 50, armor: -17, gold: 0, wood: 3200, income: 128 },
   { name: 'Mina profunda', hp: 50, armor: -17, gold: 0, wood: 12800, income: 512 },
   { name: 'Veta madre', hp: 50, armor: -17, gold: 0, wood: 51200, income: 2048 },
+  { name: 'Veta de los reyes', hp: 50, armor: -17, gold: 0, wood: 222200, income: 8888 },
+  { name: 'Corazón de la montaña', hp: 50, armor: -17, gold: 0, wood: 960000, income: 38400 },
 ];
 
 export function levelsOf(type: BuildingType): number {
@@ -464,7 +542,7 @@ export function levelsOf(type: BuildingType): number {
     case 'house':
       return HOUSE_LEVELS.length;
     case 'wall':
-      return WALL_MAX_LEVEL;
+      return WALL_MAX_LEVEL; // la aleatoria se corta en el 6 (ver wallMaxLevel)
     case 'tower':
       return TOWER_MAX_LEVEL;
     case 'workshop':
@@ -547,14 +625,27 @@ export type Ability =
   | 'berserk'
   | 'trap'
   | 'recall'
+  | 'ams'
+  // especialidades del colono (libro)
+  | 'moonlight'
+  | 'fullforce'
+  | 'blind'
+  | 'pack'
+  | 'retrofit'
+  | 'blinkback'
   // ángel
   | 'steal'
   | 'stun'
   | 'holyarmor'
   | 'angelblink'
+  | 'angelhaste'
+  | 'occult'
   // lobo
   | 'run'
-  | 'howl';
+  | 'howl'
+  | 'detect'
+  | 'bloodlust'
+  | 'wolfams';
 
 export interface AbilityDef {
   id: Ability;
@@ -576,35 +667,75 @@ export const ABILITIES: Record<Ability, AbilityDef> = {
   roots: { id: 'roots', name: 'Raíces', icon: 'hk:roots', emoji: '🌿', key: 'E', cd: 45, target: 'point', range: toTiles(400), radius: toTiles(300), dur: 3, desc: 'Las raíces atrapan al cazador 3 s: no puede moverse ni atacar.' },
   silence: { id: 'silence', name: 'Silencio', icon: 'hk:silence', emoji: '🤫', key: 'C', cd: 60, target: 'point', range: toTiles(600), radius: toTiles(300), dur: 5, desc: 'El cazador no puede usar habilidades 5 s (corta su regreso).' },
   moonguard: { id: 'moonguard', name: 'Guardián lunar', icon: 'hk:moonguard', emoji: '🌙', key: 'Q', cd: 180, target: 'building', range: toTiles(400), dur: 3, desc: 'Un edificio tuyo se vuelve invulnerable 3 s (3,6 s si es una muralla élfica).' },
-  holylight: { id: 'holylight', name: 'Luz sagrada', icon: 'hk:spec-holylight', emoji: '✝️', key: 'H', cd: 30, target: 'building', range: toTiles(600), desc: 'Cura al instante el 25 % de la vida de un edificio tuyo.' },
+  holylight: { id: 'holylight', name: 'Luz sagrada', icon: 'hk:spec-holylight', emoji: '✝️', key: 'V', cd: 150, target: 'building', range: toTiles(800), desc: 'Cura a un edificio aliado 10 de vida más el 35 % de la que le falta. Puede salvar una muralla.' },
+  moonlight: { id: 'moonlight', name: 'Luz de luna', icon: 'hk:moonlight', emoji: '🌕', key: 'V', cd: 120, target: 'self', dur: 30, desc: 'Hace de noche 30 s: el cazador ve menos y los colonos más.' },
+  fullforce: { id: 'fullforce', name: 'Plena fuerza', icon: 'hk:fullforce', emoji: '💪', key: 'V', cd: 180, target: 'point', range: toTiles(700), radius: toTiles(300), dur: 5, desc: 'Durante 5 s, todo lo aliado en la zona ataca y corre el doble, y las minas producen el doble.' },
+  blind: { id: 'blind', name: 'Cegar', icon: 'hk:blind', emoji: '🙈', key: 'V', cd: 180, target: 'point', range: toTiles(400), radius: toTiles(300), dur: 4, desc: 'Los enemigos de la zona fallan todos sus golpes durante 4 s.' },
+  pack: { id: 'pack', name: 'Empaquetar', icon: 'hk:pack', emoji: '🎒', key: 'V', cd: 300, target: 'self', dur: 40, desc: 'Tu casa desaparece 40 s: sigue dando oro, no se puede atacar y no cuenta como «sin casa».' },
+  retrofit: { id: 'retrofit', name: 'Remodelar', icon: 'hk:retrofit', emoji: '🛠️', key: 'V', cd: 180, target: 'building', range: toTiles(700), desc: 'Una torre gana +20 % de alcance y +5 % de cadencia (hasta 5 veces; se conserva al mejorarla).' },
+  blinkback: { id: 'blinkback', name: 'Volver', icon: 'hk:blinkback', emoji: '↩️', key: 'G', cd: 180, target: 'self', dur: 10, desc: 'Hasta 10 s después de un Salto, vuelves al punto de partida y se recargan Salto y Prisa.' },
+  ams: { id: 'ams', name: 'Escudo antimagia', icon: 'hk:ams', emoji: '🔰', key: 'F', cd: 120, target: 'self', dur: 10, desc: 'Inmune a la magia de los colonos 10 s (raíces, silencio, ceguera, aturdir).' },
+  angelhaste: { id: 'angelhaste', name: 'Prisa', icon: 'hk:haste', emoji: '💨', key: 'R', cd: 30, target: 'self', dur: 15, desc: '+100 % de velocidad 15 s.' },
+  occult: { id: 'occult', name: 'Velo lunar', icon: 'hk:occult', emoji: '🌫️', key: 'T', cd: 45, target: 'point', range: toTiles(600), radius: 1.2, dur: 15, desc: 'Un colono aliado se vuelve invisible para el cazador 15 s (se descubre si construye).' },
+  detect: { id: 'detect', name: 'Olfato', icon: 'hk:detect', emoji: '👃', key: 'R', cd: 45, target: 'point', range: 9999, radius: toTiles(1600), dur: 8, desc: 'Revela una zona del mapa 8 s.' },
+  bloodlust: { id: 'bloodlust', name: 'Sed de sangre', icon: 'hk:bloodlust', emoji: '🩸', key: 'Q', cd: 60, target: 'self', dur: 15, desc: 'Tú y los tuyos cercanos: +50 % de cadencia y +30 % de velocidad 15 s.' },
+  wolfams: { id: 'wolfams', name: 'Escudo antimagia', icon: 'hk:ams', emoji: '🔰', key: 'F', cd: 120, target: 'self', dur: 10, desc: 'Tú y el cazador, si está cerca, inmunes a la magia 10 s.' },
   windwalk: { id: 'windwalk', name: 'Paso del viento', icon: 'hk:windwalk', emoji: '👻', key: 'W', cd: 30, target: 'self', dur: 20, desc: 'Invisible 20 s y +50 % de velocidad. Atacar te descubre.' },
-  eye: { id: 'eye', name: 'Ojo del cazador', icon: 'hk:eye', emoji: '👁', key: 'R', cd: 45, target: 'point', range: 9999, radius: toTiles(1800), dur: 8, desc: 'Ves una zona grande en cualquier punto del mapa 8 s. Lo que ve no se puede derribar.' },
+  eye: { id: 'eye', name: 'Ojo del cazador', icon: 'hk:eye', emoji: '👁', key: 'R', cd: 30, target: 'point', range: 9999, radius: toTiles(1800), dur: 10, desc: 'Ves una zona grande en cualquier punto del mapa 10 s. Lo que ve no se puede derribar.' },
   berserk: { id: 'berserk', name: 'Furia', icon: 'hk:berserk', emoji: '😡', key: 'B', cd: 120, target: 'self', dur: 10, desc: '10 s: +100 % de cadencia y +50 % de velocidad, pero recibes un 50 % más de daño.' },
   trap: { id: 'trap', name: 'Trampa', icon: 'hk:trap', emoji: '🪤', key: 'E', cd: 120, target: 'point', range: toTiles(550), radius: toTiles(500), dur: 4, desc: 'Trampa invisible: cuando se acerca un colono, aturde 4 s a sus unidades y edificios cercanos. Dura 5 min.' },
   recall: { id: 'recall', name: 'Regreso', icon: 'hk:recall', emoji: '🏚', key: 'T', cd: 45, target: 'self', dur: 2, desc: 'Tras 2 s quieto vuelves a tu guarida, donde te curas y compras.' },
   steal: { id: 'steal', name: 'Robo', icon: 'hk:steal', emoji: '💰', key: 'Q', cd: 4, target: 'none', range: 2.5, desc: 'Junto a la guarida del cazador, le robas oro (sube con los minutos de partida).' },
-  stun: { id: 'stun', name: 'Destello', icon: 'hk:stun', emoji: '⚡', key: 'W', cd: 70, target: 'point', range: 5, radius: 1.5, dur: 2, desc: 'Aturde al cazador o a un lobo 2 s.' },
+  stun: { id: 'stun', name: 'Prisión de hielo', icon: 'hk:stun', emoji: '🧊', key: 'W', cd: 70, target: 'point', range: toTiles(500), radius: toTiles(300), dur: 2, desc: 'Encierra en hielo al cazador o a un lobo 2 s: ni se mueve, ni ataca, ni lanza nada.' },
   holyarmor: { id: 'holyarmor', name: 'Armadura sagrada', icon: 'hk:holyarmor', emoji: '😇', key: 'E', cd: 60, target: 'self', dur: 6, desc: 'Invulnerable 6 s.' },
   angelblink: { id: 'angelblink', name: 'Vuelo', icon: 'hk:blink', emoji: '🕊', key: 'F', cd: 45, target: 'point', range: 9999, desc: 'Vuelas a cualquier punto del mapa.' },
-  run: { id: 'run', name: 'Carrera', icon: 'hk:run', emoji: '🐺', key: 'W', cd: 45, target: 'self', dur: 15, desc: '+100 % de velocidad 15 s.' },
-  howl: { id: 'howl', name: 'Aullido', icon: 'hk:howl', emoji: '🌕', key: 'E', cd: 90, target: 'self', radius: 7, dur: 20, desc: 'Las torres cercanas hacen la mitad de daño 20 s.' },
+  run: { id: 'run', name: 'Carrera', icon: 'hk:run', emoji: '🐺', key: 'W', cd: 60, target: 'self', dur: 15, desc: '+100 % de velocidad 15 s.' },
+  howl: { id: 'howl', name: 'Aullido', icon: 'hk:howl', emoji: '🌕', key: 'E', cd: 90, target: 'self', radius: 7, dur: 20, desc: 'Aterra a las torres cercanas: hacen la mitad de daño 20 s.' },
 };
 
 export const FORM_ABILITIES: Record<Form, Ability[]> = {
   elf: ['blink', 'haste', 'roots', 'silence', 'moonguard'],
-  hunter: ['windwalk', 'eye', 'berserk', 'trap', 'recall'],
-  angel: ['steal', 'stun', 'holyarmor', 'angelblink'],
-  wolf: ['run', 'howl', 'recall'],
+  hunter: ['windwalk', 'eye', 'berserk', 'trap', 'ams', 'recall'],
+  angel: ['steal', 'stun', 'holyarmor', 'angelblink', 'angelhaste', 'occult'],
+  wolf: ['run', 'howl', 'detect', 'bloodlust', 'wolfams', 'recall'],
 };
 
 // ---------- especialidades del colono (libro: se elige UNA) ----------
-export type Spec = 'mines' | 'repair' | 'skin' | 'holylight';
-export const SPEC_ORDER: Spec[] = ['mines', 'repair', 'skin', 'holylight'];
-export const SPECS: Record<Spec, { name: string; icon: string; desc: string }> = {
-  mines: { name: 'Plena fuerza', icon: 'hk:spec-mines', desc: 'Tus minas producen el doble.' },
-  repair: { name: 'Manos de oro', icon: 'hk:spec-repair', desc: 'Tus reparadores trabajan un 25 % más rápido.' },
-  skin: { name: 'Piel endurecida', icon: 'hk:spec-skin', desc: 'El primer golpe mortal no te mata: quedas invulnerable 2 s. Una sola vez.' },
-  holylight: { name: 'Luz sagrada', icon: 'hk:spec-holylight', desc: 'Ganas una habilidad que cura el 25 % de un edificio (recarga 30 s).' },
+export type Spec =
+  | 'moonlight'
+  | 'holylight'
+  | 'fullforce'
+  | 'skin'
+  | 'blind'
+  | 'pack'
+  | 'retrofit'
+  | 'durability'
+  | 'blinkex'
+  | 'hasteex'
+  | 'repairex';
+export const SPEC_ORDER: Spec[] = ['moonlight', 'holylight', 'fullforce', 'skin', 'blind', 'pack', 'retrofit', 'durability', 'blinkex', 'hasteex', 'repairex'];
+// la habilidad que da cada especialidad (las pasivas no dan ninguna)
+export const SPEC_ABILITY: Partial<Record<Spec, Ability>> = {
+  moonlight: 'moonlight',
+  holylight: 'holylight',
+  fullforce: 'fullforce',
+  blind: 'blind',
+  pack: 'pack',
+  retrofit: 'retrofit',
+  blinkex: 'blinkback',
+};
+export const SPECS: Record<Spec, { name: string; icon: string; desc: string; stars: number }> = {
+  moonlight: { name: 'Luz de luna', icon: 'hk:moonlight', stars: 3, desc: 'Habilidad: hace de noche 30 s (el cazador ve menos, los colonos más). Recarga 2 min.' },
+  holylight: { name: 'Luz sagrada', icon: 'hk:spec-holylight', stars: 3, desc: 'Habilidad: cura a un edificio 10 + el 35 % de la vida que le falta. Recarga 150 s.' },
+  fullforce: { name: 'Plena fuerza', icon: 'hk:fullforce', stars: 2, desc: 'Habilidad: 5 s de cadencia y velocidad dobles en una zona, y minas al doble. Recarga 3 min.' },
+  skin: { name: 'Piel endurecida', icon: 'hk:spec-skin', stars: 2, desc: 'Pasiva: el primer golpe mortal no te mata: quedas invulnerable 2 s. Una sola vez.' },
+  blind: { name: 'Cegar', icon: 'hk:blind', stars: 2, desc: 'Habilidad: los enemigos de una zona fallan todos sus golpes 4 s. Recarga 3 min.' },
+  pack: { name: 'Empaquetar', icon: 'hk:pack', stars: 1, desc: 'Habilidad: guardas la casa 40 s; sigue dando oro y nadie la puede tocar. Recarga 5 min.' },
+  retrofit: { name: 'Remodelar', icon: 'hk:retrofit', stars: 2, desc: 'Habilidad: una torre gana +20 % de alcance y +5 % de cadencia, hasta 5 veces. Recarga 3 min.' },
+  durability: { name: 'Aura de durabilidad', icon: 'hk:aura', stars: 3, desc: 'Pasiva: todas las torres de los colonos disparan un 5 % más rápido.' },
+  blinkex: { name: 'Salto EX', icon: 'hk:blinkback', stars: 1, desc: 'Habilidad: hasta 10 s después de saltar, vuelves al punto de partida y se recargan Salto y Prisa.' },
+  hasteex: { name: 'Prisa EX', icon: 'hk:hasteex', stars: 2, desc: 'Tu Prisa sube al máximo de velocidad y recarga en 1 s (dura 5 s).' },
+  repairex: { name: 'Manos de oro', icon: 'hk:repairex', stars: 2, desc: 'Pasiva: tú y tus reparadores reparáis un 25 % más rápido.' },
 };
 
 // ---------- guarida del cazador y tienda ----------
@@ -716,12 +847,75 @@ export const ITEMS: Record<ItemLine, { name: string; stat: string; tiers: ItemTi
     ],
   },
 };
-export const INVENTORY_SLOTS = 6;
+export const INVENTORY_SLOTS = 6; // + 1 hueco aparte solo para botas (talento)
 export const WOOD_FOR_GOLD = 64000; // la guarida vende 1 de madera por 64 000 de oro
 
-export type Consumable = 'scroll' | 'ankh' | 'ward';
+// Objetos sueltos (no se funden). Los atributos siguen las constantes del mapa:
+// 1 de fuerza = +25 de vida · 1 de agilidad = +0.5 de armadura, +4 % de cadencia
+// y +1 de daño (es el atributo principal).
+export type Trinket =
+  | 'branch'
+  | 'ring'
+  | 'mask'
+  | 'orb'
+  | 'helm'
+  | 'woodshield'
+  | 'whitesleg'
+  | 'whiteslegex'
+  | 'mercury'
+  | 'heartbuilding';
+export interface TrinketDef {
+  name: string;
+  icon: string;
+  gold: number;
+  wood: number;
+  str?: number;
+  agi?: number;
+  block?: number; // resta este daño a cada golpe que recibe
+  speed?: number; // casillas/s
+  attackSpeed?: number;
+  hp?: number;
+  regenPct?: number; // % de vida máx por segundo
+  immune?: boolean; // inmune a la magia de los colonos
+  maxSpeed?: boolean; // velocidad y cadencia al máximo
+  desc: string;
+}
+export const TRINKET_ORDER: Trinket[] = ['branch', 'ring', 'mask', 'orb', 'helm', 'woodshield', 'whitesleg', 'whiteslegex', 'mercury', 'heartbuilding'];
+export const TRINKETS: Record<Trinket, TrinketDef> = {
+  branch: { name: 'Rama de hierro', icon: 'hk:item-branch', gold: 85, wood: 0, str: 1, agi: 1, desc: '+1 a todos los atributos.' },
+  ring: { name: 'Anillo', icon: 'hk:item-ring', gold: 200, wood: 0, str: 5, agi: 2, desc: '+5 de fuerza y +2 de agilidad.' },
+  mask: { name: 'Máscara loca', icon: 'hk:item-mask', gold: 500, wood: 0, str: 5, agi: 5, desc: '+5 a todos los atributos.' },
+  orb: { name: 'Orbe supremo', icon: 'hk:item-orb', gold: 1100, wood: 0, str: 10, agi: 10, desc: '+10 a todos los atributos.' },
+  helm: { name: 'Yelmo de voluntad', icon: 'hk:item-helm', gold: 2000, wood: 0, str: 15, agi: 15, desc: '+15 a todos los atributos.' },
+  woodshield: { name: 'Escudo de madera', icon: 'hk:item-woodshield', gold: 400, wood: 0, block: 3, desc: 'Bloquea 3 de daño de cada golpe.' },
+  whitesleg: { name: 'Pierna de White', icon: 'hk:item-whitesleg', gold: 5000, wood: 0, speed: toTiles(150), attackSpeed: 4, str: 5, agi: 5, desc: '+150 de velocidad, +400 % de cadencia y +5 a todo.' },
+  whiteslegex: { name: 'Pierna de White EX', icon: 'hk:item-whitesleg', gold: 10000, wood: 0, speed: toTiles(200), attackSpeed: 4, str: 15, agi: 15, desc: '+200 de velocidad, +400 % de cadencia y +15 a todo.' },
+  mercury: { name: 'Zapatos de mercurio', icon: 'hk:item-mercury', gold: 0, wood: 32, immune: true, maxSpeed: true, desc: 'Inmune a la magia; velocidad y cadencia al máximo.' },
+  heartbuilding: { name: 'Corazón del edificio', icon: 'hk:item-heartbuilding', gold: 0, wood: 80, hp: 1_000_000, regenPct: 0.02, desc: '+1 000 000 de vida y +2 % de vida por segundo.' },
+};
+export const ATTR = { hpPerStr: 25, regenPerStr: 0.05, armorPerAgi: 0.5, asPerAgi: 0.04, dmgPerAgi: 1 } as const;
+
+export type Consumable = 'scroll' | 'ankh' | 'ward' | 'potion' | 'speedscroll' | 'voodoo' | 'bookstr' | 'bookagi';
 export const CONSUMABLES: Record<Consumable, { name: string; icon: string; gold: number; wood: number; desc: string }> = {
   scroll: { name: 'Pergamino de regreso', icon: 'hk:item-scroll', gold: 115, wood: 0, desc: 'Vuelves a tu guarida al instante. Se gasta.' },
   ward: { name: 'Tótem sanador', icon: 'hk:item-ward', gold: 10000, wood: 0, desc: 'Lo plantas y cura un 1 % de vida/s a tu bando durante 30 s.' },
   ankh: { name: 'Cruz del renacer', icon: 'hk:item-ankh', gold: 0, wood: 1, desc: 'Si mueres, revives en tu guarida con la vida entera. Una vez.' },
+  potion: { name: 'Poción antimagia', icon: 'hk:item-potion', gold: 800, wood: 0, desc: 'Inmune a la magia de los colonos 15 s.' },
+  speedscroll: { name: 'Pergamino veloz', icon: 'hk:item-speedscroll', gold: 50, wood: 0, desc: 'Velocidad máxima durante 15 s.' },
+  voodoo: { name: 'Minitienda vudú', icon: 'hk:item-voodoo', gold: 0, wood: 16, desc: 'Plantas una tienda donde quieras: puedes comprar junto a ella 2 minutos. 2 usos.' },
+  bookstr: { name: 'Libro de fuerza', icon: 'hk:item-bookstr', gold: 990_000, wood: 0, desc: '+4000 de fuerza para siempre (+100 000 de vida). Se lee al comprarlo.' },
+  bookagi: { name: 'Libro de agilidad', icon: 'hk:item-bookagi', gold: 990_000, wood: 0, desc: '+2000 de agilidad para siempre (+2000 de daño, +1000 de armadura). Se lee al comprarlo.' },
 };
+
+// ---------- el rastreador: compañero que se compra en la guarida ----------
+export const BEAST = {
+  name: 'Rastreador',
+  wood: 8,
+  hp: 50000,
+  dmg: 640,
+  attackSec: 0.5,
+  speed: toTiles(522),
+  respawnSec: 20,
+  plunder: 0.5, // cobra la mitad del daño en oro
+  leash: 9, // no se aleja más de esto de su amo si no tiene presa
+} as const;
