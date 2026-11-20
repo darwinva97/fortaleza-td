@@ -58,6 +58,8 @@ export interface LobbyPlayer {
   // jugador (dibujo del cliente). Solo aplica en mapas multi-ruta (≥4). El RoomDO
   // valida que no esté ocupada y la libera al salir; NO toca la sim ni el snapshot.
   door?: number;
+  // Cacería: bando elegido en el lobby ('hunter' troll, 'elf', o sin elegir)
+  huntSide?: 'hunter' | 'elf';
 }
 
 // Los ajustes vienen del cliente: nunca confiar en ellos. Un mapId desconocido
@@ -425,8 +427,12 @@ export type ClientMsg =
   // con door=null. Solo en mapas multi-ruta (≥4). Lo valida el RoomDO (puerta
   // existente y libre); es un estado de lobby (NO un comando de sim).
   | { type: 'claim_door'; door: number | null }
+  // Cacería: elegir bando antes de empezar (null = me da igual)
+  | { type: 'hunt_side'; side: 'hunter' | 'elf' | null }
+  // Cacería: el anfitrión termina la partida antes de tiempo (el -end del original)
+  | { type: 'end_hunt' }
   | { type: 'start_game' }
-  | { type: 'chat'; text: string }
+  | { type: 'chat'; text: string; team?: boolean }
   | { type: 'cmd'; cmd: Command }
   | { type: 'pause' }
   | { type: 'resume' }
@@ -506,7 +512,7 @@ export type ServerMsg =
   // GUARDAR (issue #12): respuesta a `save_request` con el guardado ya construido
   // (log hasta el tick actual + tokenHash por slot). El cliente lo descarga como .json.
   | { type: 'save_info'; save: SaveData }
-  | { type: 'chat'; from: string; color: string; text: string }
+  | { type: 'chat'; from: string; color: string; text: string; team?: 'hunter' | 'elf' }
   | { type: 'paused'; by: string }
   | { type: 'resumed' }
   | { type: 'speed'; speed: number; by: string }

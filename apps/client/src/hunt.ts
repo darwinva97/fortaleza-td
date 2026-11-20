@@ -57,6 +57,12 @@ import {
   type UnitKind,
   type WallBranch,
   RESOURCE_MULT,
+  SOLDIERS,
+  SOLDIER_ORDER,
+  type SoldierKind,
+  TOWER_FORKS,
+  TOWER_GREEN_FINAL,
+  WOOD_BULK,
   TILE_FLOOR,
   TILE_TREE,
   steerStep,
@@ -80,6 +86,9 @@ let targeting: Ability | null = null;
 let useSlot = -1; // consumible que se usa sobre un punto
 let selected = 0; // edificio propio seleccionado
 let inspect = 0; // unidad que estás mirando (clic sobre ella): vida, equipo...
+let group: number[] = []; // varias unidades tuyas seleccionadas (recuadro, doble clic)
+const boxSel = { on: false, moved: false, sx: 0, sy: 0, ex: 0, ey: 0 };
+let rosterClick = { kind: '', at: 0, idx: 0 };
 let shopOpen = false;
 let zoom = 1;
 let follow = true;
@@ -111,6 +120,8 @@ const disp = new Map<number, { x: number; y: number }>();
 // mueve YA en pantalla con la misma regla de choques que el servidor
 // (steerStep) y se corrige suavemente si el servidor no está de acuerdo.
 const codes = new Set<string>(); // teclas físicas pulsadas (e.code)
+let touchSteer: [number, number] = [0, 0]; // joystick del móvil
+let isTouch = false;
 let steerSent: [number, number] = [0, 0]; // última dirección enviada
 let steerActive: [number, number] = [0, 0]; // la que creemos que aplica el servidor
 const local = { on: false, x: 0, y: 0 };
@@ -126,8 +137,10 @@ const tintCache = new Map<string, HTMLCanvasElement>(); // elfo pintado del colo
 const anim = new Map<number, { dir: Dir; walk: number; x: number; y: number; movedAt: number }>();
 const corpses: { kind: string; x: number; y: number; born: number }[] = [];
 // altura dibujada (en casillas) de cada personaje con hoja de sprites
-const SPRITE_TILES: Record<string, number> = { elf: 1.3, hunter: 2.05, wolf: 1.2, angel: 1.3 };
-const STRIDE: Record<string, number> = { elf: 0.3, hunter: 0.42, wolf: 0.36, angel: 0.34 }; // casillas por paso
+const SPRITE_TILES: Record<string, number> = { elf: 1.3, hunter: 2.05, wolf: 1.2, angel: 1.3, repairer: 1.05, lumberjack: 1.05 };
+const STRIDE: Record<string, number> = { elf: 0.3, hunter: 0.42, wolf: 0.36, angel: 0.34, repairer: 0.26, lumberjack: 0.26 }; // casillas por paso
+// personajes cuya ropa verde se pinta del color del jugador
+const TINTED = new Set(['elf', 'repairer', 'lumberjack']);
 interface Mote {
   x: number;
   y: number;
@@ -181,7 +194,9 @@ const UNIT_ICON: Record<UnitKind, string> = {
   lumberjack: 'hk:lumberjack',
   beast: 'hk:beast',
   mage: 'hk:mage',
+  ...(Object.fromEntries(SOLDIER_ORDER.map((k) => [k, SOLDIERS[k].icon])) as Record<SoldierKind, string>),
 };
+const isSoldierKind = (k: UnitKind): k is SoldierKind => k in SOLDIERS;
 
 function reqText(req: Req | undefined): string | null {
   const m = me();
@@ -327,9 +342,17 @@ function build(): void {
       <div class="hk-res" id="hk-res"></div>
       <div class="hk-clock" id="hk-clock"></div>
       <div class="hk-team" id="hk-team"></div>
+      <button class="hk-endbtn" id="hk-endbtn" data-act="endhunt" hidden title="Terminar la partida ahora (solo el anfitrión)">Terminar</button>
     </div>
     <div class="hk-banner" id="hk-banner" hidden></div>
     <div class="hk-toasts"></div>
+    <div class="hk-chat" id="hk-chat">
+      <div class="hk-chat-log" id="hk-chat-log"></div>
+      <form class="hk-chat-form" id="hk-chat-form" hidden>
+        <button type="button" class="hk-chat-ch" id="hk-chat-ch" title="Cambiar canal (Tab)">Equipo</button>
+        <input id="hk-chat-in" maxlength="200" autocomplete="off" placeholder="Escribe y pulsa Enter" />
+      </form>
+    </div>
     <div class="hk-mini"><canvas id="hk-mini"></canvas></div>
     <div class="hk-dock"><div class="hk-dock-in" id="hk-dock-in">
       <div class="hk-card-wrap">
@@ -343,7 +366,16 @@ function build(): void {
     </div></div>
     <div class="hk-modal" id="hk-modal" hidden></div>
     <div class="hk-tip" id="hk-tip" hidden></div>
-    <div class="hk-end" id="hk-end" hidden></div>`;
+    <div class="hk-end" id="hk-end" hidden></div>
+    <div class="hk-touch" id="hk-touch">
+      <div class="hk-joy" id="hk-joy"><div class="hk-joy-knob" id="hk-joy-knob"></div></div>
+      <div class="hk-tbtns">
+        <button class="hk-tbtn act" data-act="tact" aria-label="Acción: reparar o atacar">⚡<small>Acción</small></button>
+        <button class="hk-tbtn" data-act="tme" aria-label="Volver a tu personaje">👤</button>
+        <button class="hk-tbtn" data-act="tchat" aria-label="Chat">💬</button>
+      </div>
+    </div>
+    <div class="hk-rotate" id="hk-rotate"><div class="ph">📱</div><b>Gira el móvil</b><p>La Cacería se juega en horizontal.</p></div>`;
   canvas = root.querySelector('#hunt-canvas')!;
   g = canvas.getContext('2d')!;
   mini = root.querySelector('#hk-mini')!;
@@ -362,9 +394,50 @@ function build(): void {
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
   canvas.addEventListener('pointerdown', (e) => {
     unlockAudio();
+    if (e.pointerType === 'touch') {
+      touchDown(e);
+      return;
+    }
     const w = toWorld(e.clientX, e.clientY);
+    // izquierdo sin nada que colocar/apuntar: se decide al soltar (clic o recuadro)
+    if (e.button === 0 && !placing && !targeting && useSlot < 0) {
+      Object.assign(boxSel, { on: true, moved: false, sx: e.clientX, sy: e.clientY, ex: e.clientX, ey: e.clientY });
+      canvas.setPointerCapture(e.pointerId);
+      return;
+    }
     onWorldClick(w.x, w.y, e.button === 2);
   });
+  canvas.addEventListener('pointermove', (e) => {
+    if (e.pointerType === 'touch') {
+      touchMove(e);
+      return;
+    }
+    if (boxSel.on) {
+      boxSel.ex = e.clientX;
+      boxSel.ey = e.clientY;
+      if (Math.hypot(boxSel.ex - boxSel.sx, boxSel.ey - boxSel.sy) > 6) boxSel.moved = true;
+    }
+  });
+  canvas.addEventListener('pointerup', (e) => {
+    if (e.pointerType === 'touch') {
+      touchUp(e);
+      return;
+    }
+    if (!boxSel.on || e.button !== 0) return;
+    boxSel.on = false;
+    if (boxSel.moved) selectBox();
+    else {
+      const w = toWorld(e.clientX, e.clientY);
+      onWorldClick(w.x, w.y, false);
+    }
+  });
+  canvas.addEventListener('pointercancel', (e) => {
+    if (e.pointerType === 'touch') {
+      touches.delete(e.pointerId);
+      gesture.cancelled = true;
+    }
+  });
+  setupTouch();
   canvas.addEventListener(
     'wheel',
     (e) => {
@@ -383,6 +456,36 @@ function build(): void {
   });
   mini.addEventListener('contextmenu', (e) => e.preventDefault());
   window.addEventListener('keydown', onKey);
+  // chat de la Cacería: Enter abre; por defecto a tu equipo
+  const chatForm = root.querySelector<HTMLFormElement>('#hk-chat-form')!;
+  const chatIn = root.querySelector<HTMLInputElement>('#hk-chat-in')!;
+  const chatCh = root.querySelector<HTMLButtonElement>('#hk-chat-ch')!;
+  const setCh = (team: boolean) => {
+    chatTeam = team;
+    chatCh.textContent = team ? 'Equipo' : 'Todos';
+    chatCh.classList.toggle('all', !team);
+  };
+  chatCh.addEventListener('click', () => {
+    setCh(!chatTeam);
+    chatIn.focus();
+  });
+  chatForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const text = chatIn.value.trim();
+    if (text) net.send({ type: 'chat', text, team: chatTeam });
+    chatIn.value = '';
+    closeChat();
+  });
+  chatIn.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeChat();
+    } else if (e.key === 'Tab') {
+      e.preventDefault();
+      setCh(!chatTeam);
+    }
+    e.stopPropagation();
+  });
   window.addEventListener('keyup', (e) => {
     keys.delete(e.key);
     codes.delete(e.code);
@@ -407,6 +510,231 @@ function toWorld(clientX: number, clientY: number): { x: number; y: number } {
   const dpr = window.devicePixelRatio || 1;
   const s = cellPx();
   return { x: cam.x + ((clientX - r.left) * dpr - canvas.width / 2) / s, y: cam.y + ((clientY - r.top) * dpr - canvas.height / 2) / s };
+}
+
+// ---------- móvil ----------
+// Tocar = clic (seleccionar, colocar, apuntar). Mantener pulsado = clic derecho
+// (mandar obreros, fijar objetivo de torre). Arrastrar = mover la cámara.
+// Dos dedos = zoom. El joystick mueve a tu personaje y ⚡ hace lo de la R.
+const touches = new Map<number, { x: number; y: number }>();
+const gesture = { sx: 0, sy: 0, moved: false, cancelled: false, long: false, pinch: 0, zoom0: 1, timer: 0 as unknown as ReturnType<typeof setTimeout> };
+
+function touchDown(e: PointerEvent): void {
+  canvas.setPointerCapture(e.pointerId);
+  touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  clearTimeout(gesture.timer);
+  if (touches.size === 2) {
+    const [a, b] = [...touches.values()];
+    gesture.pinch = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+    gesture.zoom0 = zoom;
+    gesture.cancelled = true;
+    return;
+  }
+  gesture.sx = e.clientX;
+  gesture.sy = e.clientY;
+  gesture.moved = false;
+  gesture.cancelled = false;
+  gesture.long = false;
+  const w = toWorld(e.clientX, e.clientY);
+  mouse.x = w.x;
+  mouse.y = w.y;
+  mouse.in = true;
+  gesture.timer = setTimeout(() => {
+    if (gesture.moved || gesture.cancelled) return;
+    gesture.long = true;
+    navigator.vibrate?.(15);
+    onWorldClick(w.x, w.y, true);
+  }, 480);
+}
+function touchMove(e: PointerEvent): void {
+  const t = touches.get(e.pointerId);
+  if (!t) return;
+  const px = t.x;
+  const py = t.y;
+  t.x = e.clientX;
+  t.y = e.clientY;
+  if (touches.size >= 2) {
+    const [a, b] = [...touches.values()];
+    const d = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+    zoom = Math.min(1.8, Math.max(0.35, gesture.zoom0 * (d / gesture.pinch)));
+    return;
+  }
+  if (Math.hypot(e.clientX - gesture.sx, e.clientY - gesture.sy) > 12) {
+    gesture.moved = true;
+    clearTimeout(gesture.timer);
+  }
+  const w = toWorld(e.clientX, e.clientY);
+  mouse.x = w.x;
+  mouse.y = w.y;
+  // arrastrar con un dedo mueve la cámara (sin colocar nada)
+  if (gesture.moved && !placing && !targeting) {
+    const k = (window.devicePixelRatio || 1) / cellPx();
+    cam.x -= (e.clientX - px) * k;
+    cam.y -= (e.clientY - py) * k;
+    follow = false;
+  }
+}
+function touchUp(e: PointerEvent): void {
+  touches.delete(e.pointerId);
+  clearTimeout(gesture.timer);
+  if (gesture.cancelled || gesture.long) {
+    if (touches.size === 0) gesture.cancelled = false;
+    return;
+  }
+  // con algo que colocar o apuntar, se suelta donde se quiera (y se puede arrastrar)
+  if (gesture.moved && !placing && !targeting && useSlot < 0) return;
+  const w = toWorld(e.clientX, e.clientY);
+  onWorldClick(w.x, w.y, false);
+}
+
+function setupTouch(): void {
+  isTouch = window.matchMedia('(pointer: coarse)').matches || navigator.maxTouchPoints > 0;
+  root.classList.toggle('touch', isTouch);
+  const joy = root.querySelector<HTMLElement>('#hk-joy')!;
+  const knob = root.querySelector<HTMLElement>('#hk-joy-knob')!;
+  let jid = -1;
+  const setJoy = (e: PointerEvent) => {
+    const r = joy.getBoundingClientRect();
+    const R = r.width / 2;
+    let dx = (e.clientX - (r.left + R)) / R;
+    let dy = (e.clientY - (r.top + R)) / R;
+    const m = Math.hypot(dx, dy);
+    if (m > 1) {
+      dx /= m;
+      dy /= m;
+    }
+    knob.style.transform = `translate(${dx * R * 0.55}px, ${dy * R * 0.55}px)`;
+    if (m < 0.28) {
+      touchSteer = [0, 0];
+      return;
+    }
+    // 8 direcciones
+    const a = Math.atan2(dy, dx);
+    const sector = Math.round(a / (Math.PI / 4));
+    const dirs: [number, number][] = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
+    touchSteer = dirs[(sector + 8) % 8];
+  };
+  joy.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    unlockAudio();
+    goLandscape();
+    jid = e.pointerId;
+    joy.setPointerCapture(e.pointerId);
+    joy.classList.add('on');
+    setJoy(e);
+  });
+  joy.addEventListener('pointermove', (e) => {
+    if (e.pointerId === jid) setJoy(e);
+  });
+  const release = (e: PointerEvent) => {
+    if (e.pointerId !== jid) return;
+    jid = -1;
+    touchSteer = [0, 0];
+    knob.style.transform = '';
+    joy.classList.remove('on');
+  };
+  joy.addEventListener('pointerup', release);
+  joy.addEventListener('pointercancel', release);
+}
+
+// pantalla completa y horizontal (Android lo permite; iOS solo muestra el aviso)
+function goLandscape(): void {
+  if (!isTouch || document.fullscreenElement) return;
+  const el = document.documentElement;
+  void el
+    .requestFullscreen?.()
+    .then(() => (screen.orientation as ScreenOrientation & { lock?: (o: string) => Promise<void> }).lock?.('landscape'))
+    .catch(() => {});
+}
+
+// ⚡: lo mismo que la R, pero sin ratón: lo seleccionado o lo más cercano
+function actTouch(): void {
+  const m = me();
+  const u = myUnit();
+  if (!cur || !m || !u) return;
+  const p = disp.get(u[0]) ?? { x: u[3], y: u[4] };
+  let tx: number | null = null;
+  let ty: number | null = null;
+  const bCenter = (b: HuntSnapBuilding) => [b[3] + bSize(b) / 2, b[4] + bSize(b) / 2] as const;
+  const iu = inspect ? cur.snap.units.find((o) => o[0] === inspect) : undefined;
+  const sb = selected ? cur.snap.buildings.find((o) => o[0] === selected) : undefined;
+  if (m.side === 'hunter' && iu && isEnemyUnit(iu)) [tx, ty] = [iu[3], iu[4]];
+  else if (m.side === 'elf' && sb && sb[6] < sb[7]) [tx, ty] = bCenter(sb);
+  else if (m.side === 'elf') {
+    let best = 4.5;
+    for (const b of cur.snap.buildings) {
+      if (b[6] >= b[7]) continue;
+      const [cx, cy] = bCenter(b);
+      const d = Math.hypot(cx - p.x, cy - p.y);
+      if (d < best) [best, tx, ty] = [d, cx, cy];
+    }
+  } else {
+    let best = 4.5;
+    for (const o of cur.snap.units) {
+      if (!isEnemyUnit(o)) continue;
+      const d = Math.hypot(o[3] - p.x, o[4] - p.y);
+      if (d < best) [best, tx, ty] = [d, o[3], o[4]];
+    }
+    if (tx === null) {
+      best = 3.5;
+      for (const b of cur.snap.buildings) {
+        const [cx, cy] = bCenter(b);
+        const d = Math.hypot(cx - p.x, cy - p.y);
+        if (d < best) [best, tx, ty] = [d, cx, cy];
+      }
+    }
+  }
+  if (tx === null || ty === null) {
+    toast(m.side === 'elf' ? 'No hay nada dañado cerca para reparar' : 'No hay nada cerca que atacar', true);
+    return;
+  }
+  const keep = { x: mouse.x, y: mouse.y, in: mouse.in };
+  mouse.x = tx;
+  mouse.y = ty;
+  mouse.in = true;
+  actOnCursor();
+  Object.assign(mouse, keep);
+}
+
+// ---------- chat ----------
+let chatTeam = true;
+function openChat(): void {
+  const form = root.querySelector<HTMLFormElement>('#hk-chat-form')!;
+  codes.clear(); // que no se quede andando mientras escribes
+  form.hidden = false;
+  root.querySelector('#hk-chat')!.classList.add('open');
+  root.querySelector<HTMLInputElement>('#hk-chat-in')!.focus();
+}
+function closeChat(): void {
+  const input = root.querySelector<HTMLInputElement>('#hk-chat-in')!;
+  input.blur();
+  root.querySelector<HTMLFormElement>('#hk-chat-form')!.hidden = true;
+  root.querySelector('#hk-chat')!.classList.remove('open');
+}
+// mensajes de la sala durante la Cacería (main.ts los reenvía aquí)
+export function huntChat(from: string, color: string, text: string, team?: 'hunter' | 'elf'): void {
+  if (!built) return;
+  const log = root.querySelector<HTMLElement>('#hk-chat-log');
+  if (!log) return;
+  const el = document.createElement('div');
+  el.className = 'msg';
+  if (team) {
+    const t = document.createElement('span');
+    t.className = `ch ${team}`;
+    t.textContent = team === 'hunter' ? 'Trolls' : 'Elfos';
+    el.appendChild(t);
+  }
+  if (from) {
+    const b = document.createElement('b');
+    b.style.color = color;
+    b.textContent = from + ':';
+    el.appendChild(b);
+  }
+  el.appendChild(document.createTextNode(' ' + text));
+  log.appendChild(el);
+  while (log.children.length > 40) log.firstChild?.remove();
+  log.scrollTop = log.scrollHeight;
+  setTimeout(() => el.classList.add('faded'), 10000);
 }
 
 // ---------- entrada ----------
@@ -438,7 +766,32 @@ function onWorldClick(x: number, y: number, right: boolean): void {
       useSlot = -1;
       return;
     }
-    // el clic ya no mueve: te mueves con WASD y actúas con R
+    // tu personaje no se mueve con el clic (WASD); el clic derecho manda a la
+    // unidad o torre que tengas seleccionada
+    if (group.length) {
+      // a varias a la vez: si apuntas a algo, todas a eso; si es suelo, repartidas
+      const units = group.map((id) => cur!.snap.units.find((o) => o[0] === id)).filter((o): o is HuntSnapUnit => !!o);
+      const onSomething = !!unitAt(x, y) || !!buildingAt(x, y) || map.tiles[Math.floor(y) * map.w + Math.floor(x)] === TILE_TREE;
+      units.forEach((u, i) => {
+        const ring = Math.ceil(Math.sqrt(i + 1) - 1);
+        const ang = i * 2.4;
+        const off = onSomething || i === 0 ? 0 : 0.7 * (ring + 0.6);
+        commandUnit(u, x + Math.cos(ang) * off, y + Math.sin(ang) * off);
+      });
+      return;
+    }
+    const iu = inspect ? cur.snap.units.find((o) => o[0] === inspect) : undefined;
+    if (iu && iu[2] === meIdx() && COMMANDABLE.includes(UNIT_KIND_ORDER[iu[1]])) {
+      commandUnit(iu, x, y);
+      return;
+    }
+    const sb = selected ? cur.snap.buildings.find((o) => o[0] === selected && o[2] === meIdx()) : undefined;
+    if (sb && BUILDING_ORDER[sb[1]] === 'tower') {
+      const foe = cur.snap.units.find((u) => isEnemyUnit(u) && Math.hypot(u[3] - x, u[4] - y) < 0.9);
+      send({ k: 'focus', id: sb[0], target: foe ? foe[0] : 0 });
+      if (foe) ring(foe[3], foe[4], '#ff5a4e', 0.8);
+      toast(foe ? 'La torre disparará primero a ese objetivo' : 'La torre vuelve a disparar al más cercano');
+    }
     return;
   }
   if (useSlot >= 0) {
@@ -468,19 +821,18 @@ function onWorldClick(x: number, y: number, right: boolean): void {
   }
   // ¿clic sobre un edificio propio? → seleccionar
   const own = myBuildings().find((o) => cx >= o[3] && cx < o[3] + bSize(o) && cy >= o[4] && cy < o[4] + bSize(o));
-  // ¿clic sobre una unidad? → inspeccionarla (vida, nivel, objetos del cazador...)
-  let best: HuntSnapUnit | undefined;
-  let bestD = 0.75;
-  for (const u of cur.snap.units) {
-    const p = disp.get(u[0]) ?? { x: u[3], y: u[4] };
-    // el dibujo está por encima de los pies: se acepta pinchar en el cuerpo
-    const d = Math.min(Math.hypot(p.x - x, p.y - y), Math.hypot(p.x - x, p.y - 0.5 - y));
-    if (d < bestD) {
-      bestD = d;
-      best = u;
-    }
-  }
+  // ¿clic sobre una unidad? → seleccionarla. Mayús+clic suma/quita de la selección
+  const best = unitAt(x, y);
   if (best) {
+    const mineCmd = best[2] === meIdx() && COMMANDABLE.includes(UNIT_KIND_ORDER[best[1]]);
+    if (keys.has('Shift') && mineCmd) {
+      const set = new Set(group.length ? group : inspect ? [inspect] : []);
+      if (set.has(best[0])) set.delete(best[0]);
+      else set.add(best[0]);
+      setGroup([...set]);
+      return;
+    }
+    group = [];
     inspect = best[0];
     selected = 0;
     return;
@@ -488,10 +840,128 @@ function onWorldClick(x: number, y: number, right: boolean): void {
   if (own && m.side === 'elf') {
     selected = own[0];
     inspect = 0;
+    group = [];
     return;
   }
   selected = 0;
   inspect = 0;
+  group = [];
+}
+
+// altura dibujada (casillas) de cada tipo: la zona de clic es todo el dibujo
+function unitHeight(kind: UnitKind): number {
+  if (UNIT_SHEETS[kind] && unitAtlasOk) return SPRITE_TILES[kind] ?? 1.3;
+  if (isSoldierKind(kind)) return SOLDIERS[kind].size;
+  return kind === 'hunter' ? 2 : kind === 'wolf' ? 1.45 : kind === 'repairer' || kind === 'lumberjack' ? 0.85 : 1.2;
+}
+// la unidad bajo el punto: si hay varias, la más pequeña (un leñador delante del troll)
+function unitAt(x: number, y: number): HuntSnapUnit | undefined {
+  if (!cur) return undefined;
+  let best: HuntSnapUnit | undefined;
+  let bestScore = Infinity;
+  for (const u of cur.snap.units) {
+    const p = disp.get(u[0]) ?? { x: u[3], y: u[4] };
+    const h = unitHeight(UNIT_KIND_ORDER[u[1]]);
+    const hw = Math.max(0.42, h * 0.32);
+    const foot = p.y + 0.36;
+    if (x < p.x - hw || x > p.x + hw || y < foot - h * 0.95 || y > foot + 0.15) continue;
+    const score = h * 10 + Math.abs(x - p.x) + Math.abs(y - (foot - h / 2)) * 0.5;
+    if (score < bestScore) {
+      bestScore = score;
+      best = u;
+    }
+  }
+  return best;
+}
+function buildingAt(x: number, y: number): HuntSnapBuilding | undefined {
+  if (!cur) return undefined;
+  const cx = Math.floor(x);
+  const cy = Math.floor(y);
+  return cur.snap.buildings.find((o) => cx >= o[3] && cx < o[3] + bSize(o) && cy >= o[4] && cy < o[4] + bSize(o));
+}
+function setGroup(ids: number[]): void {
+  if (ids.length === 1) {
+    group = [];
+    inspect = ids[0];
+  } else {
+    group = ids;
+    inspect = 0;
+  }
+  selected = 0;
+}
+// recuadro: todas tus unidades mandables que queden dentro
+function selectBox(): void {
+  if (!cur) return;
+  const a = toWorld(boxSel.sx, boxSel.sy);
+  const b = toWorld(boxSel.ex, boxSel.ey);
+  const [x0, x1] = [Math.min(a.x, b.x), Math.max(a.x, b.x)];
+  const [y0, y1] = [Math.min(a.y, b.y), Math.max(a.y, b.y)];
+  const ids = cur.snap.units
+    .filter((u) => u[2] === meIdx() && COMMANDABLE.includes(UNIT_KIND_ORDER[u[1]]))
+    .filter((u) => {
+      const p = disp.get(u[0]) ?? { x: u[3], y: u[4] };
+      return p.x >= x0 && p.x <= x1 && p.y >= y0 - 0.5 && p.y <= y1 + 0.3;
+    })
+    .map((u) => u[0]);
+  if (ids.length) setGroup(ids);
+}
+// tus unidades mandables, por tipo (barra «Tus unidades» y Tab)
+function myCommandables(): HuntSnapUnit[] {
+  if (!cur) return [];
+  return cur.snap.units.filter((u) => u[2] === meIdx() && COMMANDABLE.includes(UNIT_KIND_ORDER[u[1]]));
+}
+function focusUnit(u: HuntSnapUnit): void {
+  const p = disp.get(u[0]) ?? { x: u[3], y: u[4] };
+  follow = false;
+  cam.x = p.x;
+  cam.y = p.y;
+}
+
+// unidades propias que se mandan con el ratón (tu personaje va con WASD)
+const COMMANDABLE: UnitKind[] = ['repairer', 'lumberjack', 'beast', 'mage', ...SOLDIER_ORDER];
+
+function commandUnit(u: HuntSnapUnit, x: number, y: number): void {
+  if (!cur) return;
+  const kind = UNIT_KIND_ORDER[u[1]];
+  const cx = Math.floor(x);
+  const cy = Math.floor(y);
+  const bAt = cur.snap.buildings.find((o) => cx >= o[3] && cx < o[3] + bSize(o) && cy >= o[4] && cy < o[4] + bSize(o));
+  if (kind === 'beast' || kind === 'mage' || isSoldierKind(kind)) {
+    const mineU = myUnit();
+    if (mineU && Math.hypot(mineU[3] - x, mineU[4] - y) < 0.9) {
+      send({ k: 'worker', id: u[0], follow: true });
+      ring(mineU[3], mineU[4], '#9be28a');
+      toast('Te sigue de nuevo');
+      return;
+    }
+    const foe = cur.snap.units.find((o) => isEnemyUnit(o) && Math.hypot(o[3] - x, o[4] - y) < 0.9);
+    if (foe) {
+      send({ k: 'worker', id: u[0], target: foe[0] });
+      ring(foe[3], foe[4], '#ff5a4e');
+      return;
+    }
+    if (bAt && kind === 'beast' && me()?.side === 'hunter') {
+      send({ k: 'worker', id: u[0], target: bAt[0] });
+      ring(bAt[3] + bSize(bAt) / 2, bAt[4] + bSize(bAt) / 2, '#ff5a4e', 1);
+      return;
+    }
+  }
+  if (kind === 'repairer' && bAt) {
+    send({ k: 'worker', id: u[0], target: bAt[0] });
+    ring(bAt[3] + bSize(bAt) / 2, bAt[4] + bSize(bAt) / 2, '#ffe9a8', 1);
+    if (bAt[6] >= bAt[7]) toast('Lo reparará en cuanto reciba daño');
+    return;
+  }
+  if (kind === 'lumberjack') {
+    const idx = cy * map.w + cx;
+    if (map.tiles[idx] === TILE_TREE && !cur.snap.deadTrees.includes(idx)) {
+      send({ k: 'worker', id: u[0], tree: idx });
+      ring(cx + 0.5, cy + 0.5, '#c8935a');
+      return;
+    }
+  }
+  send({ k: 'worker', id: u[0], x, y });
+  ring(x, y, '#9be28a');
 }
 
 // una orden que no es WASD: el servidor suelta la dirección; hasta que cambien
@@ -502,6 +972,7 @@ function orderSent(): void {
 }
 
 function steerFromKeys(): [number, number] {
+  if (touchSteer[0] || touchSteer[1]) return touchSteer;
   const dx = (codes.has('KeyD') ? 1 : 0) - (codes.has('KeyA') ? 1 : 0);
   const dy = (codes.has('KeyS') ? 1 : 0) - (codes.has('KeyW') ? 1 : 0);
   return [dx, dy];
@@ -610,6 +1081,7 @@ function trigger(a: Ability): void {
   }
   placing = null;
   if (def.target === 'point' || def.target === 'building') targeting = targeting === a ? null : a;
+  else if (a === 'recall' && mouse.in) send({ k: 'ability', a, x: mouse.x, y: mouse.y }); // señalando a un aliado, vas con él
   else send({ k: 'ability', a });
 }
 
@@ -624,7 +1096,23 @@ function onKey(e: KeyboardEvent): void {
     e.preventDefault();
     return;
   }
+  if (k === 'enter') {
+    e.preventDefault();
+    openChat();
+    return;
+  }
+  if (k === 'tab') {
+    e.preventDefault();
+    const list = myCommandables();
+    if (!list.length) return;
+    const i = list.findIndex((u) => u[0] === inspect);
+    const nxt = list[(i + 1) % list.length];
+    setGroup([nxt[0]]);
+    focusUnit(nxt);
+    return;
+  }
   if (k === 'escape') {
+    group = [];
     placing = null;
     targeting = null;
     useSlot = -1;
@@ -639,6 +1127,15 @@ function onKey(e: KeyboardEvent): void {
     return;
   }
   if (!m || cur.snap.over) return;
+  // 1: vuelve a tu personaje (como F1 en el Dota) aunque estés mandando a otros
+  if (k === '1') {
+    inspect = 0;
+    selected = 0;
+    placing = null;
+    targeting = null;
+    follow = true;
+    return;
+  }
   if (k === 'r' && !e.repeat) {
     actOnCursor();
     return;
@@ -662,7 +1159,7 @@ function onKey(e: KeyboardEvent): void {
   }
   if (m.side === 'hunter') {
     const n = Number(k);
-    if (n >= 1 && n <= INVENTORY_SLOTS) useItem(n - 1);
+    if (n >= 2 && n <= INVENTORY_SLOTS + 1) useItem(n - 2);
     if (k === 'g') shopOpen = !shopOpen;
   }
   if (k === 'h') {
@@ -704,11 +1201,55 @@ function onUiClick(e: Event): void {
     case 'demolish':
       send({ k: 'demolish', id: selected });
       break;
+    case 'roster': {
+      const list = myCommandables().filter((u) => UNIT_KIND_ORDER[u[1]] === v);
+      if (!list.length) break;
+      const nowT = performance.now();
+      if (rosterClick.kind === v && nowT - rosterClick.at < 350) {
+        setGroup(list.map((u) => u[0]));
+        rosterClick = { kind: '', at: 0, idx: 0 };
+        break;
+      }
+      const idx = rosterClick.kind === v ? (rosterClick.idx + 1) % list.length : 0;
+      rosterClick = { kind: v, at: nowT, idx };
+      setGroup([list[idx][0]]);
+      focusUnit(list[idx]);
+      break;
+    }
+    case 'army':
+      send({ k: 'army', id: selected, kind: v as SoldierKind });
+      break;
+    case 'sellunit':
+      if (inspect) send({ k: 'sellunit', id: inspect });
+      inspect = 0;
+      break;
+    case 'follow':
+      if (inspect) send({ k: 'worker', id: inspect, follow: true });
+      break;
+    case 'tact':
+      actTouch();
+      break;
+    case 'tme':
+      inspect = 0;
+      selected = 0;
+      placing = null;
+      targeting = null;
+      follow = true;
+      break;
+    case 'tchat':
+      openChat();
+      break;
+    case 'endhunt':
+      if (window.confirm('¿Terminar la partida ahora? Todos volverán a la sala.')) net.send({ type: 'end_hunt' });
+      break;
+    case 'unfocus':
+      if (selected) send({ k: 'focus', id: selected, target: 0 });
+      break;
     case 'train':
       send({ k: 'train', id: selected, unit: v as 'repairer' | 'lumberjack', tier: n });
       break;
     case 'market':
-      send({ k: 'market', buy: v === 'buy' });
+      send({ k: 'market', buy: v === 'buy' || v === 'buybulk', bulk: v === 'buybulk' || v === 'sellbulk' });
       break;
     case 'spec':
       send({ k: 'spec', s: v as (typeof SPEC_ORDER)[number] });
@@ -750,7 +1291,10 @@ function onUiClick(e: Event): void {
       break;
     }
     case 'buywood':
-      send({ k: 'buywood' });
+      send({ k: 'buywood', bulk: v === 'bulk' });
+      break;
+    case 'wolves':
+      send({ k: 'wolves', allow: v === 'on' });
       break;
     case 'hut':
       send({ k: 'hut' });
@@ -766,6 +1310,7 @@ function onUiClick(e: Event): void {
       if (v === 'panel') {
         selected = 0;
         inspect = 0;
+        group = [];
       }
       if (v === 'shop') shopOpen = false;
       if (v === 'modal') root.querySelector<HTMLElement>('#hk-modal')!.hidden = true;
@@ -1047,7 +1592,7 @@ function syncHud(): void {
   if (m && m.form === 'hunter' && s.releaseIn > 0)
     bh = `<b>${s.releaseIn}</b><span>Estás retenido en tu guarida. Los colonos se esconden. Ve comprando en la tienda (G).</span>`;
   else if (m && m.form === 'elf' && s.releaseIn > 0)
-    bh = `<b>${s.releaseIn}</b><span>¡Corre (WASD)! Elige una parcela, cierra sus puertas con murallas y construye tu casa.</span>`;
+    bh = `<b>${s.releaseIn}</b><span>¡Corre${isTouch ? '' : ' (WASD)'}! Elige una parcela, cierra sus puertas con murallas y construye tu casa.</span>`;
   else if (m && m.channel > 0) bh = `<b class="calm">Volviendo a la guarida… ${m.channel}</b>`;
   else if (m && m.respawn > 0) bh = `<b class="calm">Vuelves en ${m.respawn}</b>`;
   if (bh !== hashes.banner) {
@@ -1063,19 +1608,27 @@ function syncHud(): void {
   syncChoose();
 }
 
+function manaBar(m: HuntSnapMe): string {
+  const [cur0, max] = m.mana ?? [0, 0];
+  if (!max) return '';
+  return `<div class="bar mana"><i style="width:${Math.min(1, cur0 / max) * 100}%"></i><span>${fmt(cur0)} / ${fmt(max)} maná</span></div>`;
+}
+
 function abilityButton(a: Ability): string {
   const def = ABILITIES[a];
   const cd = me()?.cds[a] ?? 0;
-  const tip = `<b>${def.name}</b> <kbd>${def.key}</kbd><br>${esc(def.desc)}<br><small>Recarga ${def.cd} s</small>`;
-  return `<button class="hk-btn ab${targeting === a ? ' on' : ''}" data-act="ability" data-v="${a}" data-tip="${esc(tip)}">
-    <span class="ic">${icon(def.icon, def.emoji)}</span><kbd>${def.key}</kbd>${cd > 0 ? `<span class="cd">${cd}</span>` : ''}</button>`;
+  const mana = def.mana ?? 0;
+  const noMana = mana > (me()?.mana?.[0] ?? 0);
+  const tip = `<b>${def.name}</b> <kbd>${def.key}</kbd><br>${esc(def.desc)}<br><small>Recarga ${def.cd} s${mana ? ` · ${mana} de maná` : ''}</small>`;
+  return `<button class="hk-btn ab${targeting === a ? ' on' : ''}${noMana && cd <= 0 ? ' nomana' : ''}" data-act="ability" data-v="${a}" data-tip="${esc(tip)}">
+    <span class="ic">${icon(def.icon, def.emoji)}</span><kbd>${def.key}</kbd>${cd > 0 ? `<span class="cd">${cd}</span>` : ''}${mana ? `<span class="mn">${mana}</span>` : ''}</button>`;
 }
 
 // huecos del inventario. `own`: los tuyos (se usan con clic y llevan su tecla);
 // si no, solo se miran (el equipo del cazador visto por un colono)
 function invHtml(inv: HuntSnapMe['inv'], own: boolean): string {
   const act = (i: number) => (own ? ` data-act="slot" data-n="${i}"` : '');
-  const key = (i: number) => (own ? `<kbd>${i + 1}</kbd>` : '');
+  const key = (i: number) => (own ? `<kbd>${i + 2}</kbd>` : '');
   return inv
     .map((it, i) => {
       if (!it) return `<button class="hk-slot empty"${act(i)}>${key(i)}</button>`;
@@ -1108,6 +1661,7 @@ const KIND_NAME: Record<UnitKind, string> = {
   lumberjack: 'Leñador',
   beast: 'Bestia del cazador',
   mage: 'Mago élfico',
+  ...(Object.fromEntries(SOLDIER_ORDER.map((k) => [k, SOLDIERS[k].name])) as Record<SoldierKind, string>),
 };
 
 // ficha de la unidad que inspeccionas: vida, nivel y, si es el cazador o un
@@ -1132,7 +1686,38 @@ function inspectHtml(u: HuntSnapUnit): string {
   } else if (kind === 'hunter' || kind === 'wolf') {
     lines.push(`<div class="hk-hint">No ves su equipo ahora mismo.</div>`);
   }
+  if (u[2] === meIdx() && COMMANDABLE.includes(kind)) {
+    const how: Partial<Record<UnitKind, string>> = {
+      repairer: 'Clic derecho: en un edificio, lo repara; en el suelo, va allí y repara lo que se rompa cerca.',
+      lumberjack: 'Clic derecho: en un árbol, lo tala; en el suelo, va allí y tala el árbol más cercano.',
+      beast: 'Clic derecho: en un enemigo, lo ataca; en el suelo, va y se queda; en tu personaje, te sigue.',
+      mage: 'Clic derecho: en el cazador, lo ataca; en el suelo, va y se queda; en tu personaje, te sigue.',
+    };
+    if (isSoldierKind(kind)) lines.push(`<div class="hk-hint">${esc(SOLDIERS[kind].desc)}</div>`);
+    lines.push(`<div class="hk-hint">${how[kind] ?? 'Clic derecho: en un enemigo, lo ataca; en el suelo, va y se queda; en tu personaje, te sigue.'}</div>`);
+    if (kind === 'repairer' || kind === 'lumberjack') {
+      const def = (kind === 'repairer' ? REPAIRERS : LUMBERJACKS)[u[8]];
+      lines.push(`<button class="hk-btn sm danger" data-act="sellunit" data-tip="Recuperas la mitad de lo que costó">${icon('hk:demolish')} Vender (+${fmt(Math.floor((def?.gold ?? 0) / 2))})</button>`);
+    } else lines.push(`<button class="hk-btn sm" data-act="follow">Que me siga</button>`);
+  }
   return `<div class="hk-panel-head"><span class="ic big">${icon(UNIT_ICON[kind])}</span><div><b>${title}</b><small>${sub}</small></div><button data-act="close" data-v="panel">✕</button></div>${lines.join('')}`;
+}
+
+// «Tus unidades»: un botón por tipo con su cantidad. Clic = la siguiente de ese
+// tipo (y la cámara va a ella); doble clic = todas las de ese tipo
+function rosterHtml(): string {
+  const list = myCommandables();
+  if (!list.length) return '';
+  const byKind = new Map<UnitKind, number>();
+  for (const u of list) byKind.set(UNIT_KIND_ORDER[u[1]], (byKind.get(UNIT_KIND_ORDER[u[1]]) ?? 0) + 1);
+  const sel = new Set(group.length ? group : inspect ? [inspect] : []);
+  const btns = [...byKind]
+    .map(([k, n]) => {
+      const on = list.some((u) => UNIT_KIND_ORDER[u[1]] === k && sel.has(u[0]));
+      return `<button class="hk-btn ab roster${on ? ' on' : ''}" data-act="roster" data-v="${k}" data-tip="${esc(`<b>${KIND_NAME[k]}</b> ×${n}<br>Clic: el siguiente · doble clic: todos`)}"><span class="ic">${icon(UNIT_ICON[k])}</span><span class="nb">${n}</span></button>`;
+    })
+    .join('');
+  return `<div class="hk-group"><div class="hk-label">Tus unidades <kbd>Tab</kbd></div><div class="hk-row">${btns}</div></div>`;
 }
 
 function syncCard(): void {
@@ -1152,11 +1737,12 @@ function syncCard(): void {
       const xpFrac = m.xpNext > m.xpPrev ? (m.xp - m.xpPrev) / (m.xpNext - m.xpPrev) : 0;
       unitbar = `<div class="hk-bars">
         <div class="bar hp"><i style="width:${frac * 100}%"></i><span>${fmt(u[5])} / ${fmt(u[6])}</span></div>
+        ${manaBar(m)}
         <div class="bar xp"><i style="width:${Math.min(1, xpFrac) * 100}%"></i><span>nivel ${m.level} · ${fmt(m.xp - m.xpPrev)}/${fmt(m.xpNext - m.xpPrev)} xp</span></div>
       </div>
       <div class="hk-stats">⚔ ${fmt(m.stats.dmg)} · 🛡 ${fmt(m.stats.armor)} · ⏱ ${m.stats.attackSec}s · 👣 ${m.stats.speed} · ❤ +${fmt(m.stats.regen)}/s${m.attrs[0] || m.attrs[1] ? ` · 💪 ${fmt(m.attrs[0])} · 🏹 ${fmt(m.attrs[1])}` : ''}</div>`;
     } else {
-      unitbar = `<div class="hk-bars"><div class="bar hp small"><i style="width:${frac * 100}%"></i><span>${u[5]} / ${u[6]}</span></div></div>`;
+      unitbar = `<div class="hk-bars"><div class="bar hp small"><i style="width:${frac * 100}%"></i><span>${u[5]} / ${u[6]}</span></div>${manaBar(m)}</div>`;
     }
   }
   const abilities = abilitiesOfMe().map(abilityButton).join('');
@@ -1172,9 +1758,13 @@ function syncCard(): void {
       return `<button class="hk-btn bd${placing === t ? ' on' : ''}${off ? ' off' : !afford(l1.gold, l1.wood) ? ' poor' : ''}" data-act="place" data-v="${t}" data-tip="${esc(tip)}">
         <span class="ic">${icon(d.icon, d.emoji)}</span><kbd>${d.hotkey}</kbd><span class="ct">${l1.gold || l1.wood ? costHtml(l1.gold, l1.wood) : 'gratis'}</span>${d.limit < 10 ? `<span class="nb">${have}/${d.limit}</span>` : ''}</button>`;
     }).join('');
+    const noTown = m.tech < 2;
+    const townTip = noTown ? '<br><em>Necesitas un Ayuntamiento (mejora tu taller).</em>' : '';
     const market = `<div class="hk-market">
-      <button class="hk-btn sm${afford(s.market + MARKET.step, 0) ? '' : ' poor'}" data-act="market" data-v="buy" data-tip="Compra ${MARKET.lot} de madera. Cada compra la encarece para todos.">${icon('hk:wood')}+${MARKET.lot} <small>${icon('hk:gold')}${s.market + MARKET.step}</small></button>
-      <button class="hk-btn sm${m.wood >= MARKET.lot ? '' : ' poor'}" data-act="market" data-v="sell" data-tip="Vende ${MARKET.lot} de madera.">${icon('hk:wood')}−${MARKET.lot} <small>${icon('hk:gold')}${s.market}</small></button>
+      <button class="hk-btn sm${!noTown && afford(s.market + MARKET.step, 0) ? '' : ' poor'}" data-act="market" data-v="buy" data-tip="${esc(`Compra ${MARKET.lot} de madera. Cada compra la encarece para todos.${townTip}`)}">${icon('hk:wood')}+${MARKET.lot} <small>${icon('hk:gold')}${s.market + MARKET.step}</small></button>
+      <button class="hk-btn sm${!noTown && m.wood >= MARKET.lot ? '' : ' poor'}" data-act="market" data-v="sell" data-tip="${esc(`Vende ${MARKET.lot} de madera.${townTip}`)}">${icon('hk:wood')}−${MARKET.lot} <small>${icon('hk:gold')}${s.market}</small></button>
+      <button class="hk-btn sm${!noTown && afford(s.market + MARKET.step, 0) ? '' : ' poor'}" data-act="market" data-v="buybulk" data-tip="${esc(`Compra 200 de madera de golpe (20 lotes; el precio sube en cada uno).${townTip}`)}">${icon('hk:wood')}+200</button>
+      <button class="hk-btn sm${!noTown && m.wood >= MARKET.lot ? '' : ' poor'}" data-act="market" data-v="sellbulk" data-tip="${esc(`Vende hasta 200 de madera de golpe.${townTip}`)}">${icon('hk:wood')}−200</button>
     </div>`;
     const book = m.spec
       ? `<span class="hk-spec" data-tip="${esc(`<b>${SPECS[m.spec].name}</b><br>${SPECS[m.spec].desc}`)}">${icon(SPECS[m.spec].icon)}</span>`
@@ -1185,13 +1775,13 @@ function syncCard(): void {
         : '';
     card = `<div class="hk-group"><div class="hk-label">Construir</div><div class="hk-row">${builds}</div></div>
       <div class="hk-group"><div class="hk-label">Habilidades</div><div class="hk-row">${abilities}${book}${mage}</div></div>
-      <div class="hk-group"><div class="hk-label">Mercado</div>${market}</div>`;
+      <div class="hk-group"><div class="hk-label">Mercado</div>${market}</div>${rosterHtml()}`;
   } else if (m.side === 'hunter') {
     const inv = invHtml(m.inv, true);
     const bootsSlot = bootsHtml(m.boots, true);
     card = `<div class="hk-group"><div class="hk-label">Habilidades</div><div class="hk-row">${abilities}</div></div>
       <div class="hk-group"><div class="hk-label">Inventario</div><div class="hk-row inv">${inv}<span class="hk-sep"></span>${bootsSlot}</div></div>
-      <div class="hk-group"><div class="hk-label">Guarida</div><div class="hk-row"><button class="hk-btn ab shopbtn${shopOpen ? ' on' : ''}" data-act="shop" data-tip="Tienda de la guarida (G). Solo se compra estando cerca."><span class="ic">${icon('hk:shop')}</span><kbd>G</kbd>${m.nearShop ? '<span class="dot"></span>' : ''}</button></div></div>`;
+      <div class="hk-group"><div class="hk-label">Guarida</div><div class="hk-row"><button class="hk-btn ab shopbtn${shopOpen ? ' on' : ''}" data-act="shop" data-tip="Tienda de la guarida (G). Solo se compra estando cerca."><span class="ic">${icon('hk:shop')}</span><kbd>G</kbd>${m.nearShop ? '<span class="dot"></span>' : ''}</button>${m.form === 'hunter' ? `<button class="hk-btn ab${m.allowWolves ? ' on' : ''}" data-act="wolves" data-v="${m.allowWolves ? 'off' : 'on'}" data-tip="${esc(m.allowWolves ? '<b>Admites lobos</b><br>Los colonos que caigan pueden unirse a ti como lobos. Clic para no admitirlos.' : '<b>No admites lobos</b><br>Los caídos solo pueden volver como ángeles. Clic para admitirlos.')}"><span class="ic">${icon('hk:wolf')}</span><span class="ct">${m.allowWolves ? 'sí' : 'no'}</span></button>` : ''}</div></div>${rosterHtml()}`;
   } else if (m.form === 'angel') {
     card = `<div class="hk-group"><div class="hk-label">Ángel · ayuda a los colonos</div><div class="hk-row">${abilities}</div></div>
       <div class="hk-hint">Señala un edificio de los colonos y pulsa R para repararlo. Roba oro junto a la guarida del cazador.</div>`;
@@ -1206,6 +1796,24 @@ function syncPanel(): void {
   const m = me();
   if (!b || !m || cur!.snap.over || m.form !== 'elf') {
     if (selected && !b) selected = 0;
+    if (group.length && cur) {
+      group = group.filter((id) => cur!.snap.units.some((o) => o[0] === id));
+      if (group.length > 1) {
+        const byKind = new Map<UnitKind, number>();
+        for (const id of group) {
+          const u = cur.snap.units.find((o) => o[0] === id)!;
+          byKind.set(UNIT_KIND_ORDER[u[1]], (byKind.get(UNIT_KIND_ORDER[u[1]]) ?? 0) + 1);
+        }
+        const chips = [...byKind].map(([k, n]) => `<span class="hk-gchip">${icon(UNIT_ICON[k])}<b>${n}</b> ${esc(KIND_NAME[k])}</span>`).join('');
+        setHtml(
+          'hk-panel',
+          `<div class="hk-panel-head"><span class="ic big">${icon('hk:upgrade')}</span><div><b>${group.length} unidades</b><small>seleccionadas</small></div><button data-act="close" data-v="panel">✕</button></div><div class="hk-gchips">${chips}</div><div class="hk-hint">Clic derecho: van todas (a reparar, talar, atacar o a un punto, repartidas). Mayús+clic suma o quita una.</div>`,
+        );
+        panel.hidden = false;
+        return;
+      }
+      if (group.length === 1) setGroup(group);
+    }
     const iu = inspect && cur && !cur.snap.over ? cur.snap.units.find((o) => o[0] === inspect) : undefined;
     if (inspect && !iu) inspect = 0;
     if (iu) {
@@ -1219,7 +1827,7 @@ function syncPanel(): void {
   }
   const { type, wall, tower, def } = buildingInfo(b);
   const level = b[5];
-  const maxLv = type === 'wall' ? wallMaxLevel(wall) : levelsOf(type);
+  const maxLv = type === 'wall' ? wallMaxLevel(wall) : type === 'tower' && level === TOWER_GREEN_FINAL ? level : levelsOf(type);
   const lines: string[] = [];
   lines.push(`<div class="bar hp"><i style="width:${(b[6] / b[7]) * 100}%"></i><span>${fmt(b[6])} / ${fmt(b[7])}</span></div>`);
   const stat = (k: string, v: string) => `<span class="st"><em>${k}</em>${v}</span>`;
@@ -1238,12 +1846,22 @@ function syncPanel(): void {
   let up = '';
   if (level < maxLv) {
     if (type === 'wall' && level === 5) {
-      up = `<div class="hk-label">Especialidad (nivel 6)</div><div class="hk-branches">${WALL_BRANCH_ORDER.map((br) => {
+      up = `<div class="hk-label">Especialidad (nivel 6)</div><div class="hk-branches">${WALL_BRANCH_ORDER.filter((br) => !WALL_BRANCHES[br].hidden).map((br) => {
         const nd = levelDef('wall', 6, br, 'main');
         const req = reqText(nd.req);
         return `<button class="hk-branch${!afford(nd.gold, nd.wood) || req ? ' poor' : ''}" data-act="upgrade" data-v="${br}" data-tip="${esc(`<b>${WALL_BRANCHES[br].name}</b> · ${fmt(nd.hp)} de vida, armadura ${nd.armor}<br>${WALL_BRANCHES[br].pitch}`)}">
           <span class="ic">${icon(WALL_BRANCHES[br].icon)}</span><b>${WALL_BRANCHES[br].name}</b><small>${costHtml(nd.gold, nd.wood)}</small></button>`;
       }).join('')}</div>`;
+    } else if (type === 'tower' && TOWER_FORKS[level]) {
+      // bifurcación: elegir rama (como en el original)
+      up = `<div class="hk-label">Elige cómo sigue</div><div class="hk-branches two">${TOWER_FORKS[level]
+        .map((f) => {
+          const nd = levelDef('tower', f.level, null, 'main');
+          const req = reqText(nd.req);
+          const tip = `<b>${nd.name}</b><br>vida ${fmt(nd.hp)} · daño ${fmt(nd.dmg ?? 0)} · alcance ${(nd.range ?? 0).toFixed(1)}${f.level === TOWER_GREEN_FINAL ? '<br><em>Final de su rama: no sube más.</em>' : ''}${f.level === 13 ? '<br><em>Se salta el Dragón negro.</em>' : ''}`;
+          return `<button class="hk-branch${!afford(nd.gold, nd.wood) || req ? ' poor' : ''}" data-act="upgrade" data-v="${f.branch}" data-tip="${esc(tip)}"><span class="ic">${icon('hk:tower')}</span><b>${nd.name}</b><small>${costHtml(nd.gold, nd.wood)}</small></button>`;
+        })
+        .join('')}</div>`;
     } else {
       const nd = levelDef(type, level + 1, wall, tower);
       const req = reqText(nd.req);
@@ -1264,14 +1882,23 @@ function syncPanel(): void {
     }
   } else up = `<div class="hk-req ok">Nivel máximo</div>`;
 
-  if (type === 'wall' && def.luck) {
-    up += `<button class="hk-btn wide${b[12] > 0 ? ' poor' : ''}" data-act="lots" data-tip="${esc('<b>Sortear armadura</b><br>De 0 a 30 de armadura extra. Cada 3 minutos.')}">${icon('hk:wall-random')} Sortear armadura <span class="ct">${b[12] > 0 ? `${b[12]} s` : `ahora +${b[11]}`}</span></button>`;
-  }
+  // muralla salida de la aleatoria: un único sorteo de armadura a los 3 minutos
+  if (type === 'wall' && b[12] >= 0) {
+    up += `<button class="hk-btn wide${b[12] > 0 ? ' poor' : ''}" data-act="lots" data-tip="${esc('<b>Sortear armadura</b><br>Una sola vez: de −3 a +3 de armadura para siempre.')}">${icon('hk:wall-random')} Sortear armadura <span class="ct">${b[12] > 0 ? `${b[12]} s` : 'ya'}</span></button>`;
+  } else if (type === 'wall' && b[11]) lines.push(`<div class="hk-req ok">Armadura sorteada: ${b[11] > 0 ? '+' : ''}${b[11]}</div>`);
   if (type === 'wall' && def.eatsTree) {
     up += `<button class="hk-btn wide${b[9] & 64 ? ' poor' : ''}" data-act="eat" data-tip="${esc(`<b>Comerse un árbol</b><br>Uno a 4 casillas como mucho: +${fmt(def.eatsTree)} de vida en 30 s. El árbol vuelve a crecer al minuto.`)}">${icon('hk:wall-tree')} Comerse un árbol <span class="ct">+${fmt(def.eatsTree)}</span></button>`;
   }
   if (type === 'tower' && b[10] > 0) lines.push(`<div class="hk-req ok">Remodelada ${b[10]}/5: +${b[10] * 20} % de alcance, +${b[10] * 5} % de cadencia</div>`);
   let train = '';
+  let army = '';
+  if (type === 'workshop' && level >= 5) {
+    army = `<div class="hk-label">Ejército (Cenarion Keep)</div><div class="hk-train">${SOLDIER_ORDER.map((k) => {
+      const d = SOLDIERS[k];
+      const stats = d.dmg ? `vida ${fmt(d.hp)} · daño ${fmt(d.dmg)} · alcance ${d.range.toFixed(1)} · armadura ${d.armor}` : `vida ${fmt(d.hp)} · no ataca`;
+      return `<button class="hk-btn tr${!afford(d.gold, d.wood) ? ' poor' : ''}" data-act="army" data-v="${k}" data-tip="${esc(`<b>${d.name}</b> · ${costHtml(d.gold, d.wood)} · comida ${d.food}<br>${stats}<br>${d.desc}`)}"><span class="ic">${icon(d.icon)}</span><span class="ct">${d.gold ? fmt(d.gold) : `${fmt(d.wood)}🪵`}</span></button>`;
+    }).join('')}</div>`;
+  }
   if (type === 'workshop' || type === 'elftree') {
     const table = type === 'workshop' ? REPAIRERS : LUMBERJACKS;
     const kind = type === 'workshop' ? 'repairer' : 'lumberjack';
@@ -1279,14 +1906,22 @@ function syncPanel(): void {
       .map((w, i) => {
         const req = reqText(w.req);
         const info = kind === 'repairer' ? `repara el edificio entero en ${Math.round(50 * (w.ratio ?? 1))} s · comida ${w.food}` : `${(w.woodPerSec ?? 0) * RESOURCE_MULT} de madera/s`;
-        return `<button class="hk-btn tr${!afford(w.gold, 0) || req ? ' poor' : ''}" data-act="train" data-v="${kind}" data-n="${i}" data-tip="${esc(`<b>${w.name}</b> · ${costHtml(w.gold, 0)}<br>${info}${req ? `<br><em>${req}</em>` : ''}`)}">
+        const extra = w.name === 'Paladín' ? '<br>Luz sagrada al edificio más dañado, Armadura sagrada y +3 de armadura alrededor.' : '';
+        return `<button class="hk-btn tr${!afford(w.gold, w.wood ?? 0) || req ? ' poor' : ''}" data-act="train" data-v="${kind}" data-n="${i}" data-tip="${esc(`<b>${w.name}</b> · ${costHtml(w.gold, w.wood ?? 0)}<br>${info}${extra}${req ? `<br><em>${req}</em>` : ''}`)}">
           <span class="ic">${icon(kind === 'repairer' ? 'hk:repairer' : 'hk:lumberjack')}</span><span class="lv">${i + 1}</span><span class="ct">${fmt(w.gold)}</span></button>`;
       })
       .join('')}</div>`;
   }
+  let towerFocus = '';
+  if (type === 'tower' && def.dmg) {
+    const fu = b[13] ? cur!.snap.units.find((o) => o[0] === b[13]) : undefined;
+    towerFocus = fu
+      ? `<div class="hk-focus">${icon(UNIT_ICON[UNIT_KIND_ORDER[fu[1]]])}<span>Objetivo: <b>${esc(init?.players[fu[2]]?.name ?? KIND_NAME[UNIT_KIND_ORDER[fu[1]]])}</b></span><button class="hk-btn sm" data-act="unfocus">Quitar</button></div>`
+      : `<div class="hk-hint">Clic derecho sobre un enemigo: esta torre le dispara primero.</div>`;
+  }
   const html = `<div class="hk-panel-head"><span class="ic big">${icon(buildingIcon(b))}</span><div><b>${esc(def.name)}</b><small>nivel ${level}/${maxLv}</small></div><button data-act="close" data-v="panel">✕</button></div>
-    ${lines.join('')}${up}${train}
-    <button class="hk-btn sm danger" data-act="demolish" data-tip="Derribar (Supr). Solo con la vida casi entera y sin el cazador cerca. No devuelve nada.">${icon('hk:demolish')} Derribar</button>`;
+    ${lines.join('')}${up}${train}${army}
+    ${towerFocus}<button class="hk-btn sm danger" data-act="demolish" data-tip="Vender (Supr): recuperas la mitad de lo invertido. Solo con la vida casi entera y sin el cazador cerca.">${icon('hk:demolish')} Vender (½)</button>`;
   setHtml('hk-panel', html);
   panel.hidden = false;
 }
@@ -1345,6 +1980,7 @@ function syncShop(): void {
       })
       .join('')}
     <button class="hk-item${afford(WOOD_FOR_GOLD, 0) && m.nearShop ? '' : ' poor'}" data-act="buywood" data-tip="${esc(`<b>1 de madera</b><br>Para los objetos rúnicos.<br>${costHtml(WOOD_FOR_GOLD, 0)}`)}"><span class="ic">${icon('hk:item-wood')}</span><span class="ct">${fmt(WOOD_FOR_GOLD)}</span></button>
+    <button class="hk-item${afford(WOOD_BULK.gold, 0) && m.nearShop ? '' : ' poor'}" data-act="buywood" data-v="bulk" data-tip="${esc(`<b>${WOOD_BULK.wood} de madera</b><br>Al por mayor, algo más baratas.<br>${costHtml(WOOD_BULK.gold, 0)}`)}"><span class="ic">${icon('hk:item-wood')}</span><span class="v">×${WOOD_BULK.wood}</span><span class="ct">${fmt(WOOD_BULK.gold)}</span></button>
     ${m.form === 'hunter' ? `<button class="hk-item hut${nextHut && afford(nextHut.cost, 0) ? '' : ' poor'}" data-act="hut" data-tip="${esc(nextHut ? `<b>Mejorar la guarida</b><br>${m.hutIncome} → ${nextHut.income * RESOURCE_MULT} de oro/s<br>${costHtml(nextHut.cost, 0)}` : 'Guarida al máximo')}"><span class="ic">${icon('hk:hut')}</span><span class="v">nv ${m.hutLevel}</span><span class="ct">${nextHut ? fmt(nextHut.cost) : 'máx'}</span></button>` : ''}
   </div></div>`;
   const html = `<div class="hk-panel-head"><span class="ic big">${icon('hk:shop')}</span><div><b>Tienda de la guarida</b><small>${m.nearShop ? 'Dos objetos iguales se funden en el siguiente nivel' : 'Acércate a la guarida para comprar'}</small></div><button data-act="close" data-v="shop">✕</button></div>${lines}${extras}`;
@@ -1361,7 +1997,9 @@ function syncChoose(): void {
       <p class="hk-sub">Sigues en la partida. Elige cómo vuelves:</p>
       <div class="hk-choices two">
         <button class="hk-choice angel" data-act="form" data-v="angel"><span class="ic">${icon('hk:angel')}</span><b>Ángel</b><small>Ayudas a los colonos: reparas sus edificios, aturdes al cazador y le robas oro en su guarida.</small></button>
-        <button class="hk-choice wolf" data-act="form" data-v="wolf"><span class="ic">${icon('hk:wolf')}</span><b>Lobo</b><small>Te pasas al cazador: golpeas y cobras oro por cada golpe, compras en su guarida. Empiezas con oro según los minutos de partida.</small></button>
+        ${cur?.snap.wolves === false
+          ? `<button class="hk-choice wolf off" disabled><span class="ic">${icon('hk:wolf')}</span><b>Lobo</b><small>El cazador no admite lobos en esta partida.</small></button>`
+          : `<button class="hk-choice wolf" data-act="form" data-v="wolf"><span class="ic">${icon('hk:wolf')}</span><b>Lobo</b><small>Te pasas al cazador: golpeas y cobras oro por cada golpe, compras en su guarida. Empiezas con oro según los minutos de partida.</small></button>`}
       </div></div>`;
     setHtml('hk-modal', html);
     hashes.choose = html;
@@ -1614,17 +2252,20 @@ function hslRgb(h: number, s2: number, l: number): [number, number, number] {
 
 // la túnica verde del elfo se pinta del color del jugador (una vez por color)
 function sheetImage(kind: string, color: string): CanvasImageSource {
-  if (kind !== 'elf') return unitAtlas;
-  const hit = tintCache.get(color);
+  if (!TINTED.has(kind)) return unitAtlas;
+  const key = `${kind}|${color}`;
+  const hit = tintCache.get(key);
   if (hit) return hit;
-  const sh = UNIT_SHEETS.elf;
+  const sh = UNIT_SHEETS[kind];
+  // solo la franja del atlas de este personaje (mismas coordenadas que el atlas)
+  const y0 = Math.min(...sh.frames.map((f) => f[1]));
   const h = Math.max(...sh.frames.map((f) => f[1])) + sh.h;
   const c = document.createElement('canvas');
   c.width = unitAtlas.width;
   c.height = h;
   const cx = c.getContext('2d', { willReadFrequently: true })!;
-  cx.drawImage(unitAtlas, 0, 0);
-  const img = cx.getImageData(0, 0, c.width, h);
+  cx.drawImage(unitAtlas, 0, y0, unitAtlas.width, h - y0, 0, y0, unitAtlas.width, h - y0);
+  const img = cx.getImageData(0, y0, c.width, h - y0);
   const d = img.data;
   const [th, ts] = hexHsl(color);
   for (let i = 0; i < d.length; i += 4) {
@@ -1636,8 +2277,8 @@ function sheetImage(kind: string, color: string): CanvasImageSource {
     d[i + 1] = g1;
     d[i + 2] = b;
   }
-  cx.putImageData(img, 0, 0);
-  tintCache.set(color, c);
+  cx.putImageData(img, 0, y0);
+  tintCache.set(key, c);
   return c;
 }
 
@@ -1699,17 +2340,39 @@ function drawUnit(u: HuntSnapUnit, x: number, y: number, now: number, moving: bo
   const worker = kind === 'repairer' || kind === 'lumberjack';
   const sheet = unitAtlasOk ? UNIT_SHEETS[kind] : undefined;
   // obrero trabajando: se pega a su árbol/edificio (sombra incluida)
-  const working = !sheet && worker && (u[9] ?? 0) > 0;
+  const working = worker && (u[9] ?? 0) > 0;
   if (working) {
     const [vx, vy] = DIR_VEC[u[9] - 1];
     x += vx * s * (kind === 'lumberjack' ? 0.5 : 0.36);
     y += vy * s * (kind === 'lumberjack' ? (vy < 0 ? 0.62 : 0.4) : 0.36);
   }
-  const size = sheet ? (SPRITE_TILES[kind] ?? 1.3) * s * 0.8 : kind === 'hunter' ? s * 2 : kind === 'wolf' ? s * 1.45 : worker ? s * 0.85 : s * 1.2;
+  const soldier = isSoldierKind(kind);
+  const size = sheet ? (SPRITE_TILES[kind] ?? 1.3) * s * 0.8 : soldier ? SOLDIERS[kind].size * s : kind === 'hunter' ? s * 2 : kind === 'wolf' ? s * 1.45 : worker ? s * 0.85 : s * 1.2;
   const footY = sheet ? y + s * 0.32 : y + size * 0.36;
   const topY = sheet ? footY - (SPRITE_TILES[kind] ?? 1.3) * s * 0.92 : y - size * 0.55;
   const invis = (u[7] & 1) !== 0;
   g.save();
+  // objetivo fijado por la torre que tienes seleccionada: mira roja
+  const selB = selected ? cur?.snap.buildings.find((o) => o[0] === selected) : undefined;
+  if (selB && selB[13] === u[0]) {
+    const r = size * 0.5;
+    g.strokeStyle = '#ff5a4e';
+    g.lineWidth = 2.5;
+    g.beginPath();
+    g.arc(x, footY - size * 0.35, r, 0, Math.PI * 2);
+    for (const [ax, ay] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      g.moveTo(x + ax * r * 0.6, footY - size * 0.35 + ay * r * 0.6);
+      g.lineTo(x + ax * r * 1.25, footY - size * 0.35 + ay * r * 1.25);
+    }
+    g.stroke();
+  }
+  if (group.includes(u[0])) {
+    g.strokeStyle = '#9be28a';
+    g.lineWidth = 2;
+    g.beginPath();
+    g.ellipse(x, footY, size * 0.46, size * 0.16, 0, 0, Math.PI * 2);
+    g.stroke();
+  }
   if (u[0] === inspect) {
     g.strokeStyle = '#ffcd45';
     g.lineWidth = 2;
@@ -1748,7 +2411,7 @@ function drawUnit(u: HuntSnapUnit, x: number, y: number, now: number, moving: bo
     g.fillRect(x - size, y - size - s * 0.3, size * 2, size * 2);
   }
   // obreros trabajando: pegados a su árbol o edificio, dando hachazos/martillazos
-  if (working) {
+  if (working && !sheet) {
     const [vx] = DIR_VEC[u[9] - 1];
     const swing = Math.sin(now / 85);
     g.translate(x, y - s * 0.06 - Math.max(0, swing) * s * 0.04);
@@ -1807,7 +2470,7 @@ function drawUnit(u: HuntSnapUnit, x: number, y: number, now: number, moving: bo
     g.textAlign = 'center';
     g.fillText(st.join(''), x, topY - s * 0.45);
   }
-  if (!worker) {
+  if (!worker && !soldier) {
     const name = init?.players[u[2]]?.name ?? '';
     g.font = `700 ${Math.round(Math.max(10, s * 0.26))}px system-ui, sans-serif`;
     g.textAlign = 'center';
@@ -2020,6 +2683,41 @@ function frame(now: number): void {
   drawables.sort((a, b) => a.y - b.y);
   for (const d of drawables) d.draw();
 
+  // lo que hay bajo el ratón se ilumina (así sabes qué vas a seleccionar)
+  if (mouse.in && !isTouch && !placing && !targeting && useSlot < 0 && !boxSel.moved) {
+    const hu = unitAt(mouse.x, mouse.y);
+    const hb = hu ? undefined : buildingAt(mouse.x, mouse.y);
+    canvas.style.cursor = hu || hb ? 'pointer' : 'crosshair';
+    g.save();
+    g.strokeStyle = 'rgba(255, 255, 255, 0.75)';
+    g.lineWidth = 2;
+    g.setLineDash([4, 3]);
+    if (hu) {
+      const p = pos.get(hu[0]) ?? { x: hu[3], y: hu[4] };
+      const h = unitHeight(UNIT_KIND_ORDER[hu[1]]);
+      g.beginPath();
+      g.ellipse(X(p.x), Y(p.y) + s * 0.36, h * s * 0.36, h * s * 0.13, 0, 0, Math.PI * 2);
+      g.stroke();
+    } else if (hb) {
+      g.strokeRect(X(hb[3]) + 2, Y(hb[4]) + 2, bSize(hb) * s - 4, bSize(hb) * s - 4);
+    }
+    g.restore();
+  }
+  if (boxSel.on && boxSel.moved) {
+    const r = canvas.getBoundingClientRect();
+    const dpr2 = window.devicePixelRatio || 1;
+    const x0 = (Math.min(boxSel.sx, boxSel.ex) - r.left) * dpr2;
+    const y0 = (Math.min(boxSel.sy, boxSel.ey) - r.top) * dpr2;
+    const w0 = Math.abs(boxSel.ex - boxSel.sx) * dpr2;
+    const h0 = Math.abs(boxSel.ey - boxSel.sy) * dpr2;
+    g.save();
+    g.fillStyle = 'rgba(155, 226, 138, 0.12)';
+    g.strokeStyle = 'rgba(155, 226, 138, 0.9)';
+    g.lineWidth = 1.5;
+    g.fillRect(x0, y0, w0, h0);
+    g.strokeRect(x0, y0, w0, h0);
+    g.restore();
+  }
   // ayudas: colocación, objetivo de habilidad, alcance de la torre seleccionada
   const m = snap.me;
   if (m && mouse.in && (placing || targeting || useSlot >= 0)) {
@@ -2303,7 +3001,9 @@ export function isHuntActive(): boolean {
 
 export function startHunt(i: HuntInit): void {
   build();
-  const fresh = !active || init?.hunterId !== i.hunterId || init.youAre !== i.youAre;
+  // partida nueva (no una reconexión a la misma): se olvida TODO lo de la anterior
+  root.querySelector<HTMLElement>('#hk-endbtn')!.hidden = !isHostFlag;
+  const fresh = !active || init?.gameId !== i.gameId || init?.hunterId !== i.hunterId || init.youAre !== i.youAre;
   init = i;
   active = true;
   root.querySelector<HTMLElement>('#hk-end')!.hidden = true;
@@ -2313,7 +3013,19 @@ export function startHunt(i: HuntInit): void {
   placing = null;
   targeting = null;
   selected = 0;
+  inspect = 0;
+  useSlot = -1;
   shopOpen = false;
+  disp.clear();
+  anim.clear();
+  corpses.length = 0;
+  chopping.clear();
+  local.on = false;
+  steerSent = [0, 0];
+  steerActive = [0, 0];
+  incomeSec = -1;
+  const modal = root.querySelector<HTMLElement>('#hk-modal');
+  if (modal) modal.hidden = true;
   follow = true;
   zoom = 1;
   fx = [];
@@ -2332,6 +3044,13 @@ export function startHunt(i: HuntInit): void {
   void PHASE;
 }
 
+// el anfitrión ve el botón de terminar la partida
+let isHostFlag = false;
+export function setHuntHost(host: boolean): void {
+  isHostFlag = host;
+  if (built) root.querySelector<HTMLElement>('#hk-endbtn')!.hidden = !host;
+}
+
 export function onHuntTick(snap: HuntSnap, events: HuntEvent[]): void {
   if (!active) return;
   prev = cur;
@@ -2346,14 +3065,15 @@ export function onHuntOver(result: HuntResult, backToLobby: () => void): void {
   }
   const mine = result.players.find((p) => p.id === init!.youAre);
   const won = mine ? (mine.role === 'hunter') === (result.winner === 'hunter') : null;
-  const why = result.reason === 'hunter_dead' ? 'El cazador ha caído.' : 'No queda ningún colono en pie.';
+  const why = result.reason === 'ended' ? 'El anfitrión terminó la partida.' : result.reason === 'hunter_dead' ? 'El cazador ha caído.' : 'No queda ningún colono en pie.';
+  const ended = result.reason === 'ended';
   const mm = Math.floor(result.seconds / 60);
   const ss = String(result.seconds % 60).padStart(2, '0');
   const formName: Record<string, string> = { hunter: 'Cazador', elf: 'Colono', angel: 'Ángel', wolf: 'Lobo', choosing: 'Caído', dead: 'Caído' };
   const end = root.querySelector<HTMLElement>('#hk-end')!;
   end.innerHTML = `<div class="hk-end-box ${result.winner}">
     <div class="hk-end-icon">${icon(result.winner === 'hunter' ? 'hk:troll' : 'hk:house')}</div>
-    <h2>${won === null ? (result.winner === 'hunter' ? 'Gana el cazador' : 'Ganan los colonos') : won ? '¡Victoria!' : 'Derrota'}</h2>
+    <h2>${ended ? 'Partida terminada' : won === null ? (result.winner === 'hunter' ? 'Gana el cazador' : 'Ganan los colonos') : won ? '¡Victoria!' : 'Derrota'}</h2>
     <p>${why} La cacería duró ${mm}:${ss}.</p>
     <table>
       <thead><tr><th>Jugador</th><th>Papel</th><th>Oro</th><th>Daño</th><th>Edif.</th><th>Bajas</th></tr></thead>

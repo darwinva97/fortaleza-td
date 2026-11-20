@@ -25,6 +25,7 @@ export const HUNT = {
 export interface HuntInit {
   youAre: string;
   hunterId: string;
+  gameId?: number; // cambia en cada partida
   players: { id: string; name: string; color: string; role: 'hunter' | 'colonist' }[];
 }
 

@@ -105,6 +105,7 @@ interface RoomPlayer {
   // GameInit para pintar el estandarte del color del jugador en su spawn. Se
   // libera sola al salir (el RoomPlayer se elimina del lobby) o al cambiar de mapa.
   door?: number;
+  huntSide?: 'hunter' | 'elf'; // Cacería: bando elegido en el lobby
   // LADDER · identidad PERSISTENTE del jugador (la del rango), distinta del
   // `token` de esta sesión. La sala no la valida ni la usa para nada: solo la
   // transporta hasta el final de la partida, que es cuando el LadderDO comprueba
@@ -219,6 +220,7 @@ interface PersistedPlayer {
   abandoned?: boolean;
   cameFromSpectator?: boolean;
   door?: number;
+  huntSide?: 'hunter' | 'elf';
   claimedSlot?: string;
 }
 
@@ -400,6 +402,7 @@ export class RoomDO {
             ...(p.abandoned ? { abandoned: true } : {}),
             ...(p.cameFromSpectator ? { cameFromSpectator: true } : {}),
             ...(p.door !== undefined ? { door: p.door } : {}),
+            ...(p.huntSide ? { huntSide: p.huntSide } : {}),
             ...(p.claimedSlot !== undefined ? { claimedSlot: p.claimedSlot } : {}),
           }))
         : [],
@@ -583,6 +586,7 @@ export class RoomDO {
       ...(pp.abandoned ? { abandoned: true } : {}),
       ...(pp.cameFromSpectator ? { cameFromSpectator: true } : {}),
       ...(pp.door !== undefined ? { door: pp.door } : {}),
+      ...(pp.huntSide ? { huntSide: pp.huntSide } : {}),
       ...(pp.claimedSlot !== undefined ? { claimedSlot: pp.claimedSlot } : {}),
     }));
     // los espectadores no se persisten: al reconectar entran de nuevo como
@@ -1184,6 +1188,7 @@ export class RoomDO {
       // F9b · la puerta reclamada solo se anuncia si la lleva Y el mapa la admite
       // (multi-ruta): así el lobby no muestra reclamos de un mapa ya cambiado.
       ...(p.door !== undefined ? { door: p.door } : {}),
+      ...(p.huntSide ? { huntSide: p.huntSide } : {}),
     }));
   }
 
@@ -1651,6 +1656,7 @@ export class RoomDO {
     return {
       youAre: forId,
       hunterId: h.players.find((p) => p.role === 'hunter')?.id ?? '',
+      gameId: h.gameId,
       players: h.players.map((p) => ({ id: p.id, name: p.name, color: p.color, role: p.role })),
     };
   }
@@ -1660,14 +1666,22 @@ export class RoomDO {
     if (roster.length < HUNT.MIN_PLAYERS) return;
     const humans = roster.map((p) => ({ id: p.id, name: p.name, color: p.color }));
     const seed = (Math.random() * 0xffffffff) | 0;
-    if (roster.length === 1) {
+    // cada jugador elige bando en el lobby (puede haber varios trolls)
+    const volunteers = roster.filter((p) => p.huntSide === 'hunter');
+    if (roster.length === 1 && volunteers.length === 0) {
       // sin nadie más con quien jugar: el cazador lo lleva el bot
       this.huntBot = createHuntBotMemory();
       this.hunt = createHunt(seed, [...humans, HUNT_BOT], HUNT_BOT.id);
+    } else if (volunteers.length > 0) {
+      this.huntBot = null;
+      this.hunt = createHunt(seed, humans, volunteers.map((p) => p.id));
     } else {
-      // el cazador ROTA: le toca a quien menos veces lo haya sido en esta sala
-      const least = Math.min(...roster.map((p) => this.huntTurns.get(p.token) ?? 0));
-      const candidates = roster.filter((p) => (this.huntTurns.get(p.token) ?? 0) === least);
+      // nadie eligió troll: le toca a quien menos veces lo haya sido en esta sala
+      // (entre los que no pidieron ser elfo; si todos lo pidieron, entre todos)
+      const pool = roster.filter((p) => p.huntSide !== 'elf');
+      const from = pool.length ? pool : roster;
+      const least = Math.min(...from.map((p) => this.huntTurns.get(p.token) ?? 0));
+      const candidates = from.filter((p) => (this.huntTurns.get(p.token) ?? 0) === least);
       const hunter = candidates[Math.floor(Math.random() * candidates.length)];
       this.huntTurns.set(hunter.token, least + 1);
       this.huntBot = null;
@@ -2315,6 +2329,21 @@ export class RoomDO {
       // fuerza): la petición solo toca el RoomPlayer del emisor. Validaciones: solo
       // en el lobby, solo en mapas multi-ruta, índice de ruta existente y NO ocupado
       // por otro. door=null libera. Se libera sola al salir (el RoomPlayer se quita).
+      case 'end_hunt':
+        if (!this.hunt || this.hunt.over || !player.isHost) break;
+        this.hunt.over = { winner: 'colonist', reason: 'ended' };
+        this.finishHunt(this.hunt);
+        break;
+
+      case 'hunt_side': {
+        if (this.game || this.hunt) break; // solo en el lobby
+        const side = msg.side === 'hunter' || msg.side === 'elf' ? msg.side : undefined;
+        if (player.huntSide === side) break;
+        player.huntSide = side;
+        this.broadcastLobby();
+        break;
+      }
+
       case 'claim_door': {
         if (this.game && !this.game.over) break; // solo en el lobby
         if (this.savedGame) break; // el lobby de un guardado usa slots, no puertas
@@ -2409,6 +2438,19 @@ export class RoomDO {
       case 'chat': {
         const text = String(msg.text ?? '').slice(0, CHAT_MAX).trim();
         if (!text) break;
+        // Cacería: chat de EQUIPO (solo lo leen los de tu bando; los muertos que
+        // eligen lobo pasan al bando del cazador y leen el suyo)
+        if (msg.team === true && this.hunt && !this.hunt.over) {
+          const side = this.hunt.players.find((q) => q.id === player.id)?.side;
+          if (side) {
+            for (const q of this.players) {
+              if (!q.ws) continue;
+              if (this.hunt.players.find((hp) => hp.id === q.id)?.side !== side) continue;
+              this.send(q, { type: 'chat', from: player.name, color: player.color, text, team: side });
+            }
+            break;
+          }
+        }
         this.broadcast({ type: 'chat', from: player.name, color: player.color, text });
         break;
       }

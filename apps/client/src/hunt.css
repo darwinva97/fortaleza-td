@@ -551,3 +551,228 @@
 .bar.hp.foe i { background: linear-gradient(90deg, #b3261e, #ff6b5e); }
 .hk-panel .hk-row.inv { flex-wrap: wrap; }
 .hk-dock-in .hk-card-wrap { flex-shrink: 0; max-width: calc(100vw - 248px); }
+.hk-focus { display: flex; align-items: center; gap: 8px; font-size: 0.78rem; padding: 6px 8px; border-radius: 10px; background: rgba(255, 90, 78, 0.1); border: 1px solid rgba(255, 90, 78, 0.35); }
+.hk-focus .px { width: 1.6em; height: 1.6em; }
+.hk-focus span { flex: 1; }
+.hk-focus .hk-btn { height: 30px; min-width: 0; }
+/* ---------- chat de la Cacería ---------- */
+.hk-chat {
+  position: absolute;
+  left: 12px;
+  bottom: 224px;
+  width: 340px;
+  max-width: calc(100vw - 24px);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: none;
+}
+.hk-chat-log { display: flex; flex-direction: column; gap: 3px; max-height: 190px; overflow: hidden; }
+.hk-chat.open .hk-chat-log { overflow-y: auto; pointer-events: auto; background: rgba(8, 10, 16, 0.55); border-radius: 10px; padding: 6px; }
+.hk-chat-log .msg {
+  font-size: 0.8rem;
+  line-height: 1.35;
+  padding: 3px 8px;
+  border-radius: 8px;
+  background: rgba(8, 10, 16, 0.62);
+  text-shadow: 0 1px 2px #000;
+  transition: opacity 0.6s ease;
+  word-break: break-word;
+}
+.hk-chat-log .msg b { margin-right: 2px; }
+.hk-chat-log .msg.faded { opacity: 0; }
+.hk-chat.open .hk-chat-log .msg.faded { opacity: 0.85; }
+.hk-chat-log .ch { font-size: 0.66rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em; margin-right: 6px; padding: 0 5px; border-radius: 5px; }
+.hk-chat-log .ch.hunter { background: rgba(255, 90, 78, 0.3); color: #ffb4ad; }
+.hk-chat-log .ch.elf { background: rgba(123, 216, 143, 0.25); color: #b7f0c3; }
+.hk-chat-form { display: flex; gap: 6px; pointer-events: auto; }
+.hk-chat-form[hidden] { display: none; }
+.hk-chat-form input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 7px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--hk-border-2);
+  background: rgba(8, 10, 16, 0.85);
+  color: var(--hk-fg);
+  outline: none;
+}
+.hk-chat-form input:focus { border-color: var(--hk-gold); }
+.hk-chat-ch {
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 800;
+  padding: 0 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(123, 216, 143, 0.6);
+  background: rgba(123, 216, 143, 0.15);
+  color: var(--hk-fg);
+  cursor: pointer;
+}
+.hk-chat-ch.all { border-color: rgba(255, 205, 69, 0.6); background: rgba(255, 205, 69, 0.12); }
+.hk-endbtn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  transform: translateY(calc(100% + 96px));
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 90, 78, 0.45);
+  background: rgba(255, 90, 78, 0.12);
+  color: #ffb4ad;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.hk-endbtn[hidden] { display: none; }
+
+/* =================== MÓVIL (pantalla táctil) =================== */
+.hk-touch, .hk-rotate { display: none; }
+#screen-hunt.touch .hk-touch { display: block; }
+.hk-joy {
+  position: absolute;
+  left: max(18px, env(safe-area-inset-left));
+  bottom: 18px;
+  width: 132px;
+  height: 132px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.02) 70%);
+  border: 2px solid rgba(255, 255, 255, 0.16);
+  touch-action: none;
+  pointer-events: auto;
+  z-index: 6;
+}
+.hk-joy.on { border-color: rgba(255, 205, 69, 0.55); }
+.hk-joy-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 58px;
+  height: 58px;
+  margin: -29px 0 0 -29px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0.16));
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  transition: transform 0.06s linear;
+}
+.hk-tbtns {
+  position: absolute;
+  right: max(14px, env(safe-area-inset-right));
+  bottom: 96px;
+  display: flex;
+  flex-direction: column-reverse;
+  align-items: center;
+  gap: 10px;
+  pointer-events: auto;
+  z-index: 6;
+}
+.hk-tbtn {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: 1px solid var(--hk-border-2);
+  background: var(--hk-glass);
+  color: var(--hk-fg);
+  font-size: 1.35rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(10px);
+  touch-action: manipulation;
+}
+.hk-tbtn.act { width: 74px; height: 74px; font-size: 1.7rem; border-color: rgba(255, 205, 69, 0.6); background: rgba(255, 205, 69, 0.16); }
+.hk-tbtn small { font-size: 0.55rem; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase; }
+.hk-tbtn:active { transform: scale(0.94); }
+
+/* HUD compacto: minimapa y chat arriba a la izquierda, consola entre el
+   joystick y los botones, botones algo más grandes al tacto */
+#screen-hunt.touch .hk-mini { top: 56px; bottom: auto; left: max(8px, env(safe-area-inset-left)); width: 112px; height: 112px; padding: 3px; }
+#screen-hunt.touch .hk-chat { left: max(8px, env(safe-area-inset-left)); bottom: auto; top: 176px; width: 250px; }
+#screen-hunt.touch .hk-chat-log { max-height: 110px; }
+#screen-hunt.touch .hk-dock { left: 166px; right: 96px; bottom: 6px; }
+#screen-hunt.touch .hk-card { padding: 6px 8px; gap: 8px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+#screen-hunt.touch .hk-btn { min-width: 46px; height: 52px; }
+#screen-hunt.touch .hk-bars { width: 240px; }
+#screen-hunt.touch .hk-label { font-size: 0.56rem; }
+#screen-hunt.touch .hk-panel { width: 260px; max-height: 58vh; }
+#screen-hunt.touch .hk-shop { width: 340px; max-height: 62vh; }
+#screen-hunt.touch .hk-top { top: max(6px, env(safe-area-inset-top)); left: max(8px, env(safe-area-inset-left)); right: max(8px, env(safe-area-inset-right)); }
+#screen-hunt.touch .hk-tip { display: none !important; }
+#screen-hunt.touch .hk-banner { transform: scale(0.85); transform-origin: top center; }
+
+/* teléfonos apaisados (poca altura): todo un poco más pequeño */
+@media (max-height: 520px) {
+  #screen-hunt.touch .hk-joy { width: 112px; height: 112px; bottom: 12px; }
+  #screen-hunt.touch .hk-joy-knob { width: 50px; height: 50px; margin: -25px 0 0 -25px; }
+  #screen-hunt.touch .hk-tbtns { bottom: 74px; gap: 8px; }
+  #screen-hunt.touch .hk-tbtn { width: 46px; height: 46px; font-size: 1.15rem; }
+  #screen-hunt.touch .hk-tbtn.act { width: 64px; height: 64px; }
+  #screen-hunt.touch .hk-mini { width: 92px; height: 92px; top: 48px; }
+  #screen-hunt.touch .hk-chat { top: 146px; width: 220px; }
+  #screen-hunt.touch .hk-dock { left: 138px; right: 84px; }
+  #screen-hunt.touch .hk-btn { min-width: 42px; height: 46px; font-size: 0.66rem; }
+  #screen-hunt.touch .hk-btn .ic { font-size: 1.4rem; }
+  #screen-hunt.touch .hk-slot { width: 40px; height: 40px; }
+  #screen-hunt.touch .hk-bars { width: 200px; }
+  #screen-hunt.touch .hk-panel, #screen-hunt.touch .hk-shop { max-height: calc(100vh - 110px); }
+  #screen-hunt.touch .hk-card-wrap .hk-stats { display: none; }
+}
+
+/* en vertical no se juega: aviso para girar el móvil */
+@media (orientation: portrait) {
+  #screen-hunt.touch .hk-rotate {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    background: rgba(6, 8, 12, 0.94);
+    color: var(--hk-fg);
+    text-align: center;
+    padding: 24px;
+  }
+  #screen-hunt.touch .hk-rotate .ph { font-size: 3.6rem; animation: hk-rot 1.8s ease-in-out infinite; }
+  #screen-hunt.touch .hk-rotate b { font-size: 1.3rem; }
+  #screen-hunt.touch .hk-rotate p { margin: 0; color: var(--hk-muted); }
+}
+@keyframes hk-rot {
+  0%, 30% { transform: rotate(0deg); }
+  60%, 100% { transform: rotate(-90deg); }
+}
+#screen-hunt.touch .hk-res { flex-wrap: nowrap; gap: 4px; }
+#screen-hunt.touch .hk-chip { font-size: 0.78rem; padding: 3px 8px; gap: 4px; }
+#screen-hunt.touch .hk-chip .px { width: 1.1em; height: 1.1em; }
+#screen-hunt.touch .hk-clock > * { font-size: 0.78rem; padding: 3px 8px; }
+#screen-hunt.touch .hk-market { flex-direction: row; }
+#screen-hunt.touch .hk-market .hk-btn { height: 52px; }
+#screen-hunt.touch .hk-team { font-size: 0.72rem; }
+@media (max-height: 520px) {
+  #screen-hunt.touch .hk-mini { top: 44px; }
+  #screen-hunt.touch .hk-market .hk-btn { height: 46px; }
+}
+/* mercado: comprar/vender 10 y 200 en una cuadrícula 2×2 */
+.hk-market { display: grid !important; grid-template-columns: 1fr 1fr; gap: 4px; }
+.hk-market .hk-btn.sm { height: 28px; min-width: 0; padding: 0 6px; flex-direction: row; gap: 3px; }
+#screen-hunt.touch .hk-market { grid-template-columns: repeat(4, auto); }
+#screen-hunt.touch .hk-market .hk-btn.sm { height: 46px; }
+/* maná */
+.bar.mana { height: 11px; }
+.bar.mana i { background: linear-gradient(90deg, #2563eb, #60a5fa); }
+.bar.mana span { line-height: 9px; font-size: 0.6rem; }
+.hk-btn .mn { position: absolute; left: 3px; bottom: 2px; font-size: 0.55rem; font-weight: 800; color: #93c5fd; text-shadow: 0 1px 2px #000; }
+.hk-btn.nomana { opacity: 0.55; }
+.hk-btn.nomana .mn { color: #f87171; }
+/* selección múltiple */
+.hk-gchips { display: flex; flex-wrap: wrap; gap: 6px; }
+.hk-gchip { display: inline-flex; align-items: center; gap: 4px; font-size: 0.78rem; padding: 3px 8px; border-radius: 999px; background: rgba(155, 226, 138, 0.12); border: 1px solid rgba(155, 226, 138, 0.4); }
+.hk-gchip .px { width: 1.3em; height: 1.3em; }
+.hk-btn.roster.on { border-color: #9be28a; box-shadow: 0 0 0 1px #9be28a inset; }

@@ -839,6 +839,14 @@ export function initLobby(): void {
   // delegación en la lista de jugadores
   $('lobby-players').addEventListener('click', (e) => {
     if (handleBanClick(e)) return;
+    // CACERÍA · elegir bando (pulsar el que ya tienes lo quita)
+    const sideBtn = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-hunt-side]');
+    if (sideBtn) {
+      const me = store.lobby.players.find((pl) => pl.id === store.playerId);
+      const want = sideBtn.dataset.huntSide as 'hunter' | 'elf';
+      net.send({ type: 'hunt_side', side: me?.huntSide === want ? null : want });
+      return;
+    }
     const kickBtn = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-kick]');
     if (kickBtn && store.isHost) {
       net.send({ type: 'kick_player', playerId: kickBtn.dataset.kick! });
@@ -944,9 +952,20 @@ export function renderLobby(): void {
   const { players, spectators, settings } = store.lobby;
   $('lobby-code').textContent = store.roomCode;
 
+  const huntLobby = settings.mode === 'hunt';
+  // en la Cacería cada fila lleva una 2ª línea (bando + botones del anfitrión)
+  $('lobby-players').classList.toggle('hunt', huntLobby);
   $('lobby-players').innerHTML = players
     .map((p) => {
       const isMe = p.id === store.playerId;
+      // CACERÍA · bando: tú lo eliges con los botones; de los demás se ve su elección
+      const sideTag = !huntLobby
+        ? ''
+        : isMe
+          ? `<span class="hunt-side-pick"><button data-hunt-side="hunter" class="${p.huntSide === 'hunter' ? 'on' : ''}" title="Quiero ser troll (cazador)">🧌 Troll</button><button data-hunt-side="elf" class="${p.huntSide === 'elf' ? 'on' : ''}" title="Quiero ser elfo (colono)">🧝 Elfo</button></span>`
+          : p.huntSide
+            ? `<span class="hunt-side-tag ${p.huntSide}">${p.huntSide === 'hunter' ? '🧌 Troll' : '🧝 Elfo'}</span>`
+            : '<span class="hunt-side-tag none">sin elegir</span>';
       // insignia de estado: el anfitrión no necesita marcar «Listo»; el resto sí
       const badge = p.isHost
         ? '<span class="host-tag">👑 anfitrión</span>'
@@ -983,6 +1002,8 @@ export function renderLobby(): void {
         <span class="player-dot" style="background:${p.color};color:${p.color}"></span>
         <span class="player-name">${escapeHtml(p.name)}${isMe ? ' (tú)' : ''}</span>
         ${badge}
+        ${huntLobby ? '<span class="row-break"></span>' : ''}
+        ${sideTag}
         ${cede}
         ${spectate}
         ${kick}
@@ -1328,10 +1349,10 @@ function renderHuntInfo(): void {
   const card = (ic: string, title: string, text: string, cls = '') =>
     `<div class="hi-card ${cls}"><span class="hi-ic">${pxIcon(ic)}</span><div><b>${title}</b><p>${text}</p></div></div>`;
   box.innerHTML = `
-    <div class="hi-map"><canvas id="lobby-hunt-map" width="200" height="200"></canvas><span><b style="color:var(--h-fg)">Un laberinto de 26 parcelas</b><br>amuralladas y forradas de árboles. En el centro, en rojo, la guarida del cazador. Cada colono elige la suya.<br><b style="color:var(--h-fg)">Controles:</b> <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> para moverte · <kbd>R</kbd> sobre una torre o muralla para repararla (el cazador, para atacar).</span></div>
+    <div class="hi-map"><canvas id="lobby-hunt-map" width="200" height="200"></canvas><span><b style="color:var(--h-fg)">Un laberinto de 26 parcelas</b><br>amuralladas y forradas de árboles. En el centro, en rojo, la guarida del cazador. Cada colono elige la suya.<br><b style="color:var(--h-fg)">Controles:</b> <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> para moverte · <kbd>R</kbd> sobre una torre o muralla para repararla (el cazador, para atacar) · <kbd>1</kbd> vuelve a tu personaje · clic en tus obreros y clic derecho para mandarlos · <kbd>Enter</kbd> chat de equipo.</span></div>
     <div class="hi-cards">
       ${card('hk:elf', 'Colonos', 'Tenéis 30 s para meteros en una parcela, cerrar sus puertas con murallas y montar casa, taller y torres. Morís en dos golpes.', 'elf')}
-      ${card('hk:troll', 'Cazador', 'Cobra en oro cada punto de daño, sube de nivel y se equipa en su guarida. Va rotando; si juegas solo, lo lleva un bot.', 'hunter')}
+      ${card('hk:troll', 'Cazador', 'Cobra en oro cada punto de daño, sube de nivel y se equipa en su guarida. Elige tu bando junto a tu nombre: puede haber varios trolls. Si nadie elige troll, se sortea; si juegas solo, lo lleva un bot.', 'hunter')}
       ${card('hk:angel', 'Al caer', 'Vuelves como ángel para ayudar a los tuyos o como lobo para cazar con él.')}
       ${card('hk:house', 'Victoria', 'Ganan los colonos si matan al cazador. Gana el cazador si no queda ningún colono.')}
     </div>`;

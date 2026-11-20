@@ -10,6 +10,8 @@ import {
   levelDef,
   buildHuntSnap,
   createHunt,
+  fighterStats,
+  ITEMS,
   createHuntBotMemory,
   getHuntMap,
   huntBotCommands,
@@ -123,7 +125,9 @@ console.log('economía, requisitos y murallas');
   const gold0 = hunter.gold;
   const hp0 = wall.hp;
   run(st, 3, [{ playerId: 'p1', cmd: { k: 'attack', target: wall.id } }]);
-  const expected = Math.max(1, 5 - 1) * armorMult(5);
+  // daño del troll al nivel 1 = 5 + 2 de agilidad de los talentos (Ojo EX y hueco de botas)
+  const tdmg = fighterStats(st, hunter, h).dmg;
+  const expected = Math.max(1, tdmg - 1) * armorMult(5);
   assert(Math.abs(hp0 - wall.hp - expected) < 0.01, `cada golpe hace ${expected.toFixed(2)} a la muralla (armadura y cemento)`);
   assert(hunter.gold - gold0 >= Math.floor(expected), 'y el cazador cobra el daño hecho en oro');
 
@@ -140,7 +144,49 @@ console.log('economía, requisitos y murallas');
     wall.hp = 100;
     run(st, sec(25));
     assert(wall.hp > 120, `el reparador sube la muralla (${Math.round(wall.hp)} de 360)`);
+    // mover un obrero con el ratón y luego mandarlo a reparar algo concreto
+    const rep = st.units.find((u) => u.kind === 'repairer' && u.alive)!;
+    for (const b of st.buildings) b.hp = b.maxHp; // nada que reparar: se queda donde lo mandas
+    run(st, sec(4), [{ playerId: 'p2', cmd: { k: 'worker', id: rep.id, x: inner.x + 0.5, y: inner.y + 0.5 } }]);
+    const px0 = rep.x;
+    const py0 = rep.y;
+    run(st, sec(3));
+    assert(Math.hypot(rep.x - inner.x - 0.5, rep.y - inner.y - 0.5) < 2.3 && rep.x === px0 && rep.y === py0, 'el reparador va a donde lo mandas y se queda ahí');
+    // vender: devuelve la mitad
+    const g0 = ana.gold;
+    run(st, 1, [{ playerId: 'p2', cmd: { k: 'sellunit', id: rep.id } }]);
+    assert(!rep.alive && ana.gold - g0 === 16, `vender un aprendiz devuelve la mitad (${ana.gold - g0} de 32)`);
   }
+  // leñador en una base CERRADA: tala un árbol de dentro (antes se atascaba
+  // yendo al árbol más cercano en línea recta, que estaba fuera de la muralla)
+  ana.gold += 100000;
+  const shop2 = st.buildings.find((b) => b.type === 'workshop')!;
+  run(st, 1, [{ playerId: 'p2', cmd: { k: 'upgrade', id: shop2.id } }]);
+  const spots: [number, number][] = [];
+  for (let y = plot.y + 1; y < plot.y + plot.h - 2; y++)
+    for (let x = plot.x + 1; x < plot.x + plot.w - 2; x++)
+      if ([0, 1].every((a2) => [0, 1].every((b2) => map.tiles[(y + b2) * map.w + x + a2] === 0 && map.plotOf[(y + b2) * map.w + x + a2] === plot.id)) && !st.buildings.some((b) => Math.abs(b.cx - x) < 3 && Math.abs(b.cy - y) < 3)) spots.push([x, y]);
+  const [ex, ey] = spots[Math.floor(spots.length / 2)];
+  run(st, sec(15), [{ playerId: 'p2', cmd: { k: 'build', type: 'elftree', cx: ex, cy: ey } }]);
+  const etree = st.buildings.find((b) => b.type === 'elftree');
+  assert(!!etree, 'construye el árbol élfico');
+  if (etree) {
+    run(st, 1, [{ playerId: 'p2', cmd: { k: 'train', id: etree.id, unit: 'lumberjack', tier: 0 } }]);
+    const lj = st.units.find((u) => u.kind === 'lumberjack' && u.alive)!;
+    const w0 = ana.wood;
+    run(st, sec(30));
+    assert(ana.wood > w0 + 1 && map.plotOf[Math.floor(lj.y) * map.w + Math.floor(lj.x)] === plot.id, `el leñador tala dentro de la base cerrada (+${(ana.wood - w0).toFixed(1)} de madera en 30 s)`);
+    // venderlo
+    const t0 = lj.tree;
+    run(st, 1, [{ playerId: 'p2', cmd: { k: 'sellunit', id: lj.id } }]);
+    assert(!lj.alive && !st.treeTaken.has(t0), 'vender el leñador libera su árbol');
+  }
+  // vender un edificio devuelve la mitad de lo invertido
+  const tw = st.buildings.find((b) => b.type === 'workshop')!;
+  const inv = tw.investGold;
+  const g1 = ana.gold;
+  run(st, 1, [{ playerId: 'p2', cmd: { k: 'demolish', id: tw.id } }]);
+  assert(!st.buildings.includes(tw) && ana.gold - g1 === Math.floor(inv / 2), `vender el taller devuelve la mitad (${ana.gold - g1} de ${inv})`);
 }
 
 console.log('torres, golpes y papeles al morir');
@@ -153,7 +199,7 @@ console.log('torres, golpes y papeles al morir');
   ana.x = h.x + 1;
   ana.y = h.y;
   run(st, 1, [{ playerId: 'p1', cmd: { k: 'attack', target: ana.id } }]);
-  assert(ana.alive && ana.hp === 5, 'el primer golpe deja al colono a media vida');
+  assert(ana.alive && ana.hp === 10 - fighterStats(st, P(st, 'p1'), h).dmg, `el primer golpe no lo mata (queda a ${ana.hp} de 10): hacen falta dos`);
   run(st, sec(2));
   assert(!ana.alive, 'el segundo lo mata');
   assert(P(st, 'p1').gold >= 75 + 67, 'el cazador se lleva el 67 % del oro del colono');
@@ -202,7 +248,7 @@ console.log('tienda, fusión de objetos y niveles');
   const weapons = hp.inv.filter((s) => s?.kind === 'item' && s.line === 'weapon');
   assert(weapons.length === 1 && weapons[0]!.kind === 'item' && weapons[0]!.tier === 1, 'dos espadas cortas se funden en una espada (+4)');
   run(st, 1, [{ playerId: 'p1', cmd: { k: 'buy', line: 'life', tier: 0 } }]);
-  assert(huntHunterUnit(st)!.maxHp === 1000, 'el corazón sube la vida máxima a 1000');
+  assert(huntHunterUnit(st)!.maxHp === 750 + 250 + 50, `el corazón sube la vida máxima +250 (${huntHunterUnit(st)!.maxHp}: 750 + 250 + 50 por los +2 de fuerza de los talentos)`);
   hp.xp = 199;
   const h = huntHunterUnit(st)!;
   run(st, sec(PHASE.headStartSec) + 1);
@@ -307,13 +353,207 @@ console.log('reglas completas del original');
   angel.x = e3.x + 1;
   angel.y = e3.y;
   angel.invulnUntil = 0;
+  // sin el olfato del Rastreador (descubre invisibles: se prueba justo después)
+  st2.eyes = st2.eyes.filter((e) => !e.detect);
+  for (const u of st2.units) if (u.kind === 'beast') u.ready.detect = st2.tick + 99999;
   run(st2, 1, [{ playerId: 'p2', cmd: { k: 'ability', a: 'occult', x: e3.x, y: e3.y } }]);
   const view = buildHuntSnap(st2, 'p1');
   h2.x = e3.x + 2;
   h2.y = e3.y;
   const view2 = buildHuntSnap(st2, 'p1');
   assert(!view2.units.some((u) => u[0] === e3.id) && e3.occultUntil > st2.tick, 'el velo lunar hace invisible al colono para el cazador');
+  st2.eyes.push({ side: 'hunter', detect: true, x: e3.x, y: e3.y, r: 5, until: st2.tick + 50 });
+  assert(buildHuntSnap(st2, 'p1').units.some((u) => u[0] === e3.id), 'pero el olfato (lobo o Rastreador) lo descubre');
   void view;
+}
+
+console.log('lo que faltaba (2): troll, objetos, torres, Paladín, Rastreador');
+{
+  // armadura base del troll y talentos (+1 a todo, +1 más con el hueco de botas vacío)
+  const st = createHunt(7, roster, 'p1');
+  const hp = P(st, 'p1');
+  const h = huntHunterUnit(st)!;
+  const fs0 = fighterStats(st, hp, h);
+  assert(Math.abs(fs0.armor - (3.9 + 2 * 0.5)) < 1e-6, `armadura del troll al nivel 1: 3,9 + agilidad de talentos (${fs0.armor})`);
+  // botas: velocidad y agilidad
+  hp.gold += 1000;
+  run(st, 1, [{ playerId: 'p1', cmd: { k: 'buy', line: 'boots', tier: 0 } }]);
+  const fs1 = fighterStats(st, hp, h);
+  assert(hp.boots === 0 && Math.abs(fs1.armor - (3.9 + (1 + 2) * 0.5)) < 1e-6, `las botas dan +2 de agilidad (y se pierde el +1 del hueco vacío): armadura ${fs1.armor}`);
+  // escarcha: el golpe del troll ralentiza al colono 3 s
+  run(st, sec(PHASE.headStartSec) + 1);
+  const elf = mainUnit(st, 'p2')!;
+  elf.x = h.x + 0.8;
+  elf.y = h.y;
+  const ana = P(st, 'p2');
+  ana.gold = 0;
+  elf.hp = 1000; // que aguante para medir
+  elf.maxHp = 1000;
+  run(st, sec(2), [{ playerId: 'p1', cmd: { k: 'attack', target: elf.id } }]);
+  assert(elf.chillUntil > st.tick, 'el golpe del troll deja al colono con escarcha (más lento)');
+  // madera al por mayor
+  hp.gold = 600000;
+  h.x = map.camp.x + 0.5;
+  h.y = map.camp.y + 2.5;
+  const w0 = hp.wood;
+  run(st, 1, [{ playerId: 'p1', cmd: { k: 'buywood', bulk: true } }]);
+  assert(hp.wood - w0 === 8 && hp.gold === 100000, `8 de madera por 500 000 de oro (${hp.wood - w0}, quedan ${hp.gold})`);
+  // objetos nuevos en la tienda
+  const names = (line: string) => (ITEMS as any)[line].tiers.map((t: any) => t.name);
+  assert(names('armor').includes('Égida del fin') && names('regen').includes('Savia eterna III') && names('life').includes('Corazón eterno III') && names('gloves').includes('Garras del caos'), 'están el último escudo, regeneración y vida de madera y los últimos guantes');
+  // lobos: el cazador puede no admitirlos
+  run(st, 1, [{ playerId: 'p1', cmd: { k: 'wolves', allow: false } }]);
+  assert(buildHuntSnap(st, 'p2').wolves === false, 'el cazador puede no admitir lobos');
+  run(st, 1, [{ playerId: 'p1', cmd: { k: 'wolves', allow: true } }]);
+
+  // Rastreador: red al colono cercano y olfato que descubre invisibles
+  hp.wood = 20;
+  elf.x = map.camp.x + 30.5; // lejos al comprarlo
+  elf.y = map.camp.y + 0.5;
+  run(st, 1, [{ playerId: 'p1', cmd: { k: 'beast' } }]);
+  const beast = st.units.find((u) => u.kind === 'beast' && u.alive)!;
+  assert(!!beast, 'compra el Rastreador');
+  elf.x = beast.x + 3;
+  elf.y = beast.y;
+  elf.rootUntil = 0;
+  run(st, 2);
+  assert(st.units.some((o) => o.alive && (o.kind === 'elf' || o.kind === 'repairer' || o.kind === 'lumberjack') && o.rootUntil > st.tick) && (beast.ready.ensnare ?? 0) > st.tick, 'el Rastreador lanza su red a un colono cercano (inmóvil 5 s)');
+  assert(st.eyes.some((e) => e.detect && e.side === 'hunter'), 'el Rastreador olfatea: descubre invisibles a su alrededor');
+}
+{
+  // dos trolls: «Regreso» señalando al otro troll te lleva con él
+  const st = createHunt(8, roster, ['p1', 'p3']);
+  run(st, sec(PHASE.headStartSec) + 1);
+  const a = mainUnit(st, 'p1')!;
+  const b = mainUnit(st, 'p3')!;
+  b.x = map.camp.x + 12.5;
+  b.y = map.camp.y + 0.5;
+  run(st, sec(3), [{ playerId: 'p1', cmd: { k: 'ability', a: 'recall', x: b.x, y: b.y } }]);
+  assert(Math.hypot(a.x - b.x, a.y - b.y) < 1, `«Regreso» señalando a un aliado te lleva con él (${a.x.toFixed(1)},${a.y.toFixed(1)})`);
+  assert(st.players.filter((p) => p.form === 'hunter').length === 2, 'puede haber dos trolls');
+}
+{
+  // torres: el Dragón puede saltar al de hielo; el Altar acaba en verde O misterio
+  const st = createHunt(9, roster, 'p1');
+  const ana = P(st, 'p2');
+  const elf = mainUnit(st, 'p2')!;
+  elf.x = inner.x + 0.5;
+  elf.y = inner.y + 0.5;
+  run(st, sec(5), [{ playerId: 'p2', cmd: { k: 'build', type: 'tower', cx: inner.x + 1, cy: inner.y } }]);
+  const t = st.buildings.find((b) => b.type === 'tower')!;
+  assert(!!t, 'construye una torre');
+  if (t) {
+    ana.gold = 1e9;
+    ana.wood = 1e9;
+    // tecnología máxima para la prueba: una Fortaleza (taller nivel 5) de mentira
+    st.buildings.push({ ...t, id: 99999, type: 'workshop', level: 5, cx: t.cx, cy: t.cy + 30, size: 2 });
+    t.level = 11;
+    run(st, 1, [{ playerId: 'p2', cmd: { k: 'upgrade', id: t.id, branch: 'ice' } }]);
+    assert(t.level === 13 || st.players.length < 0, `desde la Torre del dragón se puede saltar al Dragón de hielo (nivel ${t.level})`);
+    t.level = 14;
+    run(st, 1, [{ playerId: 'p2', cmd: { k: 'upgrade', id: t.id } }]);
+    assert(t.level === 14, 'en el Altar maldito hay que elegir rama');
+    run(st, 1, [{ playerId: 'p2', cmd: { k: 'upgrade', id: t.id, branch: 'green' } }]);
+    assert(t.level === 15, 'Altar → Dragón verde');
+    run(st, 1, [{ playerId: 'p2', cmd: { k: 'upgrade', id: t.id } }]);
+    assert(t.level === 15, 'el Dragón verde es el final de su rama');
+    t.level = 14;
+    run(st, 1, [{ playerId: 'p2', cmd: { k: 'upgrade', id: t.id, branch: 'mystery' } }]);
+    assert(t.level === 16, 'Altar → Torre del misterio');
+  }
+}
+
+{
+  // Paladín (madera y Luz sagrada) y la Hacha del fin (daño en área)
+  const bld = (id: number, type: string, level: number, cx: number, cy: number, size: number): any => ({ id, owner: 'p2', type, level, cx, cy, size, hp: 100, maxHp: 100, wallBranch: null, towerBranch: 'main', luckArmor: 0, luckReady: 0, invulnUntil: 0, packedUntil: 0, investGold: 0, investWood: 0, eyeUntil: 0, stunUntil: 0, howlUntil: 0, retro: 0, cd: 0, forceUntil: 0 });
+  const st = createHunt(10, roster, 'p1');
+  const ana = P(st, 'p2');
+  const ws = bld(60001, 'workshop', 5, houseCell.x, houseCell.y, 2); // Fortaleza: tecnología máxima
+  st.buildings.push(ws, bld(60002, 'house', 10, houseCell.x + 3, houseCell.y, 2));
+  ana.gold = 100000;
+  ana.wood = 300;
+  run(st, 1, [{ playerId: 'p2', cmd: { k: 'train', id: ws.id, unit: 'repairer', tier: 5 } }]);
+  const pal = st.units.find((u) => u.kind === 'repairer' && u.tier === 5 && u.alive);
+  assert(!!pal && ana.wood === 300 - 256, `el Paladín cuesta 256 de madera además del oro (madera ${ana.wood})`);
+  if (pal) {
+    ws.hp = ws.maxHp * 0.2;
+    const hp0 = ws.hp;
+    run(st, 2);
+    assert(ws.hp - hp0 > ws.maxHp * 0.2, `Luz sagrada: cura de golpe 5 + 35 % de lo que falta (${hp0.toFixed(0)} → ${ws.hp.toFixed(0)})`);
+  }
+  // Hacha del fin: el golpe al edificio también daña a los de alrededor
+  const st2 = createHunt(11, roster, 'p1');
+  run(st2, sec(PHASE.headStartSec) + 1);
+  const hp = P(st2, 'p1');
+  const h = huntHunterUnit(st2)!;
+  hp.inv[0] = { kind: 'item', line: 'weapon', tier: ITEMS.weapon.tiers.length - 1 };
+  const mk = (id: number, cx: number) => ({ id, owner: 'p2', type: 'wall' as const, level: 1, cx, cy: Math.floor(h.y) - 2, size: 1, hp: 1e12, maxHp: 1e12, wallBranch: null, towerBranch: 'main' as const, luckArmor: 0, luckReady: 0, invulnUntil: 0, packedUntil: 0, investGold: 0, investWood: 0, eyeUntil: 0, stunUntil: 0, howlUntil: 0, retro: 0, cd: 0, forceUntil: 0 });
+  const w1: any = mk(70001, Math.floor(h.x));
+  const w2: any = mk(70002, Math.floor(h.x) + 1);
+  st2.buildings.push(w1, w2);
+  h.y = w1.cy + 1.5;
+  h.x = w1.cx + 0.5;
+  run(st2, 3, [{ playerId: 'p1', cmd: { k: 'attack', target: w1.id } }]);
+  assert(w1.hp < 1e12 && w2.hp < 1e12, 'la Hacha del fin daña también el edificio de al lado');
+}
+
+console.log('maná y murallas del original');
+{
+  const st = createHunt(12, roster, 'p1');
+  const hp = P(st, 'p1');
+  assert(hp.mana === 200, `el troll empieza con 200 de maná (${hp.mana})`);
+  run(st, 1, [{ playerId: 'p1', cmd: { k: 'ability', a: 'eye', x: 50, y: 50 } }]);
+  assert(Math.abs(hp.mana - (200 - 60)) < 1, `el Ojo cuesta 60 de maná (${hp.mana.toFixed(1)})`);
+  hp.mana = 5;
+  hp.cds = {};
+  run(st, 1, [{ playerId: 'p1', cmd: { k: 'ability', a: 'eye', x: 50, y: 50 } }]);
+  assert(!(hp.cds.eye && hp.cds.eye > st.tick), 'sin maná no se puede lanzar');
+  // aleatoria: se convierte al instante en una rama de verdad
+  const ana = P(st, 'p2');
+  ana.gold = 100000;
+  const w: any = { id: 50001, owner: 'p2', type: 'wall', level: 5, cx: 5, cy: 5, size: 1, hp: 250, maxHp: 250, wallBranch: null, towerBranch: 'main', luckArmor: 0, luckReady: 0, invulnUntil: 0, packedUntil: 0, investGold: 0, investWood: 0, eyeUntil: 0, stunUntil: 0, howlUntil: 0, retro: 0, cd: 0, forceUntil: 0 };
+  st.buildings.push(w);
+  run(st, 1, [{ playerId: 'p2', cmd: { k: 'upgrade', id: w.id, branch: 'random' } }]);
+  assert(w.level === 6 && w.wallBranch !== 'random' && w.luckReady > st.tick, `la aleatoria sale como muralla de ${w.wallBranch} y podrá sortear a los 3 min`);
+  run(st, 1, [{ playerId: 'p2', cmd: { k: 'upgrade', id: w.id, branch: 'gold' } }]);
+  const w2: any = { ...w, id: 50002, level: 5, wallBranch: null, luckReady: 0 };
+  st.buildings.push(w2);
+  run(st, 1, [{ playerId: 'p2', cmd: { k: 'upgrade', id: w2.id, branch: 'gold' } }]);
+  assert(w2.level === 5, 'la muralla de oro no se elige directamente');
+}
+
+console.log('ejército élfico (Cenarion Keep)');
+{
+  const st = createHunt(13, roster, 'p1');
+  run(st, sec(PHASE.headStartSec) + 1);
+  const ana = P(st, 'p2');
+  const h = huntHunterUnit(st)!;
+  const keep: any = { id: 40001, owner: 'p2', type: 'workshop', level: 5, cx: Math.floor(h.x) + 3, cy: Math.floor(h.y) + 3, size: 2, hp: 400, maxHp: 400, wallBranch: null, towerBranch: 'main', luckArmor: 0, luckReady: 0, invulnUntil: 0, packedUntil: 0, investGold: 0, investWood: 0, eyeUntil: 0, stunUntil: 0, howlUntil: 0, retro: 0, cd: 0, forceUntil: 0 };
+  const house: any = { ...keep, id: 40002, type: 'house', level: 10, cx: keep.cx + 30 };
+  st.buildings.push(keep, house);
+  ana.gold = 1e6;
+  ana.wood = 1e6;
+  const hp0 = h.hp;
+  h.maxHp = h.hp = 1e9; // que aguante para medir
+  run(st, 1, [{ playerId: 'p2', cmd: { k: 'army', id: keep.id, kind: 'elfhunter' } }]);
+  const eh = st.units.find((u) => u.kind === 'elfhunter' && u.alive);
+  assert(!!eh && ana.gold === 1e6 - 5120 && ana.wood === 1e6 - 160, 'la Fortaleza entrena una cazadora elfa (5120 de oro + 160 de madera)');
+  run(st, sec(4));
+  assert(h.hp < 1e9, `la cazadora dispara sola al cazador cercano (${(1e9 - h.hp).toFixed(0)} de daño)`);
+  void hp0;
+  // gigante: piel dura
+  run(st, 1, [{ playerId: 'p2', cmd: { k: 'army', id: keep.id, kind: 'giant' } }]);
+  const gi = st.units.find((u) => u.kind === 'giant' && u.alive)!;
+  assert(!!gi, 'entrena un gigante de montaña');
+  // búho: invisible para el cazador
+  run(st, 1, [{ playerId: 'p2', cmd: { k: 'army', id: keep.id, kind: 'owl' } }]);
+  const owl = st.units.find((u) => u.kind === 'owl' && u.alive)!;
+  assert(!!owl && !buildHuntSnap(st, 'p1').units.some((u) => u[0] === owl.id), 'el búho es invisible para el cazador');
+  // y descubre al cazador invisible
+  h.invisUntil = st.tick + 999;
+  owl.x = h.x + 1;
+  owl.y = h.y;
+  assert(buildHuntSnap(st, 'p2').units.some((u) => u[0] === h.id), 'el búho descubre al cazador invisible');
 }
 
 console.log('WASD (steer)');
@@ -343,6 +583,17 @@ console.log('WASD (steer)');
   run(st, 1, [{ playerId: 'p2', cmd: { k: 'steer', dx: -1, dy: 0 } }]);
   run(st, 1, [{ playerId: 'p2', cmd: { k: 'build', type: 'wall', cx: door.x, cy: door.y } }]);
   assert(elf.sx === 0 && elf.sy === 0, 'una orden de construir suelta la dirección');
+  // entrar por una puerta de 1 casilla yendo descentrado: la esquina te guía
+  {
+    const st3 = createHunt(4, roster, 'p1');
+    const e3 = mainUnit(st3, 'p2')!;
+    const o = [[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dx, dy]) => ({ dx, dy })).find(({ dx, dy }) => map.tiles[(door.y + dy) * map.w + door.x + dx] === 0 && map.plotOf[(door.y + dy) * map.w + door.x + dx] !== plot.id)!;
+    // fuera, a 2 casillas de la puerta, desplazado 0,3 de lado
+    e3.x = door.x + 0.5 + o.dx * 2 + (o.dy ? 0.3 : 0);
+    e3.y = door.y + 0.5 + o.dy * 2 + (o.dx ? 0.3 : 0);
+    run(st3, sec(2), [{ playerId: 'p2', cmd: { k: 'steer', dx: -o.dx, dy: -o.dy } }]);
+    assert(map.plotOf[Math.floor(e3.y) * map.w + Math.floor(e3.x)] === plot.id, `entra por la puerta de 1 casilla aunque vaya descentrado (${e3.x.toFixed(2)}, ${e3.y.toFixed(2)})`);
+  }
   // el cazador con WASD golpea lo que tiene pegado
   const st2 = createHunt(3, roster, 'p1');
   run(st2, sec(PHASE.headStart) + 2);
@@ -361,6 +612,10 @@ console.log('WASD (steer)');
     const hp0 = wall.hp;
     run(st2, sec(4), [{ playerId: 'p1', cmd: { k: 'steer', dx: -o.dx, dy: -o.dy } }]);
     assert(wall.hp < hp0, `el cazador empuja con WASD contra la muralla y la golpea (${hp0} → ${wall.hp.toFixed(0)})`);
+    // pegado a la muralla y empujando: nunca la atraviesa (ni en el servidor)
+    const inside = () => map.plotOf[Math.floor(hunter.y) * map.w + Math.floor(hunter.x)] === plot.id;
+    run(st2, sec(3), [{ playerId: 'p1', cmd: { k: 'steer', dx: -o.dx, dy: -o.dy } }]);
+    assert(!inside(), 'empujando contra la muralla el cazador no entra en la base');
     let acting = 0;
     for (let i = 0; i < sec(3); i++) {
       run(st2, 1);

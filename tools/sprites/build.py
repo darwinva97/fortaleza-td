@@ -33,6 +33,10 @@ SHEETS = {
     'hunter': {'ref': 136, 'walk': [0, 1, 2, 3], 'act': {'down': 4, 'left': 5, 'right': 6, 'up': 8}, 'death': 9},
     'wolf': {'ref': 80, 'walk': [0, 1, 2, 3], 'act': {'down': 4, 'left': 5, 'right': 6, 'up': ('walk', 'up')}, 'death': 8},
     'angel': {'ref': 96, 'walk': [0, 1, 2, 3], 'act': {'down': 4, 'left': 5, 'right': ('mirror', 'left'), 'up': 7}, 'death': 8},
+    # obreros: algo más bajitos que el colono; sus filas «derecha» de acción
+    # salieron mirando a la izquierda, así que se reflejan
+    'repairer': {'ref': 80, 'walk': [0, 1, 2, 3], 'act': {'down': 5, 'left': 6, 'right': ('mirror', 'left'), 'up': 8}, 'death': 9},
+    'lumberjack': {'ref': 80, 'walk': [0, 1, 2, 3], 'act': {'down': 4, 'left': 5, 'right': ('mirror', 'left'), 'up': 7}, 'death': 8},
 }
 
 A_CUT = 150  # alfa mínima para considerar un píxel parte del dibujo
